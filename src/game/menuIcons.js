@@ -232,6 +232,34 @@ const DRAW = {
       ctx.fill();
     }
   },
+  bgPass(ctx, P, s) {
+    // framed landscape: "see the real world"
+    const [x, y] = P(0.1, 0.18);
+    const w = s * 0.8, h = s * 0.64;
+    ctx.fillStyle = '#7fc4ff';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.arc(...P(0.7, 0.36), s * 0.08, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#4caf6a';
+    ctx.beginPath();
+    ctx.moveTo(...P(0.1, 0.82));
+    ctx.lineTo(...P(0.36, 0.46));
+    ctx.lineTo(...P(0.56, 0.66));
+    ctx.lineTo(...P(0.68, 0.56));
+    ctx.lineTo(...P(0.9, 0.82));
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeRect(x, y, w, h);
+  },
+  bgSolid(ctx, P, s) {
+    const [x, y] = P(0.1, 0.18);
+    const w = s * 0.8, h = s * 0.64;
+    ctx.fillStyle = '#1b2029';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+  },
   info(ctx, P, s, cx, cy) {
     ctx.beginPath();
     ctx.arc(cx, cy, s * 0.36, 0, Math.PI * 2);

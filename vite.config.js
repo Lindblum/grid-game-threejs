@@ -20,10 +20,9 @@ function savesApi() {
   };
 }
 
-// `npm run dev`    -> http://localhost:5173 (desktop browser)
-// `npm run dev:xr` -> https://<your-LAN-IP>:5173 (for Quest headset; WebXR needs HTTPS)
 export default defineConfig(({ mode }) => ({
   plugins: [react(), savesApi(), ...(mode === 'xr' ? [basicSsl()] : [])],
+  base: '/grid-game-threejs/',
   server: { host: mode === 'xr' ? true : 'localhost', port: 5173, allowedHosts: ['debrah-impartable-nonubiquitously.ngrok-free.dev'] },
   preview: { host: mode === 'xr' ? true : 'localhost', port: 4173 }
 }));

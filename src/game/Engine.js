@@ -15,7 +15,7 @@ const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
 const BG = new THREE.Color('#1b2029');
 const ORBIT_HEIGHT_CM = 100; // light 1 m above the scene
-const ORBIT_RADIUS_CM = 100; // 1 m radius
+const ORBIT_RADIUS_CM = 300; // 3 m radius
 const ORBIT_PERIOD_S = 60; // one revolution per minute
 const GRAB_MIN_SCALE = 0.1; // two-hand zoom limits, relative to life size (1 lattice cm = 1 cm)
 const GRAB_MAX_SCALE = 20;
@@ -64,12 +64,15 @@ export class Engine {
       paused: true, // the game opens on a New scene with the menu up
       menu: 'main', // 'main' | 'load' | 'save' | 'options'
       soundOn: true,
+      passthrough: true, // Options → Background: XR passthrough (true) or solid colour
       saves: null,
       savesError: null,
       page: 0,
       toolIndex: 0,
       inXR: false,
-      xrSupport: null, // 'immersive-ar' | 'immersive-vr' | null
+      xrSupport: null, // truthy when this browser can start XR at all
+      xrAR: false, // browser supports immersive-ar (passthrough), e.g. Quest Browser
+      xrVR: false, // browser supports immersive-vr, e.g. PC Chrome with a headset over Link
       blockCount: 0,
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
@@ -249,12 +252,15 @@ export class Engine {
 
   async _detectXR() {
     if (!navigator.xr) return;
-    try {
-      if (await navigator.xr.isSessionSupported('immersive-ar')) return this.setState({ xrSupport: 'immersive-ar' });
-      if (await navigator.xr.isSessionSupported('immersive-vr')) return this.setState({ xrSupport: 'immersive-vr' });
-    } catch {
-      /* not supported */
-    }
+    const check = async (mode) => {
+      try {
+        return await navigator.xr.isSessionSupported(mode);
+      } catch {
+        return false;
+      }
+    };
+    const [ar, vr] = await Promise.all([check('immersive-ar'), check('immersive-vr')]);
+    this.setState({ xrAR: ar, xrVR: vr, xrSupport: ar || vr ? (ar ? 'immersive-ar' : 'immersive-vr') : null });
   }
 
   _bindEvents() {
@@ -471,6 +477,13 @@ export class Engine {
     if (id === 'quit') return this.quit();
     if (id === 'options') return this.setState({ menu: 'options' });
     if (id === 'sound') return this.setSound(!s.soundOn);
+    if (id === 'background') {
+      this.setState({ passthrough: !s.passthrough });
+      if (s.inXR && !s.passthrough && this._xrMode !== 'immersive-ar') {
+        this.toast('This XR session can’t show passthrough (it was started as VR)');
+      }
+      return this._applyBackground();
+    }
     if (id === 'enterxr') return this.enterXR();
     if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
     if (id === 'back') return this.setState({ menu: s.menu === 'controls' ? 'options' : 'main', page: 0 });
@@ -487,8 +500,14 @@ export class Engine {
 
   // ---------------------------------------------------------------- XR
   async enterXR() {
-    const mode = this.state.xrSupport;
+    const { xrAR, xrVR, passthrough } = this.state;
+    // Passthrough needs an immersive-ar session (Quest Browser). PC browsers driving a headset
+    // over Link only offer immersive-vr, which always has a solid background.
+    const mode = (passthrough || !xrVR) && xrAR ? 'immersive-ar' : xrVR ? 'immersive-vr' : null;
     if (!mode || this.renderer.xr.isPresenting) return;
+    if (passthrough && mode !== 'immersive-ar') {
+      this.toast('Passthrough isn’t available in this browser — open the game in the Quest Browser for passthrough');
+    }
     unlockAudio();
     try {
       const session = await navigator.xr.requestSession(mode, {
@@ -499,7 +518,8 @@ export class Engine {
       this.renderer.xr.setReferenceSpaceType('local-floor');
       await this.renderer.xr.setSession(session);
       session.addEventListener('end', () => this._onXREnd());
-      this.scene.background = mode === 'immersive-ar' ? null : BG;
+      this._xrMode = mode;
+      this._applyBackground();
       this._xrFrames = 0;
       this._needsXRPlacement = true;
       this.controls.enabled = false;
@@ -511,7 +531,9 @@ export class Engine {
   }
 
   _onXREnd() {
+    this._xrMode = null;
     this.scene.background = BG;
+    if (this.menuPanel.mesh.parent !== this.scene) this.scene.add(this.menuPanel.mesh);
     this.worldRoot.position.set(0, 0, 0);
     this.worldRoot.quaternion.identity();
     this.worldRoot.scale.setScalar(CM);
@@ -593,13 +615,35 @@ export class Engine {
   }
 
   /** Pause panel 50 cm in front of the face, facing the player. */
+  /**
+   * Docks the menu above the Left HUD, in the HUD's plane. Without a left controller
+   * it floats 50 cm in front of the face instead.
+   */
   _placeMenuPanel() {
-    const { pos, dir } = this._headPose();
     const m = this.menuPanel.mesh;
-    m.position.copy(pos).addScaledVector(dir, 0.5);
-    m.lookAt(pos);
+    const hud = this.leftHud.mesh;
+    if (hud.parent) {
+      if (m.parent !== hud) hud.add(m);
+      const hudH = hud.geometry.parameters.height;
+      const menuH = m.geometry.parameters.height;
+      m.position.set(0, hudH / 2 + 0.008 + menuH / 2, 0);
+      m.rotation.set(0, 0, 0);
+      this.menuPanel.anchorBottom = true;
+    } else {
+      if (m.parent !== this.scene) this.scene.add(m);
+      const { pos, dir } = this._headPose();
+      m.position.copy(pos).addScaledVector(dir, 0.5);
+      m.lookAt(pos);
+      this.menuPanel.anchorBottom = false;
+    }
     m.visible = true;
     this._menuHover = null;
+  }
+
+  /** Applies Options → Background: passthrough (AR) or the solid colour. */
+  _applyBackground() {
+    const ar = this.renderer.xr.isPresenting && this._xrMode === 'immersive-ar';
+    this.scene.background = ar && this.state.passthrough ? null : BG;
   }
 
   _pulse(intensity, ms) {
@@ -881,7 +925,12 @@ export class Engine {
       this.leftHud.draw(this._hudHover === 'menu', this.state.paused);
       this.rightHud.mesh.visible = playing;
       this.leftHud.mesh.visible = playing;
-      this.menuPanel.mesh.visible = this.isMenuOpen();
+      const open = this.isMenuOpen();
+      // keep the menu docked to the left hand (re-dock if the controller connects / disconnects)
+      if (open && (this.leftHud.mesh.parent ? this.menuPanel.mesh.parent !== this.leftHud.mesh : this.menuPanel.mesh.parent !== this.scene)) {
+        this._placeMenuPanel();
+      }
+      this.menuPanel.mesh.visible = open;
     }
     this._updateTarget();
     this.renderer.render(this.scene, this.camera);

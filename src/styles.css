@@ -45,6 +45,10 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   padding: 16px;
 }
 .screen-center.dim { background: rgba(8, 10, 14, 0.45); }
+/* the menu sits in front of the HUDs; the dim backdrop lets clicks through to the HUD */
+.screen-center.dim, .screen-center { z-index: 10; }
+.screen-center.dim { pointer-events: none; }
+.screen-center.dim > .panel { pointer-events: auto; }
 
 /* ---------- Controls table ---------- */
 .menu-panel.controls-panel { width: min(860px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
@@ -69,7 +73,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   transform: translate(-50%, -50%); background: #fff; border-radius: 50%;
 }
 
-.menu-panel { width: min(420px, 100%); padding: 24px; }
+.menu-panel { width: min(470px, 100%); padding: 24px; }
 .closed-panel p { color: var(--muted); text-align: center; margin: 0 0 16px; }
 .menu-panel h2 { margin: 0 0 16px; text-align: center; font-size: 28px; }
 .menu-items { display: flex; flex-direction: column; gap: 9px; }

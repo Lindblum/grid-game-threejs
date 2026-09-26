@@ -25,8 +25,10 @@ npm run dev:xr     # prints https://<your-PC-IP>:5173
 ```
 
 Open that address in the Quest Browser, accept the certificate warning, then choose
-**Options → Enter XR (passthrough)** in the menu. The grid origin appears
-50 cm in front of you, with the menu floating in front of your face.
+**Options → Enter XR** in the menu (with **Background: Passthrough** you see your room;
+passthrough needs the Quest Browser — PC browsers driving the headset over Link only
+offer VR with a solid background). The grid origin appears
+50 cm in front of you, and the menu lies flat above the Left HUD on your left controller.
 
 ## Controls
 
@@ -42,11 +44,12 @@ Open that address in the Quest Browser, accept the certificate warning, then cho
 The same table (with button icons) is under **Options → Controls** in the game.
 
 **Menu:** the game opens on a freshly generated scene with the menu up. The menu
-(titled "Grid Game") has Resume, New, Load, Save, Options (sound, enter/exit XR,
-Controls) and Quit. Quit leaves XR when in the headset; in the browser it closes the game.
+(titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
+enter/exit XR, Controls) and Quit. Quit leaves XR when in the headset; in the browser it closes the game.
 
 **HUD:** the Left HUD holds the Menu (≡) button, the Right HUD holds the tool selector.
-In XR each is docked above its own controller; in the browser they sit in the
+In XR each is docked above its own controller, tilted to face up toward you
+(position and tilt are `HUD_DOCK` in `src/game/xrPanels.js`); in the browser they sit in the
 bottom-left and bottom-right corners.
 
 Tools: Red, Orange, Yellow, Green, Blue, Magenta, Brown, Gray block, and Delete.

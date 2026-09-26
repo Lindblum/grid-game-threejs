@@ -17,6 +17,17 @@ export function displayName(fileName) {
 
 export const GAME_TITLE = 'Grid Game';
 
+/** Options → Background: passthrough (see-through in XR) or a solid colour. */
+function background(state) {
+  const on = state.passthrough;
+  return {
+    id: 'background',
+    label: `Background: ${on ? 'Passthrough' : 'Solid'}`,
+    sub: state.inXR ? undefined : 'applies in XR',
+    icon: on ? 'bgPass' : 'bgSolid',
+  };
+}
+
 /** Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent? }] } for the current menu screen. */
 export function menuModel(state) {
   const { menu, saves, savesError, page } = state;
@@ -27,12 +38,13 @@ export function menuModel(state) {
     const xr = state.inXR
       ? { id: 'exitxr', label: 'Exit XR', icon: 'xr' }
       : state.xrSupport
-        ? { id: 'enterxr', label: state.xrSupport === 'immersive-ar' ? 'Enter XR (passthrough)' : 'Enter VR', icon: 'xr' }
+        ? { id: 'enterxr', label: 'Enter XR', icon: 'xr' }
         : { id: 'noop', label: 'XR not available here', icon: 'xr', disabled: true };
     return {
       title: 'Options',
       items: [
         { id: 'sound', label: `Sound: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff' },
+        background(state),
         xr,
         { id: 'controls', label: 'Controls', icon: 'controls' },
         { id: 'back', label: 'Back', icon: 'back' },

@@ -43,9 +43,15 @@ function hudLabel(ctx, text, x, color = '#e8ecf2') {
 }
 
 /** Hover just above a controller, tilted back toward the eyes. */
+export const HUD_DOCK = {
+  up: 0.045, // m above the controller's grip
+  forward: 0.09, // m in front of the grip
+  tilt: -Math.PI / 2, // tilted back so the face points up toward the eyes (0 = upright)
+};
+
 function dockAboveController(mesh) {
-  mesh.position.set(0, 0.045, -0.06);
-  mesh.rotation.set(-Math.PI / 4, 0, 0);
+  mesh.position.set(0, HUD_DOCK.up, -HUD_DOCK.forward);
+  mesh.rotation.set(HUD_DOCK.tilt, 0, 0);
 }
 
 const SLOT = 104, SLOT_GAP = 14, SLOT_Y = 72;
@@ -128,10 +134,13 @@ export class RightHudPanel extends CanvasPanel {
   }
 }
 
-/** Start / pause menu panel shown 50 cm in front of the face in XR. */
+const MENU_WIDTH_M = 0.26;
+
+/** Menu panel for XR: docked above the Left HUD (or floating in front of the face if there is no left controller). */
 export class MenuPanel extends CanvasPanel {
   constructor() {
-    super(800, 960, 0.34);
+    super(800, 960, MENU_WIDTH_M);
+    this.anchorBottom = false;
     this.mesh.name = 'xr-menu';
     this.material.depthTest = false;
     this.mesh.renderOrder = 20;
@@ -140,7 +149,7 @@ export class MenuPanel extends CanvasPanel {
   }
 
   draw(model, hoverId) {
-    const sig = JSON.stringify([model, hoverId]);
+    const sig = JSON.stringify([model, hoverId, this.anchorBottom]);
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
@@ -150,6 +159,10 @@ export class MenuPanel extends CanvasPanel {
     const TABLE_ROW = 66, TABLE_HEAD = 44;
     const tableH = model.table ? TABLE_HEAD + CONTROLS.length * TABLE_ROW + 16 : 0;
     const contentH = Math.min(H - 12, 150 + tableH + model.items.length * 82 + 40);
+    // When docked above the Left HUD the panel grows upward from its bottom edge.
+    const offY = this.anchorBottom ? H - 12 - contentH : 0;
+    ctx.save();
+    ctx.translate(0, offY);
     roundRect(ctx, 6, 6, W - 12, contentH, 48);
     ctx.fillStyle = 'rgba(18, 22, 30, 0.92)';
     ctx.fill();
@@ -202,9 +215,10 @@ export class MenuPanel extends CanvasPanel {
       ctx.fillStyle = it.disabled ? 'rgba(255,255,255,0.4)' : '#ffffff';
       ctx.fillText(fit(ctx, it.label, right - tx), tx, y + bh / 2);
       ctx.textAlign = 'center';
-      if (!it.disabled) this.rects.push({ id: it.id, x: bx, y, w: bw, h: bh });
+      if (!it.disabled) this.rects.push({ id: it.id, x: bx, y: y + offY, w: bw, h: bh });
       y += bh + gap;
     }
+    ctx.restore();
     this.texture.needsUpdate = true;
   }
 
