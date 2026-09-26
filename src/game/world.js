@@ -3,6 +3,16 @@ import { BLOCK_COLORS, RANDOM_COLORS } from './tools.js';
 import { NEIGHBOR_DIRS, cellKey, isValidCell } from './lattice.js';
 import { createBlockGeometry, createBlockMaterial } from './geometry.js';
 
+/** Blocks added by "New" after the gray origin block, in order. */
+export const NEW_SCENE_RECIPE = [
+  ['gray', 50],
+  ['brown', 30],
+  ['green', 15],
+  ['random', 10],
+];
+/** Larger = flatter distribution; smaller = tighter clump around the origin (cm). */
+export const NEW_SCENE_FALLOFF_CM = 3;
+
 const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
 
@@ -131,20 +141,31 @@ export class World {
     return [...out.values()];
   }
 
-  addRandomAdjacent(type) {
+  /**
+   * Adds a block of `type` in a random empty cell next to an existing block.
+   * Candidates are weighted by exp(-distance / falloffCm), so cells closer to the
+   * origin are more likely (a cell 3 cm nearer is ~2.7x as likely with the default).
+   */
+  addRandomAdjacent(type, falloffCm = NEW_SCENE_FALLOFF_CM) {
     const cands = this.emptyNeighbors();
     if (!cands.length) return false;
-    const [x, y, z] = cands[Math.floor(Math.random() * cands.length)];
+    const weights = cands.map(([x, y, z]) => Math.exp(-Math.hypot(x, y, z) / falloffCm));
+    let r = Math.random() * weights.reduce((a, w) => a + w, 0);
+    let i = 0;
+    while (i < cands.length - 1 && (r -= weights[i]) > 0) i++;
+    const [x, y, z] = cands[i];
     return this.add(x, y, z, type);
   }
 
-  /** "New" scene: gray at origin, 20 random gray neighbours, 10 random coloured neighbours. */
+  /** "New" scene: gray at origin, then 50 gray, 30 brown, 15 green and 10 random-colour blocks. */
   generateNew() {
     this.clear();
     this.add(0, 0, 0, 'gray');
-    for (let i = 0; i < 20; i++) this.addRandomAdjacent('gray');
-    for (let i = 0; i < 10; i++) {
-      this.addRandomAdjacent(RANDOM_COLORS[Math.floor(Math.random() * RANDOM_COLORS.length)]);
+    for (const [type, count] of NEW_SCENE_RECIPE) {
+      for (let i = 0; i < count; i++) {
+        const t = type === 'random' ? RANDOM_COLORS[Math.floor(Math.random() * RANDOM_COLORS.length)] : type;
+        this.addRandomAdjacent(t);
+      }
     }
   }
 

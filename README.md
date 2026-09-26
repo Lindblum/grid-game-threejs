@@ -24,20 +24,32 @@ and listens on your LAN:
 npm run dev:xr     # prints https://<your-PC-IP>:5173
 ```
 
-Open that address in the Quest Browser, accept the certificate warning, then press
-**Enter XR (passthrough)**. The grid origin appears 50 cm in front of you.
+Open that address in the Quest Browser, accept the certificate warning, then choose
+**Options → Enter XR (passthrough)** in the menu. The grid origin appears
+50 cm in front of you, with the menu floating in front of your face.
 
 ## Controls
 
-| Action | Browser | Quest Touch |
-|---|---|---|
-| Use tool (place / delete) | Left click | Right trigger |
-| Change tool | ← / → (or 1–8) | Right thumbstick left/right |
-| Pause menu | Esc or Enter | Left Menu button (Y also works) |
-| Move the view | Right-drag orbit, wheel zoom, middle-drag pan | Walk around; hold left grip to drag the build |
-| Menu selection | Mouse | Point with right ray + trigger |
+| Action | Mouse / Keyboard | Gamepad | XR controller (Quest Touch) |
+|---|---|---|---|
+| Use tool (place / delete) | Left click | RT | Right trigger |
+| Aim | Mouse pointer | Crosshair at screen centre | Point the right controller |
+| Change tool | ← / → (or 1–9) | LB / RB | Right thumbstick left/right |
+| Menu | Esc or Enter, or ≡ on the Left HUD | Start | Point at ≡ on the Left HUD + trigger (or Y) |
+| Orbit / zoom / pan | Right-drag / wheel / middle-drag | Right stick / left stick ↑↓ / D-pad | Hold both grips: turn your hands to rotate, spread / pinch to scale (Tilt Brush style). Hold one grip to drag the build |
+| Menu select / back | Click / Esc | D-pad + A / B | Point + right trigger |
 
-Tools: Red, Orange, Yellow, Green, Blue, Magenta, Gray block, and Delete.
+The same table (with button icons) is under **Options → Controls** in the game.
+
+**Menu:** the game opens on a freshly generated scene with the menu up. The menu
+(titled "Grid Game") has Resume, New, Load, Save, Options (sound, enter/exit XR,
+Controls) and Quit. Quit leaves XR when in the headset; in the browser it closes the game.
+
+**HUD:** the Left HUD holds the Menu (≡) button, the Right HUD holds the tool selector.
+In XR each is docked above its own controller; in the browser they sit in the
+bottom-left and bottom-right corners.
+
+Tools: Red, Orange, Yellow, Green, Blue, Magenta, Brown, Gray block, and Delete.
 With a block tool, the empty cell beside the face you point at (square or hexagon)
 is outlined in gray; with Delete, the targeted block is outlined in red.
 
@@ -68,10 +80,13 @@ downloading / opening a .json file instead.
 | `src/game/geometry.js` | Truncated octahedron mesh (with outlined faces) and edges |
 | `src/game/world.js` | Block storage, instanced rendering, New-scene generator, JSON |
 | `src/game/Engine.js` | Three.js scene, camera, input, raycasting, XR controllers |
-| `src/game/xrPanels.js` | Canvas-textured HUD (left controller) and pause panel for XR |
+| `src/game/xrPanels.js` | Canvas-textured Left/Right HUDs and menu panel for XR |
 | `src/game/icons.js` | Tool icons drawn from the real 3D shape |
-| `src/game/audio.js` | Synthesised place/delete sounds (no audio files) |
-| `src/App.jsx` | React UI: title screen, bottom HUD, pause menu, toasts |
+| `src/game/menuIcons.js` | Icons shown beside each menu button |
+| `src/game/controls.js` | The control mappings shown on the Controls panel |
+| `src/game/inputIcons.js` | Key, mouse, gamepad and Touch-controller button glyphs |
+| `src/game/audio.js` | Synthesised sounds: place, delete, resume, new/load, save (no audio files) |
+| `src/App.jsx` | React UI: Left/Right HUD, menu, toasts |
 
-Note: Meta's Quest Browser may reserve the left controller's Menu (≡) button for
-the system; the Y button pauses as a fallback.
+Note: the Quest Browser uses the left controller's physical Menu (≡) button as
+"Back", so the game's menu is opened from the Left HUD button instead (or Y).

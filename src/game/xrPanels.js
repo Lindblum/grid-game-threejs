@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { TOOLS } from './tools.js';
-import { drawToolIcon, roundRect } from './icons.js';
+import { drawToolIcon, drawMenuIcon, roundRect } from './icons.js';
+import { drawMenuItemIcon } from './menuIcons.js';
+import { CONTROLS, CONTROL_COLUMNS } from './controls.js';
+import { drawCell, cellWidth } from './inputIcons.js';
 
 /** A flat plane textured with a 2D canvas, used for in-world UI panels in XR. */
 class CanvasPanel {
@@ -19,14 +22,81 @@ class CanvasPanel {
   }
 }
 
-/** Tool-selector HUD docked to the left controller. */
-export class HudPanel extends CanvasPanel {
+const PX_TO_M = 0.17 / 1000; // shared pixel density for the controller HUDs
+
+function hudBackground(ctx, W, H) {
+  ctx.clearRect(0, 0, W, H);
+  roundRect(ctx, 4, 4, W - 8, H - 8, 34);
+  ctx.fillStyle = 'rgba(18, 22, 30, 0.86)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
+
+function hudLabel(ctx, text, x, color = '#e8ecf2') {
+  ctx.fillStyle = color;
+  ctx.font = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, 40);
+}
+
+/** Hover just above a controller, tilted back toward the eyes. */
+function dockAboveController(mesh) {
+  mesh.position.set(0, 0.045, -0.06);
+  mesh.rotation.set(-Math.PI / 4, 0, 0);
+}
+
+const SLOT = 104, SLOT_GAP = 14, SLOT_Y = 72;
+
+/** Left HUD (docked to the left controller): the Menu button. */
+export class LeftHudPanel extends CanvasPanel {
   constructor() {
-    super(1000, 200, 0.17);
-    this.mesh.name = 'xr-hud';
-    // Hover just above the left controller, tilted back toward the eyes.
-    this.mesh.position.set(0, 0.045, -0.06);
-    this.mesh.rotation.set(-Math.PI / 4, 0, 0);
+    super(200, 200, 200 * PX_TO_M);
+    this.mesh.name = 'xr-hud-left';
+    dockAboveController(this.mesh);
+    this.button = { x: (200 - SLOT) / 2, y: SLOT_Y, w: SLOT, h: SLOT };
+    this._last = '';
+  }
+
+  draw(hover, menuOpen) {
+    const sig = `${hover}|${menuOpen}`;
+    if (sig === this._last) return;
+    this._last = sig;
+    const { ctx, canvas } = this;
+    const W = canvas.width, H = canvas.height;
+    hudBackground(ctx, W, H);
+    hudLabel(ctx, 'Menu', W / 2);
+    const { x, y, w, h } = this.button;
+    roundRect(ctx, x, y, w, h, 16);
+    ctx.fillStyle = hover ? 'rgba(90, 160, 255, 0.55)' : menuOpen ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
+    ctx.fill();
+    if (hover || menuOpen) {
+      roundRect(ctx, x - 3, y - 3, w + 6, h + 6, 18);
+      ctx.strokeStyle = hover ? '#9cc8ff' : '#ffffff';
+      ctx.lineWidth = 7;
+      ctx.stroke();
+    }
+    drawMenuIcon(ctx, x + w / 2, y + h / 2, w * 0.8);
+    this.texture.needsUpdate = true;
+  }
+
+  /** uv from a raycast hit -> 'menu' or null. */
+  hitTest(uv) {
+    const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
+    const { x, y, w, h } = this.button;
+    return px >= x - 8 && px <= x + w + 8 && py >= y - 8 && py <= y + h + 8 ? 'menu' : null;
+  }
+}
+
+/** Right HUD (docked to the right controller): the tool selector. */
+export class RightHudPanel extends CanvasPanel {
+  constructor() {
+    const W = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP + 72;
+    super(W, 200, W * PX_TO_M);
+    this.mesh.name = 'xr-hud-right';
+    dockAboveController(this.mesh);
     this._last = '';
   }
 
@@ -36,31 +106,19 @@ export class HudPanel extends CanvasPanel {
     this._last = sig;
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-    roundRect(ctx, 4, 4, W - 8, H - 8, 34);
-    ctx.fillStyle = 'rgba(18, 22, 30, 0.86)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 3;
-    ctx.stroke();
+    hudBackground(ctx, W, H);
+    hudLabel(ctx, message || TOOLS[toolIndex].label, W / 2, message ? '#ffd166' : '#e8ecf2');
 
-    ctx.fillStyle = message ? '#ffd166' : '#e8ecf2';
-    ctx.font = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(message || TOOLS[toolIndex].label, W / 2, 40);
-
-    const slot = 104, gap = 14;
-    const total = TOOLS.length * slot + (TOOLS.length - 1) * gap;
-    const x0 = (W - total) / 2, y0 = 72;
+    const total = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP;
+    const x0 = (W - total) / 2;
     TOOLS.forEach((t, i) => {
-      const x = x0 + i * (slot + gap);
-      roundRect(ctx, x, y0, slot, slot, 16);
+      const x = x0 + i * (SLOT + SLOT_GAP);
+      roundRect(ctx, x, SLOT_Y, SLOT, SLOT, 16);
       ctx.fillStyle = i === toolIndex ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
       ctx.fill();
-      drawToolIcon(ctx, t, x + slot / 2, y0 + slot / 2, slot * 0.78);
+      drawToolIcon(ctx, t, x + SLOT / 2, SLOT_Y + SLOT / 2, SLOT * 0.78);
       if (i === toolIndex) {
-        roundRect(ctx, x - 3, y0 - 3, slot + 6, slot + 6, 18);
+        roundRect(ctx, x - 3, SLOT_Y - 3, SLOT + 6, SLOT + 6, 18);
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 7;
         ctx.stroke();
@@ -70,7 +128,7 @@ export class HudPanel extends CanvasPanel {
   }
 }
 
-/** Pause menu panel shown 50 cm in front of the face in XR. */
+/** Start / pause menu panel shown 50 cm in front of the face in XR. */
 export class MenuPanel extends CanvasPanel {
   constructor() {
     super(800, 960, 0.34);
@@ -89,7 +147,9 @@ export class MenuPanel extends CanvasPanel {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
     // Panel is sized to its content (the rest of the canvas stays transparent).
-    const contentH = Math.min(H - 12, 150 + model.items.length * 82 + 40);
+    const TABLE_ROW = 66, TABLE_HEAD = 44;
+    const tableH = model.table ? TABLE_HEAD + CONTROLS.length * TABLE_ROW + 16 : 0;
+    const contentH = Math.min(H - 12, 150 + tableH + model.items.length * 82 + 40);
     roundRect(ctx, 6, 6, W - 12, contentH, 48);
     ctx.fillStyle = 'rgba(18, 22, 30, 0.92)';
     ctx.fill();
@@ -104,8 +164,9 @@ export class MenuPanel extends CanvasPanel {
     ctx.fillText(model.title, W / 2, 84);
 
     this.rects = [];
-    const bx = 70, bw = W - 140, bh = 70, gap = 12;
     let y = 150;
+    if (model.table) y = this._drawControlsTable(ctx, W, 128, TABLE_HEAD, TABLE_ROW) + 16;
+    const bx = 70, bw = W - 140, bh = 70, gap = 12;
     for (const it of model.items) {
       const hover = it.id === hoverId && !it.disabled;
       roundRect(ctx, bx, y, bw, bh, 22);
@@ -122,28 +183,60 @@ export class MenuPanel extends CanvasPanel {
         ctx.lineWidth = 4;
         ctx.stroke();
       }
-      ctx.fillStyle = it.disabled ? 'rgba(255,255,255,0.4)' : '#ffffff';
-      ctx.font = '500 34px system-ui, -apple-system, Segoe UI, sans-serif';
+      // icon on the left, then the label (left-aligned), optional sub-text on the right
+      const iconSize = 46;
+      drawMenuItemIcon(ctx, it.icon, bx + 22 + iconSize / 2, y + bh / 2, iconSize, { alpha: it.disabled ? 0.45 : 1 });
+      const tx = bx + 22 + iconSize + 18;
+      let right = bx + bw - 28;
+      ctx.textBaseline = 'middle';
       if (it.sub) {
-        const labelFont = ctx.font;
         ctx.font = '400 24px system-ui, -apple-system, Segoe UI, sans-serif';
         const sub = fit(ctx, it.sub, bw * 0.3);
-        const subW = ctx.measureText(sub).width;
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(255,255,255,0.55)';
-        ctx.fillText(sub, bx + bw - 28, y + bh / 2);
-        ctx.font = labelFont;
-        ctx.textAlign = 'left';
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(fit(ctx, it.label, bw - 56 - subW - 24), bx + 28, y + bh / 2);
-        ctx.textAlign = 'center';
-      } else {
-        ctx.fillText(fit(ctx, it.label, bw - 40), W / 2, y + bh / 2);
+        ctx.fillText(sub, right, y + bh / 2);
+        right -= ctx.measureText(sub).width + 24;
       }
+      ctx.font = '500 34px system-ui, -apple-system, Segoe UI, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = it.disabled ? 'rgba(255,255,255,0.4)' : '#ffffff';
+      ctx.fillText(fit(ctx, it.label, right - tx), tx, y + bh / 2);
+      ctx.textAlign = 'center';
       if (!it.disabled) this.rects.push({ id: it.id, x: bx, y, w: bw, h: bh });
       y += bh + gap;
     }
     this.texture.needsUpdate = true;
+  }
+
+  /** Options → Controls table: Action | Mouse/Keyboard | Gamepad | XR Controller. Returns bottom y. */
+  _drawControlsTable(ctx, W, y0, headH, rowH) {
+    const x0 = 20, widths = [178, 200, 188, 194];
+    const colX = widths.map((_, i) => x0 + widths.slice(0, i).reduce((a, b) => a + b, 0));
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = '700 18px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillStyle = 'rgba(232,236,242,0.65)';
+    CONTROL_COLUMNS.forEach((c, i) => ctx.fillText(c, colX[i] + 8, y0 + headH / 2));
+    let y = y0 + headH;
+    const glyphH = 40;
+    CONTROLS.forEach((row, r) => {
+      if (r % 2 === 0) {
+        roundRect(ctx, x0, y + 2, W - 2 * x0, rowH - 4, 12);
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        ctx.fill();
+      }
+      ctx.font = '600 21px system-ui, -apple-system, Segoe UI, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.fillText(fit(ctx, row.action, widths[0] - 12), colX[0] + 8, y + rowH / 2);
+      [row.mk, row.pad, row.xr].forEach((b, i) => {
+        const avail = widths[i + 1] - 12;
+        const h = Math.min(glyphH, (glyphH * avail) / Math.max(1, cellWidth(ctx, b.g, glyphH)));
+        drawCell(ctx, b.g, colX[i + 1] + 8, y + rowH / 2, h);
+      });
+      y += rowH;
+    });
+    return y;
   }
 
   /** uv from a raycast hit -> item id (or null). */

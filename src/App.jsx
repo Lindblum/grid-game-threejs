@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Engine } from './game/Engine.js';
 import { TOOLS } from './game/tools.js';
-import { toolIconURL } from './game/icons.js';
+import { toolIconURL, menuIconURL } from './game/icons.js';
 import { menuModel } from './game/menu.js';
+import { menuItemIconURL } from './game/menuIcons.js';
+import { CONTROLS, CONTROL_COLUMNS } from './game/controls.js';
+import { cellURL } from './game/inputIcons.js';
 
 export default function App() {
   const hostRef = useRef(null);
@@ -27,9 +30,10 @@ function Overlay({ engine }) {
   const s = useSyncExternalStore(engine.subscribe, engine.getState);
   return (
     <>
-      {s.screen === 'title' && <TitleScreen engine={engine} s={s} />}
       {s.screen === 'playing' && !s.inXR && <Hud engine={engine} s={s} />}
-      {s.screen === 'playing' && !s.inXR && s.paused && <PauseMenu engine={engine} s={s} />}
+      {s.screen === 'playing' && !s.inXR && !s.paused && s.gamepadAim && <div className="crosshair" />}
+      {engine.isMenuOpen(s) && !s.inXR && <MenuScreen engine={engine} s={s} />}
+      {s.screen === 'closed' && !s.inXR && <ClosedScreen engine={engine} />}
       {s.inXR && <div className="xr-note">In XR — take off the headset view to return here.</div>}
       <Toast toast={s.toast} />
     </>
@@ -43,33 +47,49 @@ function blurThen(fn) {
   };
 }
 
-function TitleScreen({ engine, s }) {
-  const xrLabel = s.xrSupport === 'immersive-ar' ? 'Enter XR (passthrough)' : s.xrSupport === 'immersive-vr' ? 'Enter VR' : null;
+function ClosedScreen({ engine }) {
   return (
     <div className="screen-center">
-      <div className="panel title-panel">
-        <h1>Grid Game</h1>
-        <p className="subtitle">Build with truncated octahedra — 14 neighbours per cell.</p>
-        <div className="title-buttons">
-          <button className="btn accent" onClick={blurThen(() => engine.play())}>Play in browser</button>
-          {xrLabel ? (
-            <button className="btn" onClick={blurThen(() => engine.enterXR())}>{xrLabel}</button>
-          ) : (
-            <button className="btn" disabled title="Open this page in a WebXR browser (e.g. Meta Quest Browser) over HTTPS">
-              XR not available here
-            </button>
-          )}
-        </div>
-        <table className="help">
-          <tbody>
-            <tr><th></th><th>Browser</th><th>Quest Touch</th></tr>
-            <tr><td>Use tool</td><td>Left click</td><td>Right trigger</td></tr>
-            <tr><td>Change tool</td><td>← / → (or 1–8)</td><td>Right stick left/right</td></tr>
-            <tr><td>Pause</td><td>Esc / Enter</td><td>Left Menu (or Y)</td></tr>
-            <tr><td>Look around</td><td>Right-drag, wheel zoom, middle-drag pan</td><td>Walk; left grip drags the build</td></tr>
-          </tbody>
-        </table>
+      <div className="panel menu-panel closed-panel">
+        <h2>Grid Game</h2>
+        <p>The game has been closed. You can close this browser tab.</p>
+        <button className="btn accent menu-btn" onClick={blurThen(() => engine.reopen())}>
+          <img className="menu-icon" src={menuItemIconURL('back')} alt="" draggable={false} />
+          <span className="label">Back to the game</span>
+        </button>
       </div>
+    </div>
+  );
+}
+
+/** Options → Controls: one row per action, glyphs for each input device. */
+function ControlsTable() {
+  return (
+    <div className="controls-scroll">
+      <table className="controls">
+        <thead>
+          <tr>
+            {CONTROL_COLUMNS.map((c) => (
+              <th key={c}>{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {CONTROLS.map((row) => (
+            <tr key={row.action}>
+              <td className="action">{row.action}</td>
+              {[row.mk, row.pad, row.xr].map((b, i) => {
+                const img = cellURL(b.g, 64);
+                return (
+                  <td key={i} title={b.t}>
+                    <img src={img.url} alt={b.t} style={{ height: 32, width: img.w / 2 }} draggable={false} />
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -77,7 +97,17 @@ function TitleScreen({ engine, s }) {
 function Hud({ engine, s }) {
   return (
     <div className="hud-wrap">
-      <div className="panel hud">
+      <div className="panel hud hud-left">
+        <div className="hud-label">Menu</div>
+        <button
+          className={`slot menu-slot${s.paused ? ' selected' : ''}`}
+          title="Menu (Esc)"
+          onClick={blurThen(() => engine.toggleMenu())}
+        >
+          <img src={menuIconURL()} alt="Menu" draggable={false} />
+        </button>
+      </div>
+      <div className="panel hud hud-right">
         <div className="hud-label">
           {TOOLS[s.toolIndex].label}
           <span className="hud-count">{s.blockCount} blocks</span>
@@ -99,7 +129,8 @@ function Hud({ engine, s }) {
   );
 }
 
-function PauseMenu({ engine, s }) {
+/** Start panel (title screen) and pause panel share this component. */
+function MenuScreen({ engine, s }) {
   const model = menuModel(s);
   const [name, setName] = useState('');
   const fileRef = useRef(null);
@@ -126,9 +157,10 @@ function PauseMenu({ engine, s }) {
   };
 
   return (
-    <div className="screen-center dim">
-      <div className="panel menu-panel">
+    <div className={`screen-center${s.screen === 'playing' ? ' dim' : ''}`}>
+      <div className={`panel menu-panel${s.menu === 'controls' ? ' controls-panel' : ''}`}>
         <h2>{model.title}</h2>
+        {model.table && <ControlsTable />}
         {s.menu === 'save' && !s.savesError && (
           <div className="save-row">
             <input
@@ -140,7 +172,10 @@ function PauseMenu({ engine, s }) {
                 if (e.key === 'Enter') doSaveNew();
               }}
             />
-            <button className="btn accent" onClick={blurThen(doSaveNew)}>Save new</button>
+            <button className={`btn accent save-new-btn${s.menuFocus === 'savenew' ? ' focused' : ''}`} onClick={blurThen(doSaveNew)}>
+              <img className="menu-icon" src={menuItemIconURL('savenew')} alt="" draggable={false} />
+              Save new
+            </button>
           </div>
         )}
         <div className="menu-items">
@@ -149,16 +184,17 @@ function PauseMenu({ engine, s }) {
             .map((it) => (
               <button
                 key={it.id}
-                className={`btn menu-btn${it.accent ? ' accent' : ''}`}
+                className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}
                 disabled={it.disabled}
                 onClick={blurThen(() => engine.menuAction(it.id))}
               >
-                <span>{it.label}</span>
+                {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
+                <span className="label">{it.label}</span>
                 {it.sub && <span className="sub">{it.sub}</span>}
               </button>
             ))}
         </div>
-        {s.savesError && s.menu !== 'main' && (
+        {s.savesError && (s.menu === 'load' || s.menu === 'save') && (
           <div className="fallback">
             <p>The saves folder is only reachable when running with <code>npm run dev</code>. You can still use a file on this computer:</p>
             {s.menu === 'save' ? (

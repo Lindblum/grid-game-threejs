@@ -5,15 +5,20 @@ import { World } from './world.js';
 import { TOOLS } from './tools.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
 import { truncatedOctahedronFaces } from './geometry.js';
-import { playPlace, playDelete, playTick, unlockAudio } from './audio.js';
-import { HudPanel, MenuPanel } from './xrPanels.js';
-import { menuModel, PAGE_SIZE } from './menu.js';
+import { playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted } from './audio.js';
+import { LeftHudPanel, RightHudPanel, MenuPanel } from './xrPanels.js';
+import { menuModel, displayName, PAGE_SIZE } from './menu.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
 
 const CM = 0.01; // world units are metres; lattice units are cm
 const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
 const BG = new THREE.Color('#1b2029');
+const ORBIT_HEIGHT_CM = 100; // light 1 m above the scene
+const ORBIT_RADIUS_CM = 100; // 1 m radius
+const ORBIT_PERIOD_S = 60; // one revolution per minute
+const GRAB_MIN_SCALE = 0.1; // two-hand zoom limits, relative to life size (1 lattice cm = 1 cm)
+const GRAB_MAX_SCALE = 20;
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
 
 /** Thick wireframe of a truncated octahedron made from thin cylinders (visible in XR too). */
@@ -55,9 +60,10 @@ export class Engine {
     this.container = container;
     this.listeners = new Set();
     this.state = {
-      screen: 'title', // 'title' | 'playing'
-      paused: false,
-      menu: 'main', // 'main' | 'load' | 'save'
+      screen: 'playing', // 'playing' | 'closed' (after Quit in the browser)
+      paused: true, // the game opens on a New scene with the menu up
+      menu: 'main', // 'main' | 'load' | 'save' | 'options'
+      soundOn: true,
       saves: null,
       savesError: null,
       page: 0,
@@ -66,6 +72,8 @@ export class Engine {
       xrSupport: null, // 'immersive-ar' | 'immersive-vr' | null
       blockCount: 0,
       toast: null,
+      gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
+      menuFocus: null, // id of the menu item focused with the gamepad
     };
     this._toastId = 0;
     this.mouse = null;
@@ -74,6 +82,7 @@ export class Engine {
     this._stickArmed = true;
     this._leftMenuWas = false;
     this._menuHover = null;
+    this._hudHover = null;
     this._xrFrames = 0;
     this._grab = null;
 
@@ -99,6 +108,7 @@ export class Engine {
     for (const fn of this.listeners) fn();
   }
   toast(text, kind = 'info') {
+    if (kind === 'error') playError();
     this.setState({ toast: { text, kind, id: ++this._toastId } });
     this._hudMessage = { text, until: performance.now() + 2200 };
   }
@@ -139,11 +149,8 @@ export class Engine {
     controls.update();
     this.controls = controls;
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x445066, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.0);
-    sun.position.set(0.6, 1.2, 0.9);
-    scene.add(sun);
-    const fill = new THREE.DirectionalLight(0xbfd4ff, 0.6);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x445066, 1.1));
+    const fill = new THREE.DirectionalLight(0xbfd4ff, 0.35);
     fill.position.set(-1, -0.4, -0.6);
     scene.add(fill);
 
@@ -154,6 +161,17 @@ export class Engine {
     scene.add(root);
     this.worldRoot = root;
     this.world = new World(root);
+
+    // Revolving light: 1 m above the origin, 1 m radius, clockwise seen from above, 1 min per turn.
+    // It lives in worldRoot (cm units), so it follows the build when it is moved in XR.
+    this.orbitLight = new THREE.PointLight(0xfff4e0, 2.6, 0, 0); // decay 0: no distance falloff
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(1.2, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0xfff4e0, toneMapped: false })
+    );
+    this.orbitLight.add(bulb);
+    root.add(this.orbitLight);
+    this._updateOrbitLight(0);
 
     this.placeHL = makeWireframe('#c9ccd1', 0.035);
     this.deleteHL = makeWireframe('#ff2b2b', 0.045);
@@ -181,7 +199,8 @@ export class Engine {
     this.rayDot = new THREE.Mesh(new THREE.SphereGeometry(0.003, 12, 8), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
     this.rayDot.visible = false;
 
-    this.hud = new HudPanel();
+    this.leftHud = new LeftHudPanel();
+    this.rightHud = new RightHudPanel();
     this.menuPanel = new MenuPanel();
     this.menuPanel.mesh.visible = false;
     this.scene.add(this.menuPanel.mesh);
@@ -190,7 +209,7 @@ export class Engine {
       const ctrl = r.xr.getController(i);
       const grip = r.xr.getControllerGrip(i);
       grip.add(factory.createControllerModel(grip));
-      const slot = { ctrl, grip, source: null };
+      const slot = { ctrl, grip, source: null, gripHeld: false };
       ctrl.addEventListener('connected', (e) => {
         if (e.data.hand) return; // ignore articulated hands
         slot.source = e.data;
@@ -198,29 +217,31 @@ export class Engine {
         this.hands[hand] = slot;
         if (hand === 'right') {
           ctrl.add(this.rayLine);
+          grip.add(this.rightHud.mesh);
           this.scene.add(this.rayDot);
         } else {
-          grip.add(this.hud.mesh);
+          grip.add(this.leftHud.mesh);
         }
       });
       ctrl.addEventListener('disconnected', () => {
         for (const h of ['left', 'right']) if (this.hands[h] === slot) this.hands[h] = null;
         if (this.rayLine.parent === ctrl) ctrl.remove(this.rayLine);
-        if (this.hud.mesh.parent === grip) grip.remove(this.hud.mesh);
+        for (const hud of [this.leftHud, this.rightHud]) if (hud.mesh.parent === grip) grip.remove(hud.mesh);
         slot.source = null;
+        slot.gripHeld = false;
+        this._beginGrab();
       });
       ctrl.addEventListener('selectstart', () => {
         if (this.hands.right === slot) this._onRightTrigger();
       });
+      // Grips: one hand drags the build, both hands rotate + scale it (Tilt Brush style).
       ctrl.addEventListener('squeezestart', () => {
-        if (this.hands.left === slot && this.state.screen === 'playing' && !this.state.paused) {
-          // Left grip: grab and move the whole build
-          const cp = ctrl.getWorldPosition(new THREE.Vector3());
-          this._grab = { ctrl, offset: this.worldRoot.position.clone().sub(cp) };
-        }
+        slot.gripHeld = true;
+        this._beginGrab();
       });
       ctrl.addEventListener('squeezeend', () => {
-        if (this._grab?.ctrl === ctrl) this._grab = null;
+        slot.gripHeld = false;
+        this._beginGrab();
       });
       this.scene.add(ctrl, grip);
     }
@@ -253,6 +274,7 @@ export class Engine {
     this._onPointerMove = (e) => {
       const rect = el.getBoundingClientRect();
       this.mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      if (this.state.gamepadAim || this.state.menuFocus) this.setState({ gamepadAim: false, menuFocus: null });
     };
     this._onPointerLeave = () => (this.mouse = null);
     this._onPointerDown = (e) => {
@@ -278,13 +300,7 @@ export class Engine {
     const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
     if (typing && e.key !== 'Escape') return;
     const s = this.state;
-    if (s.screen === 'title') {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        this.play();
-      }
-      return;
-    }
+    if (s.screen !== 'playing') return;
     if (e.key === 'Escape' || e.key === 'Enter') {
       e.preventDefault();
       if (!s.paused) this.pause();
@@ -299,27 +315,44 @@ export class Engine {
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
       this.cycleTool(-1);
-    } else if (/^[1-8]$/.test(e.key)) {
+    } else if (/^[1-9]$/.test(e.key) && Number(e.key) <= TOOLS.length) {
       this.selectTool(Number(e.key) - 1);
     }
   }
 
   // ---------------------------------------------------------------- game actions
-  play() {
+  isMenuOpen(s = this.state) {
+    return s.screen === 'playing' && s.paused;
+  }
+
+  _startPlaying() {
     unlockAudio();
     this.setState({ screen: 'playing', paused: false, menu: 'main' });
   }
 
+  /** The HUD Menu button: open the pause menu, or close it again. */
+  toggleMenu() {
+    if (this.state.screen !== 'playing') return;
+    if (this.state.paused) this.resume();
+    else this.pause();
+  }
+
+  /** From the "closed" screen: back to the game with the menu open. */
+  reopen() {
+    this.setState({ screen: 'playing', paused: true, menu: 'main' });
+  }
+
   pause() {
     if (this.state.screen !== 'playing') return;
-    this.setState({ paused: true, menu: 'main', page: 0 });
+    this.setState({ paused: true, menu: 'main', page: 0, menuFocus: this.state.gamepadAim ? 'resume' : null });
     if (this.renderer.xr.isPresenting) this._placeMenuPanel();
     playTick();
   }
 
   resume() {
+    if (this.state.screen !== 'playing') return;
     this.setState({ paused: false, menu: 'main' });
-    this.menuPanel.mesh.visible = false;
+    playResume();
   }
 
   cycleTool(dir) {
@@ -356,7 +389,8 @@ export class Engine {
   newScene() {
     this.world.generateNew();
     this._syncCount();
-    this.resume();
+    this._startPlaying();
+    playLoad();
     this.toast('New scene created');
   }
 
@@ -375,8 +409,9 @@ export class Engine {
     if (!name) return this.toast('Please enter a file name', 'error');
     try {
       await writeSave(name, this.world.toJSON());
-      this.resume();
-      this.toast(`Saved ${this.world.size} blocks to saves/${name}`);
+      this._startPlaying();
+      playSave();
+      this.toast(`Saved ${this.world.size} blocks as "${displayName(name)}"`);
     } catch (e) {
       this.toast(e.message || 'Save failed', 'error');
     }
@@ -395,8 +430,9 @@ export class Engine {
     try {
       const { loaded, skipped } = this.world.fromJSON(data);
       this._syncCount();
-      this.resume();
-      this.toast(`Loaded ${loaded} blocks from ${name}${skipped ? ` (${skipped} invalid skipped)` : ''}`);
+      this._startPlaying();
+      playLoad();
+      this.toast(`Loaded ${loaded} blocks from "${displayName(name)}"${skipped ? ` (${skipped} invalid skipped)` : ''}`);
     } catch (e) {
       this.toast(e.message || 'Invalid save file', 'error');
     }
@@ -406,19 +442,26 @@ export class Engine {
     return this.world.toJSON();
   }
 
+  /** Quit: in XR, leave the XR session (the menu stays up in the browser); otherwise close the game. */
   quit() {
-    this.menuPanel.mesh.visible = false;
     if (this.renderer.xr.isPresenting) {
-      this._quitting = true;
       this.renderer.xr.getSession()?.end();
-    } else {
-      this.setState({ screen: 'title', paused: false, menu: 'main' });
+      return;
     }
+    window.close(); // only works if the tab was opened by a script
+    this.setState({ screen: 'closed', menu: 'main' });
+  }
+
+  setSound(on) {
+    setMuted(!on);
+    this.setState({ soundOn: on });
+    if (on) playTick();
   }
 
   menuAction(id, arg) {
     const s = this.state;
-    playTick();
+    // Resume, New, Load-file and Save play their own sounds; everything else ticks.
+    if (!/^(resume|new|savenew|save:|load:)/.test(id)) playTick();
     if (id === 'resume') return this.resume();
     if (id === 'new') return this.newScene();
     if (id === 'load' || id === 'save') {
@@ -426,7 +469,12 @@ export class Engine {
       return this.refreshSaves();
     }
     if (id === 'quit') return this.quit();
-    if (id === 'back') return this.setState({ menu: 'main', page: 0 });
+    if (id === 'options') return this.setState({ menu: 'options' });
+    if (id === 'sound') return this.setSound(!s.soundOn);
+    if (id === 'enterxr') return this.enterXR();
+    if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
+    if (id === 'back') return this.setState({ menu: s.menu === 'controls' ? 'options' : 'main', page: 0 });
+    if (id === 'controls') return this.setState({ menu: 'controls' });
     if (id === 'prev') return this.setState({ page: Math.max(0, s.page - 1) });
     if (id === 'next') {
       const pages = Math.ceil((s.saves?.length || 0) / PAGE_SIZE);
@@ -455,7 +503,7 @@ export class Engine {
       this._xrFrames = 0;
       this._needsXRPlacement = true;
       this.controls.enabled = false;
-      this.setState({ inXR: true, screen: 'playing', paused: false, menu: 'main' });
+      this.setState({ inXR: true, screen: 'playing', menu: 'main' });
     } catch (e) {
       console.error(e);
       this.toast(`Could not start XR: ${e.message || e}`, 'error');
@@ -465,6 +513,8 @@ export class Engine {
   _onXREnd() {
     this.scene.background = BG;
     this.worldRoot.position.set(0, 0, 0);
+    this.worldRoot.quaternion.identity();
+    this.worldRoot.scale.setScalar(CM);
     this.menuPanel.mesh.visible = false;
     this.rayDot.visible = false;
     this._grab = null;
@@ -476,9 +526,55 @@ export class Engine {
     this.controls.enabled = true;
     this.controls.update();
     this._onResize();
-    const quitting = this._quitting;
-    this._quitting = false;
-    this.setState({ inXR: false, paused: false, menu: 'main', screen: quitting ? 'title' : 'playing' });
+    this.setState({ inXR: false, paused: true, menu: 'main' });
+  }
+
+  // ---------------------------------------------------------------- XR grab (grips)
+  _gripPos(slot) {
+    return slot.grip.getWorldPosition(new THREE.Vector3());
+  }
+
+  /** (Re)start a grab whenever a grip is pressed or released, from the build's current pose. */
+  _beginGrab() {
+    const held = ['left', 'right'].map((h) => this.hands[h]).filter((sl) => sl && sl.gripHeld);
+    const r = this.worldRoot;
+    if (!held.length) {
+      this._grab = null;
+      return;
+    }
+    const base = { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x };
+    if (held.length === 1) {
+      this._grab = { ...base, hands: held, p0: this._gripPos(held[0]) };
+    } else {
+      const a = this._gripPos(held[0]), b = this._gripPos(held[1]);
+      this._grab = { ...base, hands: held, mid0: a.clone().add(b).multiplyScalar(0.5), v0: b.clone().sub(a) };
+    }
+  }
+
+  /**
+   * One grip: translate the build with the hand.
+   * Both grips: the midpoint between the hands translates it, the change in the hand-to-hand
+   * direction rotates it, and the change in hand distance scales it — all about the midpoint.
+   */
+  _updateGrab() {
+    const g = this._grab;
+    if (!g) return;
+    const r = this.worldRoot;
+    if (g.hands.length === 1) {
+      r.position.copy(g.pos).add(this._gripPos(g.hands[0]).sub(g.p0));
+      return;
+    }
+    const a = this._gripPos(g.hands[0]), b = this._gripPos(g.hands[1]);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    const v = b.clone().sub(a);
+    const len0 = g.v0.length(), len = v.length();
+    if (len0 < 1e-4 || len < 1e-4) return;
+    const newScale = THREE.MathUtils.clamp((g.scale * len) / len0, CM * GRAB_MIN_SCALE, CM * GRAB_MAX_SCALE);
+    const s = newScale / g.scale;
+    const q = new THREE.Quaternion().setFromUnitVectors(g.v0.clone().normalize(), v.normalize());
+    r.quaternion.copy(q).multiply(g.quat);
+    r.scale.setScalar(newScale);
+    r.position.copy(g.pos).sub(g.mid0).multiplyScalar(s).applyQuaternion(q).add(mid);
   }
 
   _headPose() {
@@ -518,13 +614,12 @@ export class Engine {
   }
 
   _onRightTrigger() {
-    const s = this.state;
-    if (s.screen !== 'playing') return;
-    if (s.paused) {
+    if (this._hudHover === 'menu') return this.toggleMenu();
+    if (this.isMenuOpen()) {
       if (this._menuHover) this.menuAction(this._menuHover);
       return;
     }
-    this.useTool();
+    if (this.state.screen === 'playing') this.useTool();
   }
 
   _pollGamepads() {
@@ -539,18 +634,12 @@ export class Engine {
         this._stickArmed = true;
       }
     }
-    // Left Menu button (≡) pauses / resumes. Some browsers reserve that button,
-    // so the Y button (index 5) works as well.
+    // The Quest Browser uses the left Menu (≡) button as "Back", so the menu is opened
+    // with the Menu button on the left HUD; the Y button is a shortcut for it.
     const lgp = this.hands.left?.source?.gamepad;
     if (lgp) {
-      let pressed = false;
-      lgp.buttons.forEach((b, i) => {
-        if (b.pressed && (i === 5 || i >= 6)) pressed = true;
-      });
-      if (pressed && !this._leftMenuWas) {
-        if (this.state.paused) this.resume();
-        else this.pause();
-      }
+      const pressed = !!lgp.buttons[5]?.pressed;
+      if (pressed && !this._leftMenuWas) this.toggleMenu();
       this._leftMenuWas = pressed;
     }
   }
@@ -575,27 +664,47 @@ export class Engine {
     let rayLen = XR_RAY_LENGTH;
     this.rayDot.visible = false;
 
-    if (s.screen === 'playing' && s.paused && xr) {
-      // Point at the pause menu.
-      this._menuHover = null;
-      if (this._setRayFromController()) {
-        this.raycaster.far = 3;
-        const hit = this.raycaster.intersectObject(this.menuPanel.mesh, false)[0];
-        if (hit) {
-          rayLen = hit.distance;
+    const menuOpen = this.isMenuOpen(s);
+    this._menuHover = null;
+    this._hudHover = null;
+    let uiHit = null;
+
+    if (xr && this._setRayFromController()) {
+      // UI first: the left HUD's Menu button and the start/pause panel.
+      this.raycaster.far = 3;
+      const targets = [];
+      if (this.leftHud.mesh.visible && this.leftHud.mesh.parent) targets.push(this.leftHud.mesh);
+      if (menuOpen) targets.push(this.menuPanel.mesh);
+      for (const hit of this.raycaster.intersectObjects(targets, false)) {
+        if (hit.object === this.leftHud.mesh) {
+          if (this.leftHud.hitTest(hit.uv)) {
+            this._hudHover = 'menu';
+            uiHit = hit;
+            break;
+          }
+        } else {
           this._menuHover = this.menuPanel.hitTest(hit.uv);
-          this.rayDot.position.copy(hit.point);
-          this.rayDot.visible = true;
+          uiHit = hit;
+          break;
         }
       }
-      this.menuPanel.draw(menuModel(s), this._menuHover);
+      if (uiHit) {
+        rayLen = uiHit.distance;
+        this.rayDot.position.copy(uiHit.point);
+        this.rayDot.visible = true;
+      }
     }
+    if (xr && menuOpen) this.menuPanel.draw(menuModel(s), this._menuHover);
 
-    if (s.screen === 'playing' && !s.paused) {
+    if (s.screen === 'playing' && !s.paused && !uiHit) {
       let ok = false;
       if (xr) {
         ok = this._setRayFromController();
         this.raycaster.far = XR_RAY_LENGTH;
+      } else if (s.gamepadAim) {
+        this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+        this.raycaster.far = DESKTOP_RAY_LENGTH;
+        ok = true;
       } else if (this.mouse) {
         this.raycaster.setFromCamera(this.mouse, this.camera);
         this.raycaster.far = DESKTOP_RAY_LENGTH;
@@ -615,7 +724,7 @@ export class Engine {
     }
 
     this.rayLine.scale.z = rayLen;
-    this.rayLine.visible = xr && s.screen === 'playing';
+    this.rayLine.visible = xr && (s.screen === 'playing' || menuOpen);
   }
 
   _pick() {
@@ -655,27 +764,124 @@ export class Engine {
     }
   }
 
-  _tick = () => {
+  _updateOrbitLight(timeMs) {
+    const a = (timeMs / 1000) * ((2 * Math.PI) / ORBIT_PERIOD_S);
+    // x = R cos a, z = R sin a turns clockwise when viewed from above (looking down -Y)
+    this.orbitLight.position.set(ORBIT_RADIUS_CM * Math.cos(a), ORBIT_HEIGHT_CM, ORBIT_RADIUS_CM * Math.sin(a));
+  }
+
+  // ---------------------------------------------------------------- browser gamepad
+  _pollBrowserGamepad(dt) {
+    const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter((p) => p && p.connected) : [];
+    const gp = pads.find((p) => p.mapping === 'standard') || pads[0];
+    if (!gp) return;
+    const pressed = gp.buttons.map((b) => b.pressed || b.value > 0.5);
+    const prev = this._padPrev || [];
+    this._padPrev = pressed;
+    const edge = (i) => pressed[i] && !prev[i];
+    const ax = (i) => {
+      const v = gp.axes[i] || 0;
+      return Math.abs(v) < 0.18 ? 0 : v;
+    };
+    if (!pressed.some(Boolean) && ![0, 1, 2, 3].some((i) => ax(i))) {
+      this._padStickArmed = true;
+      return;
+    }
+    unlockAudio();
+    const s = this.state;
+    if (this.isMenuOpen(s)) return this._padMenu(edge, ax);
+    if (s.screen !== 'playing') return;
+    if (!s.gamepadAim) this.setState({ gamepadAim: true });
+    if (edge(9)) return this.toggleMenu(); // Start
+    if (edge(4)) this.cycleTool(-1); // LB
+    if (edge(5)) this.cycleTool(1); // RB
+    if (edge(7)) {
+      // RT
+      this._updateTarget();
+      this.useTool();
+    }
+    this._padCamera(dt, ax(2), ax(3), ax(1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
+  }
+
+  /** D-pad / left stick moves the focus, A selects, B goes back, Start closes the pause menu. */
+  _padMenu(edge, ax) {
+    const s = this.state;
+    const items = menuModel(s).items.filter((it) => !it.disabled);
+    if (!items.length) return;
+    let idx = items.findIndex((it) => it.id === s.menuFocus);
+    const ly = ax(1);
+    let stick = 0;
+    if (this._padStickArmed !== false && Math.abs(ly) > 0.6) {
+      stick = Math.sign(ly);
+      this._padStickArmed = false;
+    } else if (Math.abs(ly) < 0.3) this._padStickArmed = true;
+    const down = edge(13) || stick > 0, up = edge(12) || stick < 0;
+    if (up || down || ((edge(0)) && idx < 0)) {
+      idx = idx < 0 ? 0 : (idx + (down ? 1 : up ? -1 : 0) + items.length) % items.length;
+      this.setState({ menuFocus: items[idx].id });
+      playTick();
+      return;
+    }
+    if (edge(0)) return this.menuAction(items[idx].id); // A
+    if (edge(1)) {
+      // B
+      if (s.menu !== 'main') this.menuAction('back');
+      else if (s.paused) this.resume();
+      return;
+    }
+    if (edge(9) && s.paused) this.resume();
+  }
+
+  /** Right stick orbits, left stick up/down zooms, D-pad pans. */
+  _padCamera(dt, rx, ry, ly, [du, dd, dl, dr]) {
+    if (!rx && !ry && !ly && !du && !dd && !dl && !dr) return;
+    const c = this.controls, cam = this.camera;
+    const off = cam.position.clone().sub(c.target);
+    const sph = new THREE.Spherical().setFromVector3(off);
+    sph.theta += rx * 2.2 * dt;
+    sph.phi += ry * 1.6 * dt;
+    sph.radius = THREE.MathUtils.clamp(sph.radius * Math.exp(ly * 1.6 * dt), c.minDistance, c.maxDistance);
+    sph.makeSafe();
+    off.setFromSpherical(sph);
+    const pan = new THREE.Vector3();
+    if (du || dd || dl || dr) {
+      const speed = sph.radius * 0.8 * dt;
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+      const upv = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+      pan.addScaledVector(right, ((dr ? 1 : 0) - (dl ? 1 : 0)) * speed);
+      pan.addScaledVector(upv, ((du ? 1 : 0) - (dd ? 1 : 0)) * speed);
+    }
+    c.target.add(pan);
+    cam.position.copy(c.target).add(off);
+    cam.lookAt(c.target);
+  }
+
+  _tick = (time) => {
+    const now = time ?? performance.now();
+    const dt = Math.min(0.1, Math.max(0, (now - (this._lastTime ?? now)) / 1000));
+    this._lastTime = now;
+    this._updateOrbitLight(now);
     const xr = this.renderer.xr.isPresenting;
     if (!xr) {
-      this.controls.autoRotate = this.state.screen === 'title';
+      this._pollBrowserGamepad(dt);
       this.controls.update();
     } else {
       this._xrFrames++;
       if (this._needsXRPlacement && this._xrFrames > 2) {
         this._needsXRPlacement = false;
         this._placeWorldInFront();
+        if (this.isMenuOpen()) this._placeMenuPanel();
       }
       this._pollGamepads();
-      if (this._grab) {
-        const cp = this._grab.ctrl.getWorldPosition(new THREE.Vector3());
-        this.worldRoot.position.copy(cp).add(this._grab.offset);
-      }
+      this._updateGrab();
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
-      this.hud.draw(this.state.toolIndex, msg);
-      this.hud.mesh.visible = this.state.screen === 'playing';
-      if (!this.state.paused) this.menuPanel.mesh.visible = false;
+      const playing = this.state.screen === 'playing';
+      this.rightHud.draw(this.state.toolIndex, msg);
+      this.leftHud.draw(this._hudHover === 'menu', this.state.paused);
+      this.rightHud.mesh.visible = playing;
+      this.leftHud.mesh.visible = playing;
+      this.menuPanel.mesh.visible = this.isMenuOpen();
     }
     this._updateTarget();
     this.renderer.render(this.scene, this.camera);

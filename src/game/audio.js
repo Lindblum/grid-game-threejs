@@ -1,7 +1,13 @@
 // Small synthesized sound effects (no audio files needed).
 let ctx = null;
+let muted = false;
+
+export function setMuted(m) {
+  muted = !!m;
+}
 
 function ac() {
+  if (muted) return null;
   if (!ctx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
@@ -13,7 +19,8 @@ function ac() {
 
 /** Call from a user gesture (click / XR session start) so audio is allowed. */
 export function unlockAudio() {
-  ac();
+  if (!ctx && !muted) ac();
+  else if (ctx?.state === 'suspended') ctx.resume();
 }
 
 function tone(c, { type = 'sine', f0, f1, t0, dur, gain = 0.2 }) {
@@ -71,4 +78,47 @@ export function playTick() {
   const c = ac();
   if (!c) return;
   tone(c, { type: 'sine', f0: 1500, f1: 1400, t0: c.currentTime, dur: 0.035, gain: 0.05 });
+}
+
+/** Short bell-like note (sine + quiet octave overtone). */
+function bell(c, f, t0, dur = 0.35, gain = 0.14) {
+  tone(c, { type: 'sine', f0: f, f1: f * 0.998, t0, dur, gain });
+  tone(c, { type: 'sine', f0: f * 2, f1: f * 2 * 0.998, t0, dur: dur * 0.6, gain: gain * 0.3 });
+}
+
+/** Resume: soft two-note rise. */
+export function playResume() {
+  const c = ac();
+  if (!c) return;
+  const t = c.currentTime;
+  bell(c, 587.3, t, 0.18, 0.1); // D5
+  bell(c, 880.0, t + 0.07, 0.26, 0.11); // A5
+}
+
+/** New / Load: sparkly rising arpeggio. */
+export function playLoad() {
+  const c = ac();
+  if (!c) return;
+  const t = c.currentTime;
+  [523.3, 659.3, 784.0, 1046.5].forEach((f, i) => bell(c, f, t + i * 0.06, 0.32, 0.1)); // C E G C
+  noise(c, { t0: t + 0.2, dur: 0.18, gain: 0.03, freq: 6000, q: 1.2 });
+}
+
+/** Save: confident "ding-dong" confirmation. */
+export function playSave() {
+  const c = ac();
+  if (!c) return;
+  const t = c.currentTime;
+  bell(c, 783.99, t, 0.25, 0.13); // G5
+  bell(c, 1174.7, t + 0.12, 0.45, 0.13); // D6
+  tone(c, { type: 'triangle', f0: 196, f1: 190, t0: t, dur: 0.2, gain: 0.08 }); // soft low thump
+}
+
+/** Error: short low buzz. */
+export function playError() {
+  const c = ac();
+  if (!c) return;
+  const t = c.currentTime;
+  tone(c, { type: 'sawtooth', f0: 180, f1: 150, t0: t, dur: 0.12, gain: 0.05 });
+  tone(c, { type: 'sawtooth', f0: 180, f1: 150, t0: t + 0.15, dur: 0.12, gain: 0.05 });
 }
