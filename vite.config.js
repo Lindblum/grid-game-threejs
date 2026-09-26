@@ -22,7 +22,7 @@ function savesApi() {
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), savesApi(), ...(mode === 'xr' ? [basicSsl()] : [])],
-  base: '/grid-game-threejs/',
+//base: '/grid-game-threejs/',
   server: { host: mode === 'xr' ? true : 'localhost', port: 5173, allowedHosts: ['debrah-impartable-nonubiquitously.ngrok-free.dev'] },
   preview: { host: mode === 'xr' ? true : 'localhost', port: 4173 }
 }));
