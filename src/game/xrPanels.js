@@ -56,7 +56,7 @@ function dockAboveController(mesh) {
 
 const SLOT = 104, SLOT_GAP = 14, SLOT_Y = 72;
 
-/** Left HUD (docked to the left controller): the Menu button. */
+/** Left HUD (docked to the left controller): game time and the Menu button. */
 export class LeftHudPanel extends CanvasPanel {
   constructor() {
     super(200, 200, 200 * PX_TO_M);
@@ -66,14 +66,14 @@ export class LeftHudPanel extends CanvasPanel {
     this._last = '';
   }
 
-  draw(hover, menuOpen) {
-    const sig = `${hover}|${menuOpen}`;
+  draw(hover, menuOpen, timeText = '00:00:00') {
+    const sig = `${hover}|${menuOpen}|${timeText}`;
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
     hudBackground(ctx, W, H);
-    hudLabel(ctx, 'Menu', W / 2);
+    hudLabel(ctx, timeText, W / 2); // game time HH:mm:ss
     const { x, y, w, h } = this.button;
     roundRect(ctx, x, y, w, h, 16);
     ctx.fillStyle = hover ? 'rgba(90, 160, 255, 0.55)' : menuOpen ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';

@@ -2,9 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { World } from './world.js';
-import { TOOLS } from './tools.js';
+import { stepCrawlies, stepStrays, stepWater, stepWood } from './sim.js';
+import { BLOCK_COLORS, TOOLS } from './tools.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
-import { truncatedOctahedronFaces } from './geometry.js';
+import { EDGE_SHADE, truncatedOctahedronFaces } from './geometry.js';
 import { playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted } from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel } from './xrPanels.js';
 import { menuModel, displayName, PAGE_SIZE } from './menu.js';
@@ -13,6 +14,7 @@ import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from
 const CM = 0.01; // world units are metres; lattice units are cm
 const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
+const WHEEL_TOOL_REARM_MS = 200; // horizontal-scroll tool switching: quiet gap that ends one push
 const BG = new THREE.Color('#1b2029');
 const ORBIT_HEIGHT_CM = 100; // light 1 m above the scene
 const ORBIT_RADIUS_CM = 300; // 3 m radius
@@ -25,6 +27,7 @@ const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScal
 function makeWireframe(color, radiusCm) {
   const group = new THREE.Group();
   const mat = new THREE.MeshBasicMaterial({ color, toneMapped: false });
+  group.userData.material = mat;
   const seen = new Set();
   const up = new THREE.Vector3(0, 1, 0);
   const cyl = new THREE.CylinderGeometry(radiusCm, radiusCm, 1, 6, 1, true);
@@ -60,11 +63,13 @@ export class Engine {
     this.container = container;
     this.listeners = new Set();
     this.state = {
-      screen: 'playing', // 'playing' | 'closed' (after Quit in the browser)
+      screen: 'playing',
       paused: true, // the game opens on a New scene with the menu up
       menu: 'main', // 'main' | 'load' | 'save' | 'options'
       soundOn: true,
+      gameTime: 0, // whole seconds (turns) since New / Load
       passthrough: true, // Options → Background: XR passthrough (true) or solid colour
+      proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
       saves: null,
       savesError: null,
       page: 0,
@@ -294,7 +299,22 @@ export class Engine {
     };
     this._onContextMenu = (e) => e.preventDefault();
     this._onKeyDown = (e) => this._handleKey(e);
+    // Horizontal scroll switches tools. In the Quest Browser's window mode the Touch
+    // thumbstick scrolls instead of appearing as a gamepad, so pushing it left/right
+    // arrives here. One step per push: re-armed once no sideways scroll has come in for
+    // WHEEL_TOOL_REARM_MS (the stick went back to centre).
+    this._onWheel = (e) => {
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) || Math.abs(e.deltaX) < 1) return;
+      e.preventDefault();
+      const now = performance.now();
+      const armed = now - (this._wheelToolLast ?? -Infinity) > WHEEL_TOOL_REARM_MS;
+      this._wheelToolLast = now;
+      if (armed && this.state.screen === 'playing' && !this.state.paused && !this.state.inXR) {
+        this.cycleTool(e.deltaX > 0 ? 1 : -1);
+      }
+    };
 
+    el.addEventListener('wheel', this._onWheel, { passive: false });
     el.addEventListener('pointermove', this._onPointerMove);
     el.addEventListener('pointerleave', this._onPointerLeave);
     el.addEventListener('pointerdown', this._onPointerDown);
@@ -343,11 +363,6 @@ export class Engine {
     else this.pause();
   }
 
-  /** From the "closed" screen: back to the game with the menu open. */
-  reopen() {
-    this.setState({ screen: 'playing', paused: true, menu: 'main' });
-  }
-
   pause() {
     if (this.state.screen !== 'playing') return;
     this.setState({ paused: true, menu: 'main', page: 0, menuFocus: this.state.gamepadAim ? 'resume' : null });
@@ -392,7 +407,41 @@ export class Engine {
     return ok;
   }
 
+  /** Formats seconds as HH:mm:ss. */
+  static formatTime(sec) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(Math.floor(sec / 3600))}:${p(Math.floor(sec / 60) % 60)}:${p(sec % 60)}`;
+  }
+
+  _resetClock() {
+    this._clock = 0;
+    this.setState({ gameTime: 0 });
+  }
+
+  /** Game clock: runs only while playing (not while the menu is open). One turn per second. */
+  _advanceClock(dt) {
+    const s = this.state;
+    if (s.screen !== 'playing' || s.paused) return;
+    this._clock = (this._clock || 0) + dt;
+    while (this._clock >= 1) {
+      this._clock -= 1;
+      const turn = this.state.gameTime + 1;
+      this.setState({ gameTime: turn });
+      this._turn(turn);
+    }
+  }
+
+  /** Everything that happens once per turn (`turn` = 1, 2, 3… since New / Load). */
+  _turn(turn) {
+    const moved = stepStrays(this.world); // block moves are decided first…
+    for (const w of stepWater(this.world, moved)) moved.add(w); // …then Water flows…
+    stepCrawlies(this.world, moved); // …then Crawlies (a Crawly that just moved as a stray waits)…
+    stepWood(this.world, turn); // …then, every 10th turn, Wood grows
+  }
+
   newScene() {
+    this._resetClock();
+    this._resetPlayerView();
     this.world.generateNew();
     this._syncCount();
     this._startPlaying();
@@ -435,6 +484,8 @@ export class Engine {
   importJSON(data, name = 'file') {
     try {
       const { loaded, skipped } = this.world.fromJSON(data);
+      this._resetClock();
+      this._resetPlayerView();
       this._syncCount();
       this._startPlaying();
       playLoad();
@@ -446,16 +497,6 @@ export class Engine {
 
   exportJSON() {
     return this.world.toJSON();
-  }
-
-  /** Quit: in XR, leave the XR session (the menu stays up in the browser); otherwise close the game. */
-  quit() {
-    if (this.renderer.xr.isPresenting) {
-      this.renderer.xr.getSession()?.end();
-      return;
-    }
-    window.close(); // only works if the tab was opened by a script
-    this.setState({ screen: 'closed', menu: 'main' });
   }
 
   setSound(on) {
@@ -474,7 +515,6 @@ export class Engine {
       this.setState({ menu: id, page: 0 });
       return this.refreshSaves();
     }
-    if (id === 'quit') return this.quit();
     if (id === 'options') return this.setState({ menu: 'options' });
     if (id === 'sound') return this.setSound(!s.soundOn);
     if (id === 'background') {
@@ -483,6 +523,11 @@ export class Engine {
         this.toast('This XR session can’t show passthrough (it was started as VR)');
       }
       return this._applyBackground();
+    }
+    if (id === 'materials') {
+      const on = !s.proceduralMaterials;
+      this.world.materials.setProcedural(on);
+      return this.setState({ proceduralMaterials: on });
     }
     if (id === 'enterxr') return this.enterXR();
     if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
@@ -606,6 +651,26 @@ export class Engine {
   }
 
   /** Put the grid origin 50 cm in front of the player's eyes. */
+  /**
+   * Starting a game (New / Load): put the player 50 cm from the grid origin.
+   * Browser: camera back to its start spot, looking at the origin.
+   * XR: the build is reset to life size / upright and its origin placed 50 cm in front of the eyes.
+   */
+  _resetPlayerView() {
+    if (this.renderer.xr.isPresenting) {
+      this._grab = null;
+      this.worldRoot.quaternion.identity();
+      this.worldRoot.scale.setScalar(CM);
+      this._placeWorldInFront();
+    } else {
+      this.worldRoot.position.set(0, 0, 0);
+      this.controls.target.set(0, 0, 0);
+      this.camera.position.copy(START_CAMERA);
+      this.camera.lookAt(0, 0, 0);
+      this.controls.update();
+    }
+  }
+
   _placeWorldInFront() {
     const { pos, dir } = this._headPose();
     dir.y = 0;
@@ -666,18 +731,24 @@ export class Engine {
     if (this.state.screen === 'playing') this.useTool();
   }
 
-  _pollGamepads() {
-    // Right thumbstick left/right cycles tools.
-    const rgp = this.hands.right?.source?.gamepad;
-    if (rgp && this.state.screen === 'playing' && !this.state.paused) {
-      const x = rgp.axes.length >= 4 ? rgp.axes[2] : rgp.axes[0] || 0;
-      if (this._stickArmed && Math.abs(x) > 0.65) {
-        this._stickArmed = false;
-        this.cycleTool(x > 0 ? 1 : -1);
-      } else if (Math.abs(x) < 0.3) {
-        this._stickArmed = true;
-      }
+  /**
+   * Right Touch thumbstick flicked left/right cycles tools (XR, and window mode when the
+   * browser exposes the Touch controllers as gamepads). Re-arms once the stick recentres.
+   */
+  _touchStickTools(gp) {
+    if (this.state.screen !== 'playing' || this.state.paused) return;
+    const x = (gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0]) || 0; // xr-standard: thumbstick = axes 2/3
+    if (this._stickArmed && Math.abs(x) > 0.65) {
+      this._stickArmed = false;
+      this.cycleTool(x > 0 ? 1 : -1);
+    } else if (Math.abs(x) < 0.3) {
+      this._stickArmed = true;
     }
+  }
+
+  _pollGamepads() {
+    const rgp = this.hands.right?.source?.gamepad;
+    if (rgp) this._touchStickTools(rgp);
     // The Quest Browser uses the left Menu (≡) button as "Back", so the menu is opened
     // with the Menu button on the left HUD; the Y button is a shortcut for it.
     const lgp = this.hands.left?.source?.gamepad;
@@ -702,6 +773,7 @@ export class Engine {
   _updateTarget() {
     this.placeHL.visible = false;
     this.deleteHL.visible = false;
+    this.world.setDithered(null);
     this.target = null;
     const s = this.state;
     const xr = this.renderer.xr.isPresenting;
@@ -795,11 +867,15 @@ export class Engine {
 
   _showHighlight() {
     const t = this.target;
-    if (!t) return;
     const tool = TOOLS[this.state.toolIndex];
+    // Delete target: see-through (dithered) so you can tell what's behind it
+    this.world.setDithered(t && !tool.block ? t.block : null);
+    if (!t) return;
     if (tool.block) {
       if (t.place && t.placeFree) {
         this.placeHL.position.set(...t.place);
+        // same colour as the outlines of the block that would be placed
+        this.placeHL.userData.material.color.set(BLOCK_COLORS[tool.block]).multiplyScalar(EDGE_SHADE);
         this.placeHL.visible = true;
       }
     } else if (t.block) {
@@ -817,7 +893,13 @@ export class Engine {
   // ---------------------------------------------------------------- browser gamepad
   _pollBrowserGamepad(dt) {
     const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter((p) => p && p.connected) : [];
-    const gp = pads.find((p) => p.mapping === 'standard') || pads[0];
+    // Touch controllers (e.g. Quest Browser / Link in window mode) are not standard
+    // gamepads: only the right stick is used, to switch tools, same as in XR.
+    const isTouch = (p) => p.mapping === 'xr-standard' || !!p.hand || /oculus|touch|meta/i.test(p.id);
+    const rightTouch = pads.find((p) => isTouch(p) && (p.hand === 'right' || /right/i.test(p.id)));
+    if (rightTouch) this._touchStickTools(rightTouch);
+    const others = pads.filter((p) => !isTouch(p));
+    const gp = others.find((p) => p.mapping === 'standard') || others[0];
     if (!gp) return;
     const pressed = gp.buttons.map((b) => b.pressed || b.value > 0.5);
     const prev = this._padPrev || [];
@@ -905,6 +987,8 @@ export class Engine {
     const dt = Math.min(0.1, Math.max(0, (now - (this._lastTime ?? now)) / 1000));
     this._lastTime = now;
     this._updateOrbitLight(now);
+    this._advanceClock(dt);
+    this.world.updateAnimations();
     const xr = this.renderer.xr.isPresenting;
     if (!xr) {
       this._pollBrowserGamepad(dt);
@@ -922,7 +1006,7 @@ export class Engine {
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
       const playing = this.state.screen === 'playing';
       this.rightHud.draw(this.state.toolIndex, msg);
-      this.leftHud.draw(this._hudHover === 'menu', this.state.paused);
+      this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime));
       this.rightHud.mesh.visible = playing;
       this.leftHud.mesh.visible = playing;
       const open = this.isMenuOpen();
@@ -940,6 +1024,7 @@ export class Engine {
     this.renderer.setAnimationLoop(null);
     this._ro?.disconnect();
     const el = this.renderer.domElement;
+    el.removeEventListener('wheel', this._onWheel);
     el.removeEventListener('pointermove', this._onPointerMove);
     el.removeEventListener('pointerleave', this._onPointerLeave);
     el.removeEventListener('pointerdown', this._onPointerDown);

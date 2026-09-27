@@ -33,7 +33,6 @@ function Overlay({ engine }) {
       {s.screen === 'playing' && !s.inXR && <Hud engine={engine} s={s} />}
       {s.screen === 'playing' && !s.inXR && !s.paused && s.gamepadAim && <div className="crosshair" />}
       {engine.isMenuOpen(s) && !s.inXR && <MenuScreen engine={engine} s={s} />}
-      {s.screen === 'closed' && !s.inXR && <ClosedScreen engine={engine} />}
       {s.inXR && <div className="xr-note">In XR — take off the headset view to return here.</div>}
       <Toast toast={s.toast} />
     </>
@@ -45,21 +44,6 @@ function blurThen(fn) {
     e.currentTarget.blur();
     fn(e);
   };
-}
-
-function ClosedScreen({ engine }) {
-  return (
-    <div className="screen-center">
-      <div className="panel menu-panel closed-panel">
-        <h2>Grid Game</h2>
-        <p>The game has been closed. You can close this browser tab.</p>
-        <button className="btn accent menu-btn" onClick={blurThen(() => engine.reopen())}>
-          <img className="menu-icon" src={menuItemIconURL('back')} alt="" draggable={false} />
-          <span className="label">Back to the game</span>
-        </button>
-      </div>
-    </div>
-  );
 }
 
 /** Options → Controls: one row per action, glyphs for each input device. */
@@ -98,7 +82,7 @@ function Hud({ engine, s }) {
   return (
     <div className="hud-wrap">
       <div className="panel hud hud-left">
-        <div className="hud-label">Menu</div>
+        <div className="hud-label hud-time" title="Game time">{Engine.formatTime(s.gameTime)}</div>
         <button
           className={`slot menu-slot${s.paused ? ' selected' : ''}`}
           title="Menu (Esc)"
@@ -110,7 +94,6 @@ function Hud({ engine, s }) {
       <div className="panel hud hud-right">
         <div className="hud-label">
           {TOOLS[s.toolIndex].label}
-          <span className="hud-count">{s.blockCount} blocks</span>
         </div>
         <div className="slots">
           {TOOLS.map((t, i) => (

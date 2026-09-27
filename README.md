@@ -25,7 +25,7 @@ npm run dev:xr     # prints https://<your-PC-IP>:5173
 ```
 
 Open that address in the Quest Browser, accept the certificate warning, then choose
-**Options → Enter XR** in the menu (with **Background: Passthrough** you see your room;
+**Options → XR: Off** in the menu to turn XR on (with **Background: Passthrough** you see your room;
 passthrough needs the Quest Browser — PC browsers driving the headset over Link only
 offer VR with a solid background). The grid origin appears
 50 cm in front of you, and the menu lies flat above the Left HUD on your left controller.
@@ -45,16 +45,29 @@ The same table (with button icons) is under **Options → Controls** in the game
 
 **Menu:** the game opens on a freshly generated scene with the menu up. The menu
 (titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
-enter/exit XR, Controls) and Quit. Quit leaves XR when in the headset; in the browser it closes the game.
+materials: procedural or solid, XR on/off, Controls). Leave XR with Options → XR: On.
 
 **HUD:** the Left HUD holds the Menu (≡) button, the Right HUD holds the tool selector.
 In XR each is docked above its own controller, tilted to face up toward you
 (position and tilt are `HUD_DOCK` in `src/game/xrPanels.js`); in the browser they sit in the
 bottom-left and bottom-right corners.
 
-Tools: Red, Orange, Yellow, Green, Blue, Magenta, Brown, Gray block, and Delete.
+Tools: Stone (gray), Dirt (brown), Berry (red), Wood (orange), Yellow, Moss (green), Water (blue),
+Crawly (magenta), and Delete.
+
+**Turns:** the game clock (shown on the Left HUD as HH:mm:ss) counts up once per second
+while you play, and pauses while the menu is open; New and Load reset it to 00:00:00.
+Every second is a turn: first, any block with no neighbours takes one step toward its
+nearest block; then Water flows toward the origin; then each Crawly may crawl (a
+¼-second slide) into an empty neighbouring cell that borders Stone, Dirt or Moss.
+Every 10th turn, each Wood block with an empty neighbouring cell that touches no other
+Solid block (Stone, Dirt, Wood, Berry) has a 50 % chance to grow Wood into one
+(at most 10 new Wood per growth turn).
+Rules live in `src/game/sim.js`. Each Crawly knows its floor (a side touching Stone or
+Dirt) and its front (the way it last moved); its two eyes revolve to the front side.
 With a block tool, the empty cell beside the face you point at (square or hexagon)
-is outlined in gray; with Delete, the targeted block is outlined in red.
+is outlined in the edge colour of the block you're about to place; with Delete, the
+targeted block is outlined in red.
 
 ## Save files
 
@@ -88,6 +101,8 @@ downloading / opening a .json file instead.
 | `src/game/menuIcons.js` | Icons shown beside each menu button |
 | `src/game/controls.js` | The control mappings shown on the Controls panel |
 | `src/game/inputIcons.js` | Key, mouse, gamepad and Touch-controller button glyphs |
+| `src/game/sim.js` | Per-turn simulation (strays, Water, Crawly movement) |
+| `src/game/crawly.js` | Crawly floor/front orientation and eyes |
 | `src/game/audio.js` | Synthesised sounds: place, delete, resume, new/load, save (no audio files) |
 | `src/App.jsx` | React UI: Left/Right HUD, menu, toasts |
 

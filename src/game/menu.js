@@ -22,8 +22,7 @@ function background(state) {
   const on = state.passthrough;
   return {
     id: 'background',
-    label: `Background: ${on ? 'Passthrough' : 'Solid'}`,
-    sub: state.inXR ? undefined : 'applies in XR',
+    label: `Background: ${on ? 'Passthrough (XR Only)' : 'Solid'}`,
     icon: on ? 'bgPass' : 'bgSolid',
   };
 }
@@ -36,15 +35,20 @@ export function menuModel(state) {
   }
   if (menu === 'options') {
     const xr = state.inXR
-      ? { id: 'exitxr', label: 'Exit XR', icon: 'xr' }
+      ? { id: 'exitxr', label: 'XR: On', icon: 'xr' }
       : state.xrSupport
-        ? { id: 'enterxr', label: 'Enter XR', icon: 'xr' }
-        : { id: 'noop', label: 'XR not available here', icon: 'xr', disabled: true };
+        ? { id: 'enterxr', label: 'XR: Off', icon: 'xr' }
+        : { id: 'noop', label: 'XR: Unavailable', icon: 'xr', disabled: true };
     return {
       title: 'Options',
       items: [
         { id: 'sound', label: `Sound: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff' },
         background(state),
+        {
+          id: 'materials',
+          label: `Materials: ${state.proceduralMaterials ? 'Procedural' : 'Solid'}`,
+          icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
+        },
         xr,
         { id: 'controls', label: 'Controls', icon: 'controls' },
         { id: 'back', label: 'Back', icon: 'back' },
@@ -60,7 +64,6 @@ export function menuModel(state) {
         { id: 'load', label: 'Load', icon: 'load' },
         { id: 'save', label: 'Save', icon: 'save' },
         { id: 'options', label: 'Options', icon: 'options' },
-        { id: 'quit', label: 'Quit', icon: 'quit' },
       ],
     };
   }
@@ -80,7 +83,7 @@ export function menuModel(state) {
     for (const f of saves.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE)) {
       items.push({
         id: `${menu}:${f.name}`,
-        label: menu === 'save' ? `Overwrite ${displayName(f.name)}` : displayName(f.name),
+        label: displayName(f.name),
         sub: formatDate(f.modified),
         icon: menu === 'save' ? 'save' : 'file',
       });

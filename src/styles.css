@@ -74,7 +74,6 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 }
 
 .menu-panel { width: min(470px, 100%); padding: 24px; }
-.closed-panel p { color: var(--muted); text-align: center; margin: 0 0 16px; }
 .menu-panel h2 { margin: 0 0 16px; text-align: center; font-size: 28px; }
 .menu-items { display: flex; flex-direction: column; gap: 9px; }
 .menu-btn { display: flex; align-items: center; gap: 12px; text-align: left; font-size: 17px; }
@@ -107,7 +106,6 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   display: flex; justify-content: space-between; align-items: baseline;
   font-size: 14px; font-weight: 600; padding: 0 4px 8px;
 }
-.hud-count { color: var(--muted); font-weight: 400; font-size: 12px; }
 .slots { display: flex; gap: 8px; }
 .slot {
   width: clamp(30px, 7vw, 60px); aspect-ratio: 1;
@@ -115,7 +113,8 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   background: rgba(255, 255, 255, 0.07);
   border: 2px solid transparent;
 }
-.hud-left .hud-label { justify-content: center; }
+.hud-left .hud-label, .hud-right .hud-label { justify-content: center; }
+.hud-time { font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
 .slot img { width: 100%; height: 100%; display: block; pointer-events: none; }
 .slot:hover { background: rgba(255, 255, 255, 0.14); }
 .slot.selected {
