@@ -204,6 +204,19 @@ const DRAW = {
     ctx.globalAlpha *= 0.45;
     poly(ctx, P, HEX, { fill: true });
   },
+  aoOn(ctx, P) {
+    // two blocks meeting in a corner, with a shadow wedge where they meet
+    poly(ctx, P, [[0.14, 0.2], [0.44, 0.2], [0.44, 0.82], [0.14, 0.82]]);
+    poly(ctx, P, [[0.44, 0.52], [0.86, 0.52], [0.86, 0.82], [0.44, 0.82]]);
+    ctx.fillStyle = INK;
+    ctx.globalAlpha *= 0.55;
+    poly(ctx, P, [[0.44, 0.34], [0.44, 0.52], [0.66, 0.52]], { fill: true });
+  },
+  aoOff(ctx, P) {
+    // the same two blocks, no shadow
+    poly(ctx, P, [[0.14, 0.2], [0.44, 0.2], [0.44, 0.82], [0.14, 0.82]]);
+    poly(ctx, P, [[0.44, 0.52], [0.86, 0.52], [0.86, 0.82], [0.44, 0.82]]);
+  },
   info(ctx, P, s) {
     circle(ctx, P, 0.5, 0.5, 0.36, s);
     line(ctx, P, [[0.5, 0.46], [0.5, 0.7]]);

@@ -71,6 +71,7 @@ export class Engine {
       passthrough: true, // Options → Background: XR passthrough (true) or solid colour
       proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
       outlines: true, // Options → Outlines: darkened face edges on blocks
+      ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
       saves: null,
       savesError: null,
       page: 0,
@@ -158,8 +159,8 @@ export class Engine {
     controls.update();
     this.controls = controls;
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x445066, 1.1));
-    const fill = new THREE.DirectionalLight(0xbfd4ff, 0.35);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x445066, 0.25));
+    const fill = new THREE.DirectionalLight(0xbfd4ff, 1);
     fill.position.set(-1, -0.4, -0.6);
     scene.add(fill);
 
@@ -293,6 +294,9 @@ export class Engine {
       unlockAudio();
       if (e.button !== 0) return;
       this._onPointerMove(e);
+      // the dimmed backdrop lets clicks through to the canvas: a click beside the pause
+      // panel resumes the game (without also using the tool)
+      if (this.isMenuOpen() && !this.state.inXR) return this.resume();
       if (this.state.screen === 'playing' && !this.state.paused && !this.state.inXR) {
         this._updateTarget();
         this.useTool();
@@ -538,6 +542,11 @@ export class Engine {
       this.world.materials.uniforms.uOutlines.value = on ? 1 : 0;
       return this.setState({ outlines: on });
     }
+    if (id === 'ao') {
+      const on = !s.ambientOcclusion;
+      this.world.materials.uniforms.uAO.value = on ? 1 : 0;
+      return this.setState({ ambientOcclusion: on });
+    }
     if (id === 'enterxr') return this.enterXR();
     if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
     if (id === 'back') return this.setState({ menu: s.menu === 'controls' ? 'options' : 'main', page: 0 });
@@ -735,6 +744,7 @@ export class Engine {
     if (this._hudHover === 'menu') return this.toggleMenu();
     if (this.isMenuOpen()) {
       if (this._menuHover) this.menuAction(this._menuHover);
+      else if (!this._menuPanelHover) this.resume(); // clicked outside the pause panel
       return;
     }
     if (this.state.screen === 'playing') this.useTool();
@@ -791,6 +801,7 @@ export class Engine {
 
     const menuOpen = this.isMenuOpen(s);
     this._menuHover = null;
+    this._menuPanelHover = false; // ray is on the pause panel (button or not)
     this._hudHover = null;
     let uiHit = null;
 
@@ -807,8 +818,10 @@ export class Engine {
             uiHit = hit;
             break;
           }
-        } else {
+        } else if (this.menuPanel.contains(hit.uv)) {
+          // only the visible panel counts; its transparent margin is "outside"
           this._menuHover = this.menuPanel.hitTest(hit.uv);
+          this._menuPanelHover = true;
           uiHit = hit;
           break;
         }

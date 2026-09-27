@@ -69,23 +69,41 @@ export const FACE_DIRS = truncatedOctahedronFaces().map(({ type, normal: n }) =>
 );
 
 /**
+ * For a corner of the block (a vertex of the truncated octahedron), the FACE_DIRS indices
+ * of the 3 neighbouring cells that share it (4 cells meet at every vertex of this
+ * honeycomb). Used for ambient occlusion: the more of them are filled, the darker the corner.
+ */
+function cornerNeighbours(v, verts) {
+  const out = [];
+  FACE_DIRS.forEach(([dx, dy, dz], i) => {
+    // the neighbour's own copy of the shape contains v if v - d is one of our vertices
+    if (verts.some((u) => Math.abs(u.x - (v.x - dx)) + Math.abs(u.y - (v.y - dy)) + Math.abs(u.z - (v.z - dz)) < 1e-6)) out.push(i);
+  });
+  return out;
+}
+
+/**
  * Flat-shaded BufferGeometry. Each face is fanned from its centre so we can store,
  * per vertex, the distance to the face's outer edge ("edgeDist") — used by the
- * block shader to draw crisp dark outlines on every face — and which face it
- * belongs to ("faceIndex", see FACE_DIRS).
+ * block shader to draw crisp dark outlines on every face — which face it belongs to
+ * ("faceIndex", see FACE_DIRS), and for corners the 3 neighbours sharing that corner
+ * ("aoFaces", FACE_DIRS indices; -1 for face centres) for ambient occlusion.
  */
 export function createBlockGeometry() {
   const faces = truncatedOctahedronFaces();
-  const pos = [], nor = [], edge = [], face = [];
+  const allVerts = faces.flatMap((f) => f.verts);
+  const pos = [], nor = [], edge = [], face = [], ao = [];
   faces.forEach((f, fi) => {
     const n = f.normal;
     for (let i = 0; i < f.verts.length; i++) {
       const a = f.verts[i], b = f.verts[(i + 1) % f.verts.length];
-      for (const [p, e] of [[f.center, f.inradius], [a, 0], [b, 0]]) {
+      for (const [p, e, corner] of [[f.center, f.inradius, false], [a, 0, true], [b, 0, true]]) {
         pos.push(p.x, p.y, p.z);
         nor.push(n.x, n.y, n.z);
         edge.push(e);
         face.push(fi);
+        const cn = corner ? cornerNeighbours(p, allVerts) : [];
+        ao.push(cn[0] ?? -1, cn[1] ?? -1, cn[2] ?? -1);
       }
     }
   });
@@ -94,6 +112,7 @@ export function createBlockGeometry() {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   g.setAttribute('edgeDist', new THREE.Float32BufferAttribute(edge, 1));
   g.setAttribute('faceIndex', new THREE.Float32BufferAttribute(face, 1));
+  g.setAttribute('aoFaces', new THREE.Float32BufferAttribute(ao, 3));
   g.computeBoundingSphere();
   g.computeBoundingBox();
   return g;
@@ -120,6 +139,8 @@ export function createEdgesGeometry() {
 
 /** Face outlines are drawn at this fraction of the face colour (block shader + place highlight). */
 export const EDGE_SHADE = 0.725;
+/** Ambient occlusion: a corner with all 3 sharing neighbours filled is darkened by this much. */
+export const AO_STRENGTH = 0.45;
 
 /** Values for the per-instance `blockStyle.x` attribute (surface shader to use). */
 export const BLOCK_STYLE = { plain: 0, dirt: 1, stone: 2, water: 3, moss: 4, berry: 5, crawly: 6, wood: 7 };
@@ -192,6 +213,8 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * get a procedural surface tinted by the instance colour; `blockStyle.y` seeds the pattern.
  * `blockStyle.z` = bit mask of faces (bit i = FACE_DIRS[i]) that touch another water
  * block; the water pass skips those faces so touching water looks like one body.
+ * `blockStyle.w` = bit mask of neighbours (bit i = FACE_DIRS[i]) holding a non-Water block,
+ * for ambient occlusion (`uniforms.uAO.value` 1 = on, 0 = off).
  * `setProcedural(false)` switches both materials to plain instance colours (plus outlines
  * and water translucency): the procedural code is compiled out, for slower GPUs.
  */
@@ -201,6 +224,7 @@ export function createBlockMaterials() {
     uTime: { value: 0 },
     uNoiseTex: { value: createNoiseTexture() },
     uOutlines: { value: 1 }, // Options → Outlines: 1 = draw face outlines, 0 = hide them
+    uAO: { value: 1 }, // Options → Ambient Occlusion: 1 = on, 0 = off
   };
   const options = { procedural: true };
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
@@ -226,7 +250,9 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         `#include <common>
         attribute float edgeDist;
         attribute float faceIndex;
-        attribute vec3 blockStyle;
+        attribute vec3 aoFaces;
+        attribute vec4 blockStyle;
+        varying float vAO;
         varying float vEdgeDist;
         uniform float uDitherIndex;
         varying float vDither;
@@ -247,7 +273,17 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         vNoisePos = position + blockStyle.y * vec3(7.31, 3.17, 5.53);
         vLocalNormal = normal; // block-local face normal (instances are only translated)
         vLocalPos = position;  // block-local position without the seed offset
-        vSeed = blockStyle.y;`
+        vSeed = blockStyle.y;
+        // ambient occlusion: fraction of the 3 cells sharing this corner that are filled
+        // (blockStyle.w = neighbour mask, bit i = FACE_DIRS[i]); face centres stay 0
+        {
+          int occ = int(blockStyle.w + 0.5);
+          float n = 0.0;
+          for (int i = 0; i < 3; i++) {
+            if (aoFaces[i] >= 0.0 && ((occ >> int(aoFaces[i] + 0.5)) & 1) == 1) n += 1.0;
+          }
+          vAO = n / 3.0;
+        }`
       )
       .replace(
         '#include <project_vertex>',
@@ -275,6 +311,8 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         varying float vSeed;
         uniform float uTime;
         uniform float uOutlines;
+        uniform float uAO;
+        varying float vAO;
         ${NOISE_GLSL}
         ${WATER_GLSL}
         ${BUMP_GLSL}`
@@ -434,7 +472,8 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         float fw = max(fwidth(vEdgeDist), 1e-4);
         float edgeW = 0.045;
         float edgeMix = smoothstep(edgeW - fw, edgeW + fw, vEdgeDist);
-        diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, max(edgeMix, 1.0 - uOutlines));`
+        diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, max(edgeMix, 1.0 - uOutlines));
+        diffuseColor.rgb *= 1.0 - uAO * ${AO_STRENGTH.toFixed(3)} * vAO; // corners hemmed in by neighbours go darker`
       )
       .replace(
         '#include <roughnessmap_fragment>',

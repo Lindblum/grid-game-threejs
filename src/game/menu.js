@@ -50,6 +50,7 @@ export function menuModel(state) {
           icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
         },
         { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff' },
+        { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff' },
         xr,
         { id: 'controls', label: 'Controls', icon: 'controls' },
         { id: 'back', label: 'Back', icon: 'back' },

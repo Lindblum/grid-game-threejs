@@ -161,6 +161,7 @@ export class MenuPanel extends CanvasPanel {
     const contentH = Math.min(H - 12, 150 + tableH + model.items.length * 82 + 40);
     // When docked above the Left HUD the panel grows upward from its bottom edge.
     const offY = this.anchorBottom ? H - 12 - contentH : 0;
+    this.content = { x: 6, y: 6 + offY, w: W - 12, h: contentH }; // visible panel box (canvas px)
     ctx.save();
     ctx.translate(0, offY);
     roundRect(ctx, 6, 6, W - 12, contentH, 48);
@@ -259,6 +260,15 @@ export class MenuPanel extends CanvasPanel {
     const py = (1 - uv.y) * this.canvas.height;
     const r = this.rects.find((r) => px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
     return r ? r.id : null;
+  }
+
+  /** True when `uv` is on the visible panel (not the transparent rest of the canvas). */
+  contains(uv) {
+    const c = this.content;
+    if (!c) return false;
+    const px = uv.x * this.canvas.width;
+    const py = (1 - uv.y) * this.canvas.height;
+    return px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h;
   }
 }
 

@@ -99,7 +99,7 @@ export function stepGroups(world) {
 }
 
 /** Rain: one Water drop every RAIN_EVERY turns, RAIN_RADIUS_CM from the origin (1 m). */
-export const RAIN_EVERY = 10;
+export const RAIN_EVERY = 5;
 export const RAIN_RADIUS_CM = 100;
 
 /** The lattice cell (all-even or all-odd coordinates) whose centre is nearest (x, y, z). */

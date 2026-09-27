@@ -3,6 +3,15 @@ import * as THREE from 'three';
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
 import { BLOCK } from './tools.js';
 
+/** What a Crawly does on its turn (stored on the block as `behavior`, saved with it). */
+export const CRAWLY_BEHAVIOR = Object.freeze({
+  WANDER: 'wander', // random steps along Stone / Dirt / Moss (the default)
+  WAIT: 'wait', // stays where it is
+  WALK: 'walk', // not defined yet: stays where it is for now
+});
+export const DEFAULT_CRAWLY_BEHAVIOR = CRAWLY_BEHAVIOR.WANDER;
+export const isCrawlyBehavior = (v) => Object.values(CRAWLY_BEHAVIOR).includes(v);
+
 /** Block types a Crawly can use as its floor: Stone, Dirt. */
 export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT]);
 /** Eye size relative to a block. */

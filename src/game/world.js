@@ -15,15 +15,15 @@ const STYLE_BY_TYPE = {
   [BLOCK.WOOD]: BLOCK_STYLE.wood,
 };
 /** Length of every per-turn animation (block slides, eye turns): half a turn, in seconds. */
-export const STEP_SECONDS = 0.5;
+export const STEP_SECONDS = 0.75;
 
 /** Blocks added by "New" after the gray origin block, in order. */
 export const NEW_SCENE_RECIPE = [
-  [BLOCK.STONE, 300],
-  [BLOCK.DIRT, 200],
-  [BLOCK.MOSS, 100],
-  [BLOCK.WOOD, 10],
-  [BLOCK.WATER, 20],
+  [BLOCK.STONE, 400],
+  [BLOCK.DIRT, 300],
+  [BLOCK.MOSS, 200],
+  [BLOCK.WOOD, 20],
+  [BLOCK.WATER, 30],
   [BLOCK.CRAWLY, 10]
 ];
 /** Larger = flatter distribution; smaller = tighter clump around the origin (cm). */
@@ -96,6 +96,26 @@ export class World {
     for (const [dx, dy, dz] of FACE_DIRS) update(this.blocks.get(cellKey(x + dx, y + dy, z + dz)));
   }
 
+  /**
+   * Recomputes the ambient-occlusion neighbour mask (blockStyle.w) of the block at
+   * (x, y, z), if any, and of every block next to it: bit i set = the neighbour across
+   * face i holds a block that occludes (anything but Water, which is see-through).
+   */
+  _refreshAOAround(x, y, z) {
+    const style = this.geometry.getAttribute('blockStyle');
+    const update = (b) => {
+      if (!b) return;
+      let mask = 0;
+      FACE_DIRS.forEach(([dx, dy, dz], i) => {
+        const n = this.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
+        if (n && n.type !== BLOCK.WATER) mask |= 1 << i;
+      });
+      style.setW(b.index, mask);
+    };
+    update(this.blocks.get(cellKey(x, y, z)));
+    for (const [dx, dy, dz] of FACE_DIRS) update(this.blocks.get(cellKey(x + dx, y + dy, z + dz)));
+  }
+
   /** Where block `b` is drawn right now (mid-slide while it is moving), in cm. */
   renderedPosition(b, now, out) {
     const a = this.anims.get(cellKey(b.x, b.y, b.z));
@@ -113,9 +133,9 @@ export class World {
     mesh.name = 'blocks';
     // make sure the colour buffer exists
     mesh.setColorAt(0, _c.set('#ffffff'));
-    // per-instance (style, seed, water face mask) for the block shader; lives on the shared geometry
+    // per-instance (style, seed, water face mask, AO neighbour mask) for the block shader; lives on the shared geometry
     const oldStyle = this.geometry.getAttribute('blockStyle');
-    const style = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+    const style = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
     style.setUsage(THREE.DynamicDrawUsage);
     this.geometry.setAttribute('blockStyle', style);
     if (old) {
@@ -124,7 +144,7 @@ export class World {
         mesh.setMatrixAt(i, _m);
         old.getColorAt(i, _c);
         mesh.setColorAt(i, _c);
-        style.setXYZ(i, oldStyle.getX(i), oldStyle.getY(i), oldStyle.getZ(i));
+        style.setXYZW(i, oldStyle.getX(i), oldStyle.getY(i), oldStyle.getZ(i), oldStyle.getW(i));
       }
       mesh.count = old.count;
       this.parent.remove(old);
@@ -192,8 +212,9 @@ export class World {
     _m.makeTranslation(x, y, z);
     this.mesh.setMatrixAt(index, _m);
     this.mesh.setColorAt(index, _c.set(BLOCK_COLORS[type]));
-    this.geometry.getAttribute('blockStyle').setXYZ(index, STYLE_BY_TYPE[type] ?? BLOCK_STYLE.plain, Math.random() * 40, 0);
+    this.geometry.getAttribute('blockStyle').setXYZW(index, STYLE_BY_TYPE[type] ?? BLOCK_STYLE.plain, Math.random() * 40, 0, 0);
     if (type === BLOCK.WATER) this._refreshWaterAround(x, y, z);
+    this._refreshAOAround(x, y, z);
     this.mesh.count = this.blocks.size;
     this._dirty();
     if (type === BLOCK.CRAWLY) {
@@ -219,7 +240,7 @@ export class World {
       this.mesh.getColorAt(last, _c);
       this.mesh.setColorAt(b.index, _c);
       const style = this.geometry.getAttribute('blockStyle');
-      style.setXYZ(b.index, style.getX(last), style.getY(last), style.getZ(last));
+      style.setXYZW(b.index, style.getX(last), style.getY(last), style.getZ(last), style.getW(last));
       lb.index = b.index;
       this.keysByIndex[b.index] = lastKey;
     }
@@ -230,6 +251,7 @@ export class World {
     this.eyes.untrack(b);
     this.mesh.count = this.blocks.size;
     if (b.type === BLOCK.WATER) this._refreshWaterAround(x, y, z);
+    this._refreshAOAround(x, y, z);
     this._dirty();
     this._reorientAround(x, y, z);
     return true;
@@ -255,7 +277,10 @@ export class World {
       orientCrawly(this, b);
       this.eyes.track(b, 0);
     }
-    if (old === BLOCK.WATER || type === BLOCK.WATER) this._refreshWaterAround(b.x, b.y, b.z);
+    if (old === BLOCK.WATER || type === BLOCK.WATER) {
+      this._refreshWaterAround(b.x, b.y, b.z);
+      this._refreshAOAround(b.x, b.y, b.z); // Water doesn't occlude, other blocks do
+    }
     this._dirty();
     this._reorientAround(b.x, b.y, b.z);
     return true;
@@ -290,8 +315,10 @@ export class World {
     if (b.type === BLOCK.WATER) {
       this._refreshWaterAround(fromPos.x, fromPos.y, fromPos.z);
       this._refreshWaterAround(to.x, to.y, to.z);
-      this._dirty();
     }
+    this._refreshAOAround(fromPos.x, fromPos.y, fromPos.z);
+    this._refreshAOAround(to.x, to.y, to.z);
+    this._dirty();
     return true;
   }
 

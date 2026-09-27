@@ -45,7 +45,7 @@ The same table (with button icons) is under **Options → Controls** in the game
 
 **Menu:** the game opens on a freshly generated scene with the menu up. The menu
 (titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
-materials: procedural or solid, outlines on/off, XR on/off, Controls). Leave XR with Options → XR: On.
+materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, Controls). Leave XR with Options → XR: On.
 
 **HUD:** the Left HUD holds the Menu (≡) button, the Right HUD holds the tool selector.
 In XR each is docked above its own controller, tilted to face up toward you
