@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { World } from './world.js';
-import { stepCrawlies, stepStrays, stepWater, stepWood } from './sim.js';
+import { stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepWood } from './sim.js';
 import { BLOCK_COLORS, TOOLS } from './tools.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
 import { EDGE_SHADE, truncatedOctahedronFaces } from './geometry.js';
@@ -70,6 +70,7 @@ export class Engine {
       gameTime: 0, // whole seconds (turns) since New / Load
       passthrough: true, // Options → Background: XR passthrough (true) or solid colour
       proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
+      outlines: true, // Options → Outlines: darkened face edges on blocks
       saves: null,
       savesError: null,
       page: 0,
@@ -433,10 +434,13 @@ export class Engine {
 
   /** Everything that happens once per turn (`turn` = 1, 2, 3… since New / Load). */
   _turn(turn) {
-    const moved = stepStrays(this.world); // block moves are decided first…
+    this.world.turn = turn; // moves this turn are stamped with it (Water settling)
+    const moved = stepGroups(this.world); // detached groups fall toward the origin first…
     for (const w of stepWater(this.world, moved)) moved.add(w); // …then Water flows…
-    stepCrawlies(this.world, moved); // …then Crawlies (a Crawly that just moved as a stray waits)…
-    stepWood(this.world, turn); // …then, every 10th turn, Wood grows
+    stepCrawlies(this.world, moved); // …then Crawlies (a Crawly that just fell with its group waits)…
+    stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
+    stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss…
+    stepRain(this.world, turn); // …and every 10th turn a raindrop appears 1 m out
   }
 
   newScene() {
@@ -528,6 +532,11 @@ export class Engine {
       const on = !s.proceduralMaterials;
       this.world.materials.setProcedural(on);
       return this.setState({ proceduralMaterials: on });
+    }
+    if (id === 'outlines') {
+      const on = !s.outlines;
+      this.world.materials.uniforms.uOutlines.value = on ? 1 : 0;
+      return this.setState({ outlines: on });
     }
     if (id === 'enterxr') return this.enterXR();
     if (id === 'exitxr') return this.renderer.xr.getSession()?.end();

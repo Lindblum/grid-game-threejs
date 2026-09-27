@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Engine } from './game/Engine.js';
+import { Engine } from './game/engine.js';
 import { TOOLS } from './game/tools.js';
 import { toolIconURL, menuIconURL } from './game/icons.js';
 import { menuModel } from './game/menu.js';

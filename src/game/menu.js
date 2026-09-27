@@ -49,6 +49,7 @@ export function menuModel(state) {
           label: `Materials: ${state.proceduralMaterials ? 'Procedural' : 'Solid'}`,
           icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
         },
+        { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff' },
         xr,
         { id: 'controls', label: 'Controls', icon: 'controls' },
         { id: 'back', label: 'Back', icon: 'back' },

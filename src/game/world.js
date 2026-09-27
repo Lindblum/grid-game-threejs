@@ -1,29 +1,30 @@
 import * as THREE from 'three';
-import { BLOCK_COLORS, RANDOM_COLORS } from './tools.js';
+import { BLOCK, BLOCK_COLORS, RANDOM_BLOCKS } from './tools.js';
 import { NEIGHBOR_DIRS, cellKey, isValidCell } from './lattice.js';
 import { BLOCK_STYLE, FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
-import { CRAWLY_TYPE, CrawlyEyes, orientCrawly } from './crawly.js';
+import { CrawlyEyes, orientCrawly } from './crawly.js';
 
 /** Block types drawn with a procedural surface shader instead of flat colour. */
 const STYLE_BY_TYPE = {
-  brown: BLOCK_STYLE.dirt,
-  gray: BLOCK_STYLE.stone,
-  blue: BLOCK_STYLE.water,
-  green: BLOCK_STYLE.moss,
-  red: BLOCK_STYLE.berry,
-  magenta: BLOCK_STYLE.crawly,
-  orange: BLOCK_STYLE.wood,
+  [BLOCK.DIRT]: BLOCK_STYLE.dirt,
+  [BLOCK.STONE]: BLOCK_STYLE.stone,
+  [BLOCK.WATER]: BLOCK_STYLE.water,
+  [BLOCK.MOSS]: BLOCK_STYLE.moss,
+  [BLOCK.BERRY]: BLOCK_STYLE.berry,
+  [BLOCK.CRAWLY]: BLOCK_STYLE.crawly,
+  [BLOCK.WOOD]: BLOCK_STYLE.wood,
 };
-const WATER_TYPE = 'blue';
-/** How long a Crawly's eyes take to revolve when its floor changes without it moving (s). */
-const EYE_TURN_SECONDS = 0.25;
+/** Length of every per-turn animation (block slides, eye turns): half a turn, in seconds. */
+export const STEP_SECONDS = 0.5;
 
 /** Blocks added by "New" after the gray origin block, in order. */
 export const NEW_SCENE_RECIPE = [
-  ['gray', 150],
-  ['brown', 100],
-  ['green', 50],
-  ['random', 20],
+  [BLOCK.STONE, 300],
+  [BLOCK.DIRT, 200],
+  [BLOCK.MOSS, 100],
+  [BLOCK.WOOD, 10],
+  [BLOCK.WATER, 20],
+  [BLOCK.CRAWLY, 10]
 ];
 /** Larger = flatter distribution; smaller = tighter clump around the origin (cm). */
 export const NEW_SCENE_FALLOFF_CM = 3;
@@ -47,13 +48,14 @@ export class World {
     this.anims = new Map(); // key -> { from, to, t0, dur } for sliding blocks
     this.crawlies = new Set(); // Crawly blocks (also carry .floor and .front, see crawly.js)
     this.eyes = new CrawlyEyes(parent);
+    this.turn = 0; // current game turn, set by the engine; stamped on blocks as movedTurn
     this.capacity = 0;
     this.mesh = null;
     this._allocate(1024);
   }
 
   /** Re-derives a Crawly's floor/front; revolves its eyes if either changed. */
-  _reorient(c, moveDir = null, durationS = EYE_TURN_SECONDS) {
+  _reorient(c, moveDir = null, durationS = STEP_SECONDS) {
     const { front, floor } = c;
     orientCrawly(this, c, moveDir);
     if (c.front !== front || c.floor !== floor) this.eyes.track(c, durationS);
@@ -64,7 +66,7 @@ export class World {
     if (!this.crawlies.size) return;
     for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
       const n = this.blocks.get(cellKey(x + dx, y + dy, z + dz));
-      if (n && n.type === CRAWLY_TYPE) this._reorient(n);
+      if (n && n.type === BLOCK.CRAWLY) this._reorient(n);
     }
   }
 
@@ -83,10 +85,10 @@ export class World {
   _refreshWaterAround(x, y, z) {
     const style = this.geometry.getAttribute('blockStyle');
     const update = (b) => {
-      if (!b || b.type !== WATER_TYPE) return;
+      if (!b || b.type !== BLOCK.WATER) return;
       let mask = 0;
       FACE_DIRS.forEach(([dx, dy, dz], i) => {
-        if (this.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz))?.type === WATER_TYPE) mask |= 1 << i;
+        if (this.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz))?.type === BLOCK.WATER) mask |= 1 << i;
       });
       style.setZ(b.index, mask);
     };
@@ -138,7 +140,7 @@ export class World {
     water.instanceColor = mesh.instanceColor;
     water.frustumCulled = false;
     water.name = 'water-blocks';
-    water.raycast = () => {};
+    water.raycast = () => { };
     this.parent.add(mesh);
     this.parent.add(water);
     this.mesh = mesh;
@@ -191,10 +193,10 @@ export class World {
     this.mesh.setMatrixAt(index, _m);
     this.mesh.setColorAt(index, _c.set(BLOCK_COLORS[type]));
     this.geometry.getAttribute('blockStyle').setXYZ(index, STYLE_BY_TYPE[type] ?? BLOCK_STYLE.plain, Math.random() * 40, 0);
-    if (type === WATER_TYPE) this._refreshWaterAround(x, y, z);
+    if (type === BLOCK.WATER) this._refreshWaterAround(x, y, z);
     this.mesh.count = this.blocks.size;
     this._dirty();
-    if (type === CRAWLY_TYPE) {
+    if (type === BLOCK.CRAWLY) {
       this.crawlies.add(b);
       orientCrawly(this, b);
       this.eyes.track(b, 0);
@@ -227,17 +229,44 @@ export class World {
     this.crawlies.delete(b);
     this.eyes.untrack(b);
     this.mesh.count = this.blocks.size;
-    if (b.type === WATER_TYPE) this._refreshWaterAround(x, y, z);
+    if (b.type === BLOCK.WATER) this._refreshWaterAround(x, y, z);
     this._dirty();
     this._reorientAround(x, y, z);
     return true;
   }
 
   /**
+   * Changes a block's type in place (same cell, index and pattern seed), updating its
+   * colour, shader style, Crawly tracking, water face masks and neighbouring Crawly floors.
+   */
+  setType(b, type) {
+    if (!BLOCK_COLORS[type] || b.type === type || this.blocks.get(cellKey(b.x, b.y, b.z)) !== b) return false;
+    const old = b.type;
+    b.type = type;
+    this.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[type]));
+    const style = this.geometry.getAttribute('blockStyle');
+    style.setX(b.index, STYLE_BY_TYPE[type] ?? BLOCK_STYLE.plain);
+    style.setZ(b.index, 0);
+    if (old === BLOCK.CRAWLY) {
+      this.crawlies.delete(b);
+      this.eyes.untrack(b);
+    } else if (type === BLOCK.CRAWLY) {
+      this.crawlies.add(b);
+      orientCrawly(this, b);
+      this.eyes.track(b, 0);
+    }
+    if (old === BLOCK.WATER || type === BLOCK.WATER) this._refreshWaterAround(b.x, b.y, b.z);
+    this._dirty();
+    this._reorientAround(b.x, b.y, b.z);
+    return true;
+  }
+
+  /**
    * Moves a block to an empty neighbouring cell. The data moves immediately; the
    * rendered block slides there over `durationS` seconds (see updateAnimations).
+   * `turnCrawly: false` keeps a Crawly's front unchanged (it was carried, not walking).
    */
-  move(from, to, durationS = 0.25) {
+  move(from, to, durationS = STEP_SECONDS, { turnCrawly = true } = {}) {
     const k = cellKey(from.x, from.y, from.z);
     const b = this.blocks.get(k);
     const tk = cellKey(to.x, to.y, to.z);
@@ -249,12 +278,16 @@ export class World {
     b.z = to.z;
     this.blocks.set(tk, b);
     this.keysByIndex[b.index] = tk;
+    b.movedTurn = this.turn; // lets rules tell settled blocks from moving ones
     this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), t0: performance.now(), dur: durationS * 1000 });
-    // a Crawly now faces the way it moved; its old and new neighbours may change floors
-    if (b.type === CRAWLY_TYPE) this._reorient(b, [to.x - fromPos.x, to.y - fromPos.y, to.z - fromPos.z], durationS);
+    // a Crawly now faces the way it moved (unless it was carried, e.g. by a falling group);
+    // its old and new neighbours may change floors
+    if (b.type === BLOCK.CRAWLY) {
+      this._reorient(b, turnCrawly ? [to.x - fromPos.x, to.y - fromPos.y, to.z - fromPos.z] : null, durationS);
+    }
     this._reorientAround(fromPos.x, fromPos.y, fromPos.z);
     this._reorientAround(to.x, to.y, to.z);
-    if (b.type === WATER_TYPE) {
+    if (b.type === BLOCK.WATER) {
       this._refreshWaterAround(fromPos.x, fromPos.y, fromPos.z);
       this._refreshWaterAround(to.x, to.y, to.z);
       this._dirty();
@@ -323,10 +356,10 @@ export class World {
   /** "New" scene: gray at origin, then 50 gray, 30 brown, 15 green and 10 random-colour blocks. */
   generateNew() {
     this.clear();
-    this.add(0, 0, 0, 'gray');
+    this.add(0, 0, 0, BLOCK.STONE);
     for (const [type, count] of NEW_SCENE_RECIPE) {
       for (let i = 0; i < count; i++) {
-        const t = type === 'random' ? RANDOM_COLORS[Math.floor(Math.random() * RANDOM_COLORS.length)] : type;
+        const t = type === 'random' ? RANDOM_BLOCKS[Math.floor(Math.random() * RANDOM_BLOCKS.length)] : type;
         this.addRandomAdjacent(t);
       }
     }
@@ -340,7 +373,7 @@ export class World {
       units: 'cm',
       savedAt: new Date().toISOString(),
       blocks: [...this.blocks.values()].map(({ x, y, z, type, front }) =>
-        (type === CRAWLY_TYPE && front ? { x, y, z, type, front } : { x, y, z, type })),
+        (type === BLOCK.CRAWLY && front ? { x, y, z, type, front } : { x, y, z, type })),
     };
   }
 
@@ -357,7 +390,7 @@ export class World {
         loaded++;
         // restore which way a Crawly was facing (its floor is re-derived below)
         const dir = Array.isArray(b.front) && b.front.map(Number);
-        if (type === CRAWLY_TYPE && dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) {
+        if (type === BLOCK.CRAWLY && dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) {
           this.get(x, y, z).front = dir;
         }
       } else skipped++;

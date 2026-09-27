@@ -1,28 +1,41 @@
-// Block type ids stay colour names (so older save files still load); the tool labels
-// give some of them game names: gray = Stone, brown = Dirt, green = Moss, blue = Water,
-// red = Berry, orange = Wood, magenta = Crawly.
+/**
+ * Block type ids, by game name. Always refer to block types through these constants.
+ * The id strings are the blocks' original colour names; they are what save files store,
+ * so they must never change (older saves would stop loading).
+ */
+export const BLOCK = Object.freeze({
+  STONE: 'gray',
+  DIRT: 'brown',
+  BERRY: 'red',
+  WOOD: 'orange',
+  YELLOW: 'yellow',
+  MOSS: 'green',
+  WATER: 'blue',
+  CRAWLY: 'magenta',
+});
+
 export const BLOCK_COLORS = {
-  red: '#e53935',
-  orange: '#b8804a', // Wood: warm tan (the id stays 'orange' for old saves)
-  yellow: '#fdd835',
-  green: '#43a047',
-  blue: '#1e88e5',
-  magenta: '#d63ad6',
-  brown: '#8b5a2b',
-  gray: '#9aa0a6',
+  [BLOCK.BERRY]: '#e53935',
+  [BLOCK.WOOD]: '#b8804a', // warm tan
+  [BLOCK.YELLOW]: '#fdd835',
+  [BLOCK.MOSS]: '#43a047',
+  [BLOCK.WATER]: '#1e88e5',
+  [BLOCK.CRAWLY]: '#d63ad6',
+  [BLOCK.DIRT]: '#8b5a2b',
+  [BLOCK.STONE]: '#9aa0a6',
 };
 
 export const TOOLS = [
-  { id: 'gray', label: 'Stone', block: 'gray' },
-  { id: 'brown', label: 'Dirt', block: 'brown' },
-  { id: 'red', label: 'Berry', block: 'red' },
-  { id: 'orange', label: 'Wood', block: 'orange' },
-  { id: 'yellow', label: 'Yellow block', block: 'yellow' },
-  { id: 'green', label: 'Moss', block: 'green' },
-  { id: 'blue', label: 'Water', block: 'blue' },
-  { id: 'magenta', label: 'Crawly', block: 'magenta' },
+  { id: BLOCK.STONE, label: 'Stone', block: BLOCK.STONE },
+  { id: BLOCK.DIRT, label: 'Dirt', block: BLOCK.DIRT },
+  { id: BLOCK.BERRY, label: 'Berry', block: BLOCK.BERRY },
+  { id: BLOCK.WOOD, label: 'Wood', block: BLOCK.WOOD },
+  { id: BLOCK.YELLOW, label: 'Yellow block', block: BLOCK.YELLOW },
+  { id: BLOCK.MOSS, label: 'Moss', block: BLOCK.MOSS },
+  { id: BLOCK.WATER, label: 'Water', block: BLOCK.WATER },
+  { id: BLOCK.CRAWLY, label: 'Crawly', block: BLOCK.CRAWLY },
   { id: 'delete', label: 'Delete', block: null },
 ];
 
-/** Colours used for the random-colour blocks in "New" (all non-gray colours). */
-export const RANDOM_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'magenta', 'brown'];
+/** Block types used for the random blocks in "New" (everything except Stone). */
+export const RANDOM_BLOCKS = [BLOCK.BERRY, BLOCK.WOOD, BLOCK.YELLOW, BLOCK.MOSS, BLOCK.WATER, BLOCK.CRAWLY, BLOCK.DIRT];

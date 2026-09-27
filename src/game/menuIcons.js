@@ -188,6 +188,22 @@ const DRAW = {
     ctx.globalAlpha /= 0.35;
     poly(ctx, P, HEX);
   },
+  outlinesOn(ctx, P, s) {
+    // hexagon face with a bold rim and a lighter inner face
+    ctx.fillStyle = INK;
+    ctx.globalAlpha *= 0.25;
+    poly(ctx, P, HEX, { fill: true });
+    ctx.globalAlpha /= 0.25;
+    ctx.lineWidth *= 1.8;
+    poly(ctx, P, HEX);
+  },
+  outlinesOff(ctx, P) {
+    // same face, no rim: just the flat fill
+    ctx.fillStyle = INK;
+    ctx.strokeStyle = 'rgba(0,0,0,0)';
+    ctx.globalAlpha *= 0.45;
+    poly(ctx, P, HEX, { fill: true });
+  },
   info(ctx, P, s) {
     circle(ctx, P, 0.5, 0.5, 0.36, s);
     line(ctx, P, [[0.5, 0.46], [0.5, 0.7]]);

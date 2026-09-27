@@ -1,11 +1,10 @@
-// Crawlies (block type 'magenta'): orientation (floor + front) and their two eyes.
+// Crawlies (BLOCK.CRAWLY): orientation (floor + front) and their two eyes.
 import * as THREE from 'three';
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
-import { createBlockGeometry } from './geometry.js';
+import { BLOCK } from './tools.js';
 
-export const CRAWLY_TYPE = 'magenta';
 /** Block types a Crawly can use as its floor: Stone, Dirt. */
-export const FLOOR_TYPES = new Set(['gray', 'brown']);
+export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT]);
 /** Eye size relative to a block. */
 export const EYE_SCALE = 0.25;
 /**
@@ -72,14 +71,14 @@ function frameQuaternion(c, out) {
 }
 
 /**
- * Renders two shiny black eyes (small truncated octahedra) per Crawly. When a Crawly's
+ * Renders two shiny black eyes (small spheres) per Crawly. When a Crawly's
  * front or floor changes, the eyes revolve around its centre to the new front side;
  * they only change position, never rotation.
  */
 export class CrawlyEyes {
   constructor(parent) {
     this.parent = parent;
-    this.geometry = createBlockGeometry();
+    this.geometry = new THREE.SphereGeometry(1, 20, 14); // radius 1 = a block's inradius, scaled by EYE_SCALE
     this.material = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.12, metalness: 0.0 });
     this.state = new Map(); // crawly block -> { q, from, to, t0, dur }
     this.mesh = null;

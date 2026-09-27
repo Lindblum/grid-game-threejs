@@ -45,7 +45,7 @@ The same table (with button icons) is under **Options → Controls** in the game
 
 **Menu:** the game opens on a freshly generated scene with the menu up. The menu
 (titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
-materials: procedural or solid, XR on/off, Controls). Leave XR with Options → XR: On.
+materials: procedural or solid, outlines on/off, XR on/off, Controls). Leave XR with Options → XR: On.
 
 **HUD:** the Left HUD holds the Menu (≡) button, the Right HUD holds the tool selector.
 In XR each is docked above its own controller, tilted to face up toward you
@@ -57,12 +57,19 @@ Crawly (magenta), and Delete.
 
 **Turns:** the game clock (shown on the Left HUD as HH:mm:ss) counts up once per second
 while you play, and pauses while the menu is open; New and Load reset it to 00:00:00.
-Every second is a turn: first, any block with no neighbours takes one step toward its
-nearest block; then Water flows toward the origin; then each Crawly may crawl (a
-¼-second slide) into an empty neighbouring cell that borders Stone, Dirt or Moss.
-Every 10th turn, each Wood block with an empty neighbouring cell that touches no other
-Solid block (Stone, Dirt, Wood, Berry) has a 50 % chance to grow Wood into one
-(at most 10 new Wood per growth turn).
+Every second is a turn: first, blocks are split into connected groups, and every group
+that doesn't contain the origin block shifts one step toward the origin as a whole (in the
+lattice direction closest to the line from its centre to the origin), so detached chunks
+fall onto the main build; then Water flows toward the origin; then each Crawly may crawl (a
+½-second slide; every move animates over half a turn) into an empty neighbouring cell that borders Stone, Dirt or Moss.
+Every turn, each tree (connected group of Wood) that touches Water drinks the Water block
+closest to the origin and grows one Wood into a cell next to the tree that touches
+exactly one Wood and no other Solid block (Stone, Dirt, Moss, Wood, Berry). A tree of 5
+or more Wood grows a Berry instead 25 % of the time. Then each Dirt next to Water absorbs
+it (deleting the Water) and turns into Moss. Trees and Dirt only take Water that has
+stayed still for 2 turns, so falling or flowing Water isn't absorbed mid-move.
+Rain: every 10th turn a Water block appears at a random point 1 m from the origin (on
+the surface of a sphere) and falls in toward the build.
 Rules live in `src/game/sim.js`. Each Crawly knows its floor (a side touching Stone or
 Dirt) and its front (the way it last moved); its two eyes revolve to the front side.
 With a block tool, the empty cell beside the face you point at (square or hexagon)
@@ -95,13 +102,13 @@ downloading / opening a .json file instead.
 | `src/game/lattice.js` | BCC lattice maths: 14 neighbour offsets, face → neighbour lookup |
 | `src/game/geometry.js` | Truncated octahedron mesh (with outlined faces) and edges |
 | `src/game/world.js` | Block storage, instanced rendering, New-scene generator, JSON |
-| `src/game/Engine.js` | Three.js scene, camera, input, raycasting, XR controllers |
+| `src/game/engine.js` | Three.js scene, camera, input, raycasting, XR controllers |
 | `src/game/xrPanels.js` | Canvas-textured Left/Right HUDs and menu panel for XR |
 | `src/game/icons.js` | Tool icons drawn from the real 3D shape |
 | `src/game/menuIcons.js` | Icons shown beside each menu button |
 | `src/game/controls.js` | The control mappings shown on the Controls panel |
 | `src/game/inputIcons.js` | Key, mouse, gamepad and Touch-controller button glyphs |
-| `src/game/sim.js` | Per-turn simulation (strays, Water, Crawly movement) |
+| `src/game/sim.js` | Per-turn simulation (falling groups, Water, Crawlies, Wood growth) |
 | `src/game/crawly.js` | Crawly floor/front orientation and eyes |
 | `src/game/audio.js` | Synthesised sounds: place, delete, resume, new/load, save (no audio files) |
 | `src/App.jsx` | React UI: Left/Right HUD, menu, toasts |

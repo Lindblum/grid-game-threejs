@@ -196,7 +196,12 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * and water translucency): the procedural code is compiled out, for slower GPUs.
  */
 export function createBlockMaterials() {
-  const uniforms = { uDitherIndex: { value: -1 }, uTime: { value: 0 }, uNoiseTex: { value: createNoiseTexture() } };
+  const uniforms = {
+    uDitherIndex: { value: -1 },
+    uTime: { value: 0 },
+    uNoiseTex: { value: createNoiseTexture() },
+    uOutlines: { value: 1 }, // Options → Outlines: 1 = draw face outlines, 0 = hide them
+  };
   const options = { procedural: true };
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
   const water = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false });
@@ -269,6 +274,7 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         varying vec3 vLocalPos;
         varying float vSeed;
         uniform float uTime;
+        uniform float uOutlines;
         ${NOISE_GLSL}
         ${WATER_GLSL}
         ${BUMP_GLSL}`
@@ -428,7 +434,7 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         float fw = max(fwidth(vEdgeDist), 1e-4);
         float edgeW = 0.045;
         float edgeMix = smoothstep(edgeW - fw, edgeW + fw, vEdgeDist);
-        diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, edgeMix);`
+        diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, max(edgeMix, 1.0 - uOutlines));`
       )
       .replace(
         '#include <roughnessmap_fragment>',

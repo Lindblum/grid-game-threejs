@@ -1,15 +1,17 @@
 // Turn-based simulation: runs once per game second ("turn").
-// Order each turn: 1) stray (neighbourless) blocks step toward the others, 2) Water flows
-// toward the origin, 3) Crawlies move, 4) every 10th turn, Wood grows.
+// Order each turn: 1) connected groups not anchored at the origin fall one step toward it,
+// 2) Water flows toward the origin, 3) Crawlies move, 4) trees (Wood groups) drink Water
+// and grow Wood or Berries, 5) Dirt absorbs Water and becomes Moss (both only take Water
+// that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
+// from the origin.
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
-import { CRAWLY_TYPE } from './crawly.js';
+import { BLOCK } from './tools.js';
+import { STEP_SECONDS } from './world.js'; // every move animates over half a turn
 
 /** Block types (ids) a Crawly is willing to crawl next to: Stone, Dirt, Moss. */
-export const CRAWLY_HABITAT = new Set(['gray', 'brown', 'green']);
+export const CRAWLY_HABITAT = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS]);
 /** Chance that a Crawly decides to move on a given turn (when it has somewhere to go). */
 export const CRAWLY_MOVE_CHANCE = 0.5;
-/** Duration of a Crawly's step animation, in seconds. */
-export const CRAWLY_STEP_SECONDS = 0.25;
 
 function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) {
@@ -19,98 +21,212 @@ function shuffle(a) {
   return a;
 }
 
-/** Duration of a stray block's step toward the others, in seconds. */
-export const STRAY_STEP_SECONDS = 0.25;
+/**
+ * Splits blocks into connected groups (blocks touching through any of the 14 faces).
+ * Only blocks passing `include` are grouped, and only through each other.
+ */
+export function connectedGroups(world, include = () => true) {
+  const seen = new Set();
+  const groups = [];
+  for (const start of world.blocks.values()) {
+    if (seen.has(start) || !include(start)) continue;
+    seen.add(start);
+    const group = [start];
+    for (let i = 0; i < group.length; i++) {
+      const b = group[i];
+      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
+        if (n && !seen.has(n) && include(n)) {
+          seen.add(n);
+          group.push(n);
+        }
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
 
-function hasNeighbor(world, b) {
-  return NEIGHBOR_DIRS.some(([dx, dy, dz]) => world.blocks.has(cellKey(b.x + dx, b.y + dy, b.z + dz)));
+/** The lattice direction (one of the 14) pointing most nearly along (x, y, z); ties at random. */
+function closestDir(x, y, z) {
+  const len = Math.hypot(x, y, z);
+  let best = [], bestCos = -Infinity;
+  for (const d of NEIGHBOR_DIRS) {
+    const cos = (d[0] * x + d[1] * y + d[2] * z) / (Math.hypot(...d) * len);
+    if (cos > bestCos + 1e-9) {
+      bestCos = cos;
+      best = [d];
+    } else if (Math.abs(cos - bestCos) <= 1e-9) best.push(d);
+  }
+  return best[Math.floor(Math.random() * best.length)];
 }
 
 /**
- * Any block with no neighbours takes one step toward its nearest block: into the empty
- * adjacent cell that is closest (straight-line distance) to that block, ties broken at random.
- * All moves are planned from the start-of-turn layout, then applied in random order
- * (a step whose cell got taken in the meantime is skipped). Returns the set of moved blocks.
+ * Gravity toward the origin. Blocks are bucketed into connected groups; every group that
+ * does not contain the origin cell shifts one step as a whole, in whichever of the 14
+ * lattice directions points most nearly at the origin from the group's average centre.
+ * Groups move one at a time in random order against the current layout, so a group whose
+ * path is blocked (by a group that moved earlier this turn) waits. The group holding the
+ * origin block stays put; detached chunks fall onto it and merge. Returns the set of
+ * moved blocks.
  */
-export function stepStrays(world) {
-  const all = [...world.blocks.values()];
-  if (all.length < 2) return new Set();
-  const plans = [];
-  for (const b of all) {
-    if (hasNeighbor(world, b)) continue;
-    // nearest other block
-    let nearest = null, best = Infinity;
-    for (const o of all) {
-      if (o === b) continue;
-      const d = (o.x - b.x) ** 2 + (o.y - b.y) ** 2 + (o.z - b.z) ** 2;
-      if (d < best) {
-        best = d;
-        nearest = o;
-      }
-    }
-    // the empty neighbouring cell that gets closest to it
-    let cells = [], bestD = Infinity;
-    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
-      const x = b.x + dx, y = b.y + dy, z = b.z + dz;
-      if (world.blocks.has(cellKey(x, y, z))) continue;
-      const d = (nearest.x - x) ** 2 + (nearest.y - y) ** 2 + (nearest.z - z) ** 2;
-      if (d < bestD - 1e-9) {
-        bestD = d;
-        cells = [{ x, y, z }];
-      } else if (Math.abs(d - bestD) < 1e-9) cells.push({ x, y, z });
-    }
-    if (cells.length && bestD < best) plans.push({ b, to: cells[Math.floor(Math.random() * cells.length)] });
-  }
+export function stepGroups(world) {
   const moved = new Set();
-  for (const { b, to } of shuffle(plans)) {
-    if (world.move(b, to, STRAY_STEP_SECONDS)) moved.add(b);
+  for (const group of shuffle(connectedGroups(world))) {
+    if (group.some((b) => b.x === 0 && b.y === 0 && b.z === 0)) continue; // anchored at the origin
+    let cx = 0, cy = 0, cz = 0;
+    for (const b of group) {
+      cx += b.x;
+      cy += b.y;
+      cz += b.z;
+    }
+    if (!cx && !cy && !cz) continue; // centred on the origin: no direction to fall
+    const [dx, dy, dz] = closestDir(-cx, -cy, -cz);
+    const members = new Set(group);
+    // every target cell must be empty or vacated by this group (another group may have moved in)
+    const blocked = group.some((b) => {
+      const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
+      return n && !members.has(n);
+    });
+    if (blocked) continue;
+    // leading blocks first, so each block's target cell is already free when it moves
+    group.sort((a, b) => (b.x * dx + b.y * dy + b.z * dz) - (a.x * dx + a.y * dy + a.z * dz));
+    for (const b of group) {
+      if (world.move(b, { x: b.x + dx, y: b.y + dy, z: b.z + dz }, STEP_SECONDS, { turnCrawly: false })) moved.add(b);
+    }
   }
   return moved;
 }
 
-/** Wood grows on every WOOD_GROW_EVERY-th turn. */
-export const WOOD_GROW_EVERY = 10;
-/** Chance that a Wood block with room to grow actually grows on a growth turn. */
-export const WOOD_GROW_CHANCE = 0.5;
-/** At most this many new Wood blocks per growth turn (stops exponential growth). */
-export const WOOD_GROW_MAX_PER_TURN = 10;
-/** Solid block types (Stone, Dirt, Wood, Berry): Wood only grows into cells away from these. */
-export const SOLID_TYPES = new Set(['gray', 'brown', 'green', 'orange', 'red']);
+/** Rain: one Water drop every RAIN_EVERY turns, RAIN_RADIUS_CM from the origin (1 m). */
+export const RAIN_EVERY = 10;
+export const RAIN_RADIUS_CM = 100;
+
+/** The lattice cell (all-even or all-odd coordinates) whose centre is nearest (x, y, z). */
+function nearestCell(x, y, z) {
+  const even = [x, y, z].map((v) => 2 * Math.round(v / 2));
+  const odd = [x, y, z].map((v) => 2 * Math.round((v - 1) / 2) + 1);
+  const d2 = (c) => (c[0] - x) ** 2 + (c[1] - y) ** 2 + (c[2] - z) ** 2;
+  const [cx, cy, cz] = d2(even) <= d2(odd) ? even : odd;
+  return { x: cx, y: cy, z: cz };
+}
 
 /**
- * Wood growth, on turns that are a multiple of WOOD_GROW_EVERY. Each Wood block that
- * existed at the start of the turn acts once, in random order, seeing growth already
- * made this turn. It looks for empty neighbouring cells that touch no Solid block other
- * than itself; if there are any, it has a WOOD_GROW_CHANCE chance to place Wood in one
- * of them (picked at random). Growth stops for the turn once WOOD_GROW_MAX_PER_TURN
- * blocks have been placed; the random order keeps that fair between Wood blocks.
- * Returns the number of Wood blocks placed.
+ * Rain, on turns that are a multiple of RAIN_EVERY: picks a uniformly random point on the
+ * sphere of radius RAIN_RADIUS_CM around the origin and puts a Water block in the lattice
+ * cell nearest to it (skipped if that cell is already taken). The drop is its own
+ * detached group, so stepGroups makes it fall toward the origin on the following turns.
+ * Returns the new Water block, or null.
+ */
+export function stepRain(world, turn) {
+  if (turn % RAIN_EVERY !== 0) return null;
+  // uniform direction: z uniform in [-1, 1], angle uniform around the z axis
+  const z = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - z * z);
+  const c = nearestCell(r * Math.cos(a) * RAIN_RADIUS_CM, r * Math.sin(a) * RAIN_RADIUS_CM, z * RAIN_RADIUS_CM);
+  return world.add(c.x, c.y, c.z, BLOCK.WATER) ? world.get(c.x, c.y, c.z) : null;
+}
+
+/** Water can only be absorbed (by trees or Dirt) once it has stayed still this many turns. */
+export const WATER_SETTLE_TURNS = 2;
+
+/** Water that hasn't moved during the last WATER_SETTLE_TURNS turns (including this one). */
+function isSettledWater(b, turn) {
+  return b.type === BLOCK.WATER && !(b.movedTurn > turn - WATER_SETTLE_TURNS);
+}
+
+/** The block closest to the origin among `blocks` (ties at random). */
+function closestToOrigin(blocks) {
+  const d2 = (b) => b.x * b.x + b.y * b.y + b.z * b.z;
+  const minD = Math.min(...blocks.map(d2));
+  const nearest = blocks.filter((b) => d2(b) === minD);
+  return nearest[Math.floor(Math.random() * nearest.length)];
+}
+
+/** Chance that a Dirt block next to settled Water absorbs it (and turns into Moss) each turn. */
+export const DIRT_ABSORB_CHANCE = 1;
+
+/**
+ * Dirt next to settled Water (see WATER_SETTLE_TURNS) absorbs it: the Water block is
+ * deleted — the one closest to the origin, if several touch — and the Dirt becomes Moss.
+ * Dirt blocks act one at a time in random order, so each Water is absorbed only once.
+ * Returns the number of Dirt blocks that turned into Moss.
+ */
+export function stepDirt(world, turn) {
+  let changed = 0;
+  for (const d of shuffle([...world.blocks.values()].filter((b) => b.type === BLOCK.DIRT))) {
+    const waters = [];
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const n = world.blocks.get(cellKey(d.x + dx, d.y + dy, d.z + dz));
+      if (n && isSettledWater(n, turn)) waters.push(n);
+    }
+    if (!waters.length || Math.random() >= DIRT_ABSORB_CHANCE) continue;
+    const w = closestToOrigin(waters);
+    world.remove(w.x, w.y, w.z);
+    if (world.setType(d, BLOCK.MOSS)) changed++;
+  }
+  return changed;
+}
+
+/** Solid block types (Stone, Dirt, Moss, Wood, Berry): Wood only grows into cells away from these. */
+export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY]);
+/** A tree (connected Wood group) needs at least this many Wood blocks to grow Berries. */
+export const BERRY_MIN_TREE_SIZE = 5;
+/** Chance that a big-enough tree grows a Berry instead of Wood when watered. */
+export const BERRY_CHANCE = 0.4;
+
+/**
+ * Tree growth, every turn. Wood blocks are bucketed into connected Wood groups (trees).
+ * Each tree (in random order, seeing earlier trees' growth) that touches settled Water
+ * (still for WATER_SETTLE_TURNS turns) drinks one such Water block — the one closest to the
+ * origin, ties at random — and grows one block into
+ * a random cell next to the tree that is empty (or is the drunk Water's cell) and touches
+ * exactly one Wood and no other Solid block. The new block is Wood, or, for a tree of at
+ * least BERRY_MIN_TREE_SIZE Wood, a Berry with BERRY_CHANCE. A tree with no such cell
+ * leaves its Water alone. Returns the number of blocks grown.
  */
 export function stepWood(world, turn) {
-  if (turn % WOOD_GROW_EVERY !== 0) return 0;
-  const woods = shuffle([...world.blocks.values()].filter((b) => b.type === 'orange'));
   let grown = 0;
-  for (const w of woods) {
-    if (grown >= WOOD_GROW_MAX_PER_TURN) break;
-    const cells = [];
-    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
-      const x = w.x + dx, y = w.y + dy, z = w.z + dz;
-      if (world.blocks.has(cellKey(x, y, z))) continue; // must be empty
-      const crowded = NEIGHBOR_DIRS.some(([ex, ey, ez]) => {
-        const n = world.blocks.get(cellKey(x + ex, y + ey, z + ez));
-        return n && n !== w && SOLID_TYPES.has(n.type);
-      });
-      if (!crowded) cells.push({ x, y, z });
+  for (const tree of shuffle(connectedGroups(world, (b) => b.type === BLOCK.WOOD))) {
+    // settled Water touching the group; drink the one closest to the origin
+    const waters = new Set();
+    for (const w of tree) {
+      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        const n = world.blocks.get(cellKey(w.x + dx, w.y + dy, w.z + dz));
+        if (n && isSettledWater(n, turn)) waters.add(n);
+      }
     }
-    if (!cells.length || Math.random() >= WOOD_GROW_CHANCE) continue;
-    const c = cells[Math.floor(Math.random() * cells.length)];
-    if (world.add(c.x, c.y, c.z, 'orange')) grown++;
+    if (!waters.size) continue;
+    const drink = closestToOrigin([...waters]);
+    const drinkKey = cellKey(drink.x, drink.y, drink.z);
+
+    // growth cells: free (empty, or the Water about to be drunk), next to the group,
+    // touching exactly one Solid block, which is Wood
+    const cells = new Map();
+    for (const w of tree) {
+      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        const x = w.x + dx, y = w.y + dy, z = w.z + dz;
+        const k = cellKey(x, y, z);
+        if (cells.has(k) || (world.blocks.has(k) && k !== drinkKey)) continue;
+        let solids = 0, woods = 0;
+        for (const [ex, ey, ez] of NEIGHBOR_DIRS) {
+          const n = world.blocks.get(cellKey(x + ex, y + ey, z + ez));
+          if (n && SOLID_TYPES.has(n.type)) {
+            solids++;
+            if (n.type === BLOCK.WOOD) woods++;
+          }
+        }
+        if (solids === 1 && woods === 1) cells.set(k, { x, y, z });
+      }
+    }
+    if (!cells.size) continue;
+    const c = [...cells.values()][Math.floor(Math.random() * cells.size)];
+    var fruitRand = Math.random();
+    const fruit = tree.length >= BERRY_MIN_TREE_SIZE && fruitRand < BERRY_CHANCE;
+    world.remove(drink.x, drink.y, drink.z);
+    if (world.add(c.x, c.y, c.z, fruit ? BLOCK.BERRY : BLOCK.WOOD)) grown++;
   }
   return grown;
 }
-
-/** Duration of a Water block's flow step, in seconds. */
-export const WATER_STEP_SECONDS = 0.25;
 
 /**
  * Water flows toward the origin. Water blocks act one at a time, nearest the origin first
@@ -122,7 +238,7 @@ export const WATER_STEP_SECONDS = 0.25;
  */
 export function stepWater(world, skip = new Set()) {
   const dist2 = (p) => p.x * p.x + p.y * p.y + p.z * p.z;
-  const waters = shuffle([...world.blocks.values()].filter((b) => b.type === 'blue' && !skip.has(b)));
+  const waters = shuffle([...world.blocks.values()].filter((b) => b.type === BLOCK.WATER && !skip.has(b)));
   waters.sort((a, b) => dist2(a) - dist2(b)); // stable, so equal distances keep the shuffled order
   const moved = new Set();
   for (const w of waters) {
@@ -138,7 +254,7 @@ export function stepWater(world, skip = new Set()) {
       } else if (d === bestD && d < here) cells.push(c);
     }
     if (!cells.length) continue;
-    if (world.move(w, cells[Math.floor(Math.random() * cells.length)], WATER_STEP_SECONDS)) moved.add(w);
+    if (world.move(w, cells[Math.floor(Math.random() * cells.length)], STEP_SECONDS)) moved.add(w);
   }
   return moved;
 }
@@ -150,7 +266,7 @@ export function stepWater(world, skip = new Set()) {
  * Returns the number of Crawlies that moved.
  */
 export function stepCrawlies(world, skip = new Set()) {
-  const crawlies = shuffle([...world.blocks.values()].filter((b) => b.type === CRAWLY_TYPE && !skip.has(b)));
+  const crawlies = shuffle([...world.blocks.values()].filter((b) => b.type === BLOCK.CRAWLY && !skip.has(b)));
   let moved = 0;
   for (const c of crawlies) {
     if (Math.random() >= CRAWLY_MOVE_CHANCE) continue;
@@ -166,7 +282,7 @@ export function stepCrawlies(world, skip = new Set()) {
     }
     if (!options.length) continue;
     const to = options[Math.floor(Math.random() * options.length)];
-    if (world.move(c, to, CRAWLY_STEP_SECONDS)) moved++;
+    if (world.move(c, to, STEP_SECONDS)) moved++;
   }
   return moved;
 }
