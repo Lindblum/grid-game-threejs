@@ -1,5 +1,6 @@
 // Shared by every creature type (Crawly, Buzzy, and a Squirmy's head): orientation (floor +
-// front), the two eyes, and (for types with `wings`) two flapping wings. Each creature type's own rules (moving, eating, …) live in sim.js, and a
+// front), the two eyes, and (for types with `wings` / `legs`) two flapping wings and six
+// stepping legs. Each creature type's own rules (moving, eating, …) live in sim.js, and a
 // Squirmy's chain bundling in world.js.
 import * as THREE from 'three';
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
@@ -33,7 +34,34 @@ function createWingGeometry() {
   return g;
 }
 
+/**
+ * Legs (creature types with `legs: true`): six thin black cylinders, three a side, from hips
+ * under the body out and down to feet on the floor side, in the creature's own frame (cm;
+ * x = right, y = up, z = front), so they turn to the floor with the eyes. They step as two
+ * tripods (front and back on one side, middle on the other): each turn one tripod lifts its
+ * feet by LEG_LIFT and sets them down again, the other tripod the next turn.
+ */
+const LEG_ROWS = [0.5, 0, -0.5]; // hip z: front, middle, back
+const LEGS = [1, -1].flatMap((side) => LEG_ROWS.map((z, row) => ({
+  hip: new THREE.Vector3(side * 0.45, -0.5, z),
+  foot: new THREE.Vector3(side * 1.05, -0.98, z * 1.5),
+  tripod: (row + (side > 0 ? 0 : 1)) % 2,
+})));
+const LEG_LIFT = 0.4; // cm the foot rises (and swings forward by half that) mid-step
+const LEG_RADIUS = 0.06; // cm
+
+/** Leg geometry: a unit-long cylinder from the origin (hip) down to (0, -1, 0) (foot). */
+function createLegGeometry() {
+  const g = new THREE.CylinderGeometry(LEG_RADIUS, LEG_RADIUS * 0.7, 1, 8, 1);
+  g.translate(0, -0.5, 0);
+  return g;
+}
+
 const _v = new THREE.Vector3();
+const _legDown = new THREE.Vector3(0, -1, 0);
+const _foot = new THREE.Vector3();
+const _legDir = new THREE.Vector3();
+const _legScale = new THREE.Vector3();
 const _wq = new THREE.Quaternion();
 const _flap = new THREE.Quaternion();
 const _zAxis = new THREE.Vector3(0, 0, 1);
@@ -123,6 +151,9 @@ export class CreatureEyes {
       depthWrite: false, roughness: 0.15, metalness: 0.1,
     });
     this.wingMesh = null;
+    this.legGeometry = createLegGeometry();
+    this.legMaterial = new THREE.MeshStandardMaterial({ color: 0x080808, roughness: 0.4, metalness: 0.0 });
+    this.legMesh = null;
     this._flapTurn = null; // the turn the current flap belongs to
     this._flapT0 = -Infinity; // when it started (ms)
     this._allocate(64);
@@ -153,6 +184,18 @@ export class CreatureEyes {
     wings.raycast = () => { };
     this.parent.add(wings);
     this.wingMesh = wings;
+    if (this.legMesh) {
+      this.parent.remove(this.legMesh);
+      this.legMesh.dispose();
+    }
+    const legs = new THREE.InstancedMesh(this.legGeometry, this.legMaterial, capacity * 3); // 6 per creature, eyes 2
+    legs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    legs.count = 0;
+    legs.frustumCulled = false;
+    legs.name = 'creature-legs';
+    legs.raycast = () => { };
+    this.parent.add(legs);
+    this.legMesh = legs;
   }
 
   /** Points the eyes at `c`'s current front/floor, revolving there over `durationS`. */
@@ -177,17 +220,21 @@ export class CreatureEyes {
     this.state.clear();
   }
 
-  /** Call once per frame. `positionOf(c, out)` gives the creature's rendered centre. */
   /**
    * Call once per frame. `positionOf(c, out)` gives the creature's rendered centre. `turn`
-   * (the game turn) starts a wing flap each time it changes; a flap lasts `flapSeconds`.
+   * (the game turn) starts a wing flap and a leg step each time it changes; a flap lasts
+   * `flapSeconds`, a step `stepSeconds`.
    */
-  update(now, positionOf, { turn = null, flapSeconds = 0.4 } = {}) {
+  update(now, positionOf, { turn = null, flapSeconds = 0.4, stepSeconds = 0.8 } = {}) {
     if (turn !== this._flapTurn) {
       this._flapTurn = turn;
       this._flapT0 = now;
     }
-    let w = 0;
+    let w = 0, l = 0;
+    // which tripod steps this turn, and how far through its step it is (0..1)
+    const stepping = (turn ?? 0) % 2;
+    const stepT = Math.min(1, Math.max(0, (now - this._flapT0) / (stepSeconds * 1000)));
+    const lift = Math.sin(Math.PI * stepT);
     const need = this.state.size * EYE_OFFSETS.length;
     if (need > this.mesh.instanceMatrix.count) {
       let cap = this.mesh.instanceMatrix.count;
@@ -223,10 +270,27 @@ export class CreatureEyes {
           this.wingMesh.setMatrixAt(w++, _m.compose(p, _wq, _wingScale[k]));
         });
       }
+      if (blockProps(c.type).legs) {
+        for (const leg of LEGS) {
+          p.copy(leg.hip).applyQuaternion(s.q).add(pos);
+          _foot.copy(leg.foot);
+          if (leg.tripod === stepping) {
+            _foot.y += LEG_LIFT * lift; // lifted off the floor…
+            _foot.z += LEG_LIFT * 0.5 * lift; // …and reaching forward
+          }
+          _foot.applyQuaternion(s.q).add(pos);
+          _legDir.subVectors(_foot, p);
+          const len = _legDir.length();
+          _wq.setFromUnitVectors(_legDown, _legDir.divideScalar(len));
+          this.legMesh.setMatrixAt(l++, _m.compose(p, _wq, _legScale.set(1, len, 1)));
+        }
+      }
     }
     this.mesh.count = i;
     this.mesh.instanceMatrix.needsUpdate = true;
     this.wingMesh.count = w;
     this.wingMesh.instanceMatrix.needsUpdate = true;
+    this.legMesh.count = l;
+    this.legMesh.instanceMatrix.needsUpdate = true;
   }
 }

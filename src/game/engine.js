@@ -100,8 +100,8 @@ export class Engine {
       speed: SPEED.default, // Options → Speed: turns per minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
       fog: true, // Options → Fog: Fog recipe steps in New scenes, and Fog forming far out
-      debugMode: false, // Options → Debug: debug panel (HUD / XR tablet) and developer options
-      bevel: false, // Options → Bevel (Experimental), debug-only: not implemented yet
+      debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
+      smoothRendering: false, // Options → Rendering: Smooth (BlockBundles drawn as merged, smoothed bodies) or Blocky (default)
       saves: null,
       savesError: null,
       page: 0,
@@ -160,7 +160,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['soundOn', 'passthrough', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'bevel'];
+  static OPTION_KEYS = ['soundOn', 'passthrough', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering'];
 
   _saveOptions() {
     saveOptionsCookie(Object.fromEntries(Engine.OPTION_KEYS.map((k) => [k, this.state[k]])));
@@ -195,7 +195,8 @@ export class Engine {
       this.setState({ ambientOcclusion: saved.ambientOcclusion });
     }
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed);
-    for (const k of ['rain', 'debugMode', 'bevel']) if (bool(k)) this.setState({ [k]: saved[k] });
+    for (const k of ['rain', 'debugMode', 'smoothRendering']) if (bool(k)) this.setState({ [k]: saved[k] });
+    if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
     if (bool('fog')) this.setFog(saved.fog);
   }
   toast(text, kind = 'info') {
@@ -575,7 +576,7 @@ export class Engine {
     const tool = TOOLS[s.toolIndex];
     if (tool.block) return `${tool.label} (x${s.blockCounts[tool.block] ?? 0})`; // e.g. "Stone (x100)"
     if (tool.id !== TOOL.SELECT) return tool.label;
-    return s.selectPhase === 'target' ? 'Select: pick a target' : 'Select: pick a Crawly';
+    return s.selectPhase === 'target' ? 'Select: pick a target' : 'Select';
   }
 
   /**
@@ -1006,7 +1007,10 @@ export class Engine {
       console.info(`Debug mode ${on ? 'on' : 'off'}`);
       return;
     }
-    if (id === 'bevel') return this.setState({ bevel: !s.bevel }); // placeholder: no effect yet
+    if (id === 'rendering') {
+      this.world.setSmoothRendering(!s.smoothRendering); // Smooth: BlockBundles drawn as merged, smoothed bodies
+      return this.setState({ smoothRendering: !s.smoothRendering });
+    }
     if (id === 'enterxr') return this.enterXR();
     if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
     if (id === 'back') return this.setState({ menu: s.menu === 'controls' ? 'options' : 'main', page: 0 });

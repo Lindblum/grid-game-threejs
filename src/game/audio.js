@@ -1,14 +1,14 @@
 // Sound effects: small synthesized ones (no files), plus recorded samples from /sfx.
 // The samples are imported with ?url so Vite bundles them (sfx/ is outside public/).
-import berryGrowUrl from '../../sfx/berry-grow.wav?url';
+import berryGrowUrl from '../../sfx/fruit.wav?url';
 import waitUrl from '../../sfx/wait.wav?url';
 import assignUrl from '../../sfx/assign.wav?url';
-import crawlyDoneUrl from '../../sfx/crawly-done.wav?url';
-import crawlyTrappedUrl from '../../sfx/crawly-trapped.wav?url';
-import crawlyDeathUrl from '../../sfx/crawly-death.wav?url';
+import crawlyDoneUrl from '../../sfx/done.wav?url';
+import crawlyTrappedUrl from '../../sfx/trapped.wav?url';
+import crawlyDeathUrl from '../../sfx/death.wav?url';
 import eatUrl from '../../sfx/eat.wav?url';
 import sipUrl from '../../sfx/sip.wav?url';
-import waterDripUrl from '../../sfx/water-drip.wav?url';
+import waterDripUrl from '../../sfx/drip.wav?url';
 import ineffectiveUrl from '../../sfx/ineffective.wav?url';
 import breezeUrl from '../../sfx/breeze.wav?url';
 // Not in sfx/ yet: resolved at run time, so the build doesn't fail; silent until the file exists.

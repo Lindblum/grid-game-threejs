@@ -46,14 +46,16 @@ The same table (with button icons) is under **Options → Controls** in the game
 **Menu:** the game opens straight into a freshly generated scene, with a countdown (T -3, -2, -1 with a
 "ready" beep each, then a higher "go" beep at 0); tools work from 0. New and Load start the same countdown. The menu
 (titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
-materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, speed (12–240 turns per minute in steps of 12, default 60), rain on/off, fog on/off, debug on/off, Controls).
+materials: procedural or solid, rendering: blocky (default; every block on its own) or smooth
+(every BlockBundle, i.e. connected blocks of one type, a Squirmy, a Crawly or Buzzy, drawn as one
+merged body with rounded edges and smooth shading; Crystal stays faceted), outlines on/off, ambient occlusion on/off, XR on/off, speed (12–240 turns per minute in steps of 12, default 60), rain on/off, fog on/off, debug on/off, Controls).
 The Options settings are saved in a cookie whenever you leave the Options menu, and restored
 when the page loads (XR itself is not: it always starts off).
 
 **Debug** (Options) adds a panel under the HUDs with the selected (or pointed-at) block's
 properties, a Crawly's behavior among them, and the recent console log. In XR it is a
-floating tablet: squeeze a grip near it, or while pointing at it, to move it. Debug also
-unlocks developer options in Options (Bevel (Experimental), not implemented yet). Leave XR with Options → XR: On.
+floating tablet: squeeze a grip near it, or while pointing at it, to move it.
+Leave XR with Options → XR: On.
 
 **HUD:** the Left HUD holds the Menu (≡) button, the Right HUD holds the tool selector.
 In XR each is docked above its own controller, tilted to face up toward you
@@ -99,7 +101,8 @@ a behavior by the player: selecting it, sending it, or Y / X) with a free slot g
 Berry it can see and eats it once it is next to it; one following the player's orders doesn't. With a creature selected, press A
 (gamepad or Touch controller) to make it eat the block in front of it; if it can't, the
 "ineffective" sound plays. Press B to make it excrete: the item in its tail's slot becomes a
-block in an empty cell behind the tail (it grows in from the tail), and the other items move
+block in an empty cell behind the tail (it grows in from the tail, and, with Rendering: Smooth,
+is smooth-shaded from then on, like everything excreted: Nimbus rain, tree growth; Crystal stays faceted), and the other items move
 along toward the tail. A selected creature waits; press Y to set it wandering (on Touch
 controllers, left Y: it opens the menu when nothing is selected) and X to make it wait again.
 
@@ -166,7 +169,8 @@ downloading / opening a .json file instead.
 | `src/game/controls.js` | The control mappings shown on the Controls panel |
 | `src/game/inputIcons.js` | Key, mouse, gamepad and Touch-controller button glyphs |
 | `src/game/sim.js` | Per-turn simulation (falling groups, Water, Crawlies, Wood growth) |
-| `src/game/creature.js` | Shared by all creatures: floor/front orientation, eyes, and wings |
+| `src/game/creature.js` | Shared by all creatures: floor/front orientation, eyes, wings, and legs |
+| `src/game/bundleBody.js` | Options → Rendering: Smooth: each BlockBundle drawn as one merged, smooth-shaded mesh |
 | `src/game/audio.js` | Synthesised sounds: place, delete, resume, new/load, save (no audio files) |
 | `src/App.jsx` | React UI: Left/Right HUD, menu, toasts |
 

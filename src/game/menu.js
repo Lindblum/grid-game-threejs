@@ -67,15 +67,16 @@ export function menuModel(state) {
           label: `Materials: ${state.proceduralMaterials ? 'Procedural' : 'Solid'}`,
           icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
         },
+        {
+          id: 'rendering',
+          label: `Rendering: ${state.smoothRendering ? 'Smooth' : 'Blocky'}`,
+          icon: state.smoothRendering ? 'renderSmooth' : 'renderBlocky',
+        },
         { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff' },
         { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff' },
         { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff' },
         { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff' },
         { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug' },
-        // developer options: only offered while Debug is on
-        ...(state.debugMode
-          ? [{ id: 'bevel', label: `Bevel (Experimental): ${state.bevel ? 'On' : 'Off'}`, icon: 'bevel' }]
-          : []),
       ],
     };
   }

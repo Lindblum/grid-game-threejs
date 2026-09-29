@@ -242,24 +242,41 @@ export function createBlockMaterials() {
     uNoiseTex: { value: createNoiseTexture() },
     uOutlines: { value: 1 }, // Options → Outlines: 1 = draw face outlines, 0 = hide them
     uAO: { value: 1 }, // Options → Ambient Occlusion: 1 = on, 0 = off
+    uSmoothRendering: { value: 0 }, // Options → Rendering: Smooth = 1: blocks flagged blockMerged are hidden here and drawn as bundle bodies
   };
   const options = { procedural: true };
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
   const translucent = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false });
+  // Rendering: Smooth: each BlockBundle drawn as one merged, smoothed mesh (bundleBody.js); ordinary (not
+  // instanced) geometry carrying the same attributes per vertex, colour as vertex colour
+  const body = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true });
+  const bodyTranslucent = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false, vertexColors: true });
   patchBlockShader(opaque, uniforms, options, false);
   patchBlockShader(translucent, uniforms, options, true);
+  patchBlockShader(body, uniforms, options, false, true);
+  patchBlockShader(bodyTranslucent, uniforms, options, true, true);
+  const all = [opaque, translucent, body, bodyTranslucent];
   const setProcedural = (on) => {
     if (options.procedural === on) return;
     options.procedural = on;
-    opaque.needsUpdate = translucent.needsUpdate = true; // recompile with / without SOLID_MATERIALS
+    for (const m of all) m.needsUpdate = true; // recompile with / without SOLID_MATERIALS
   };
-  return { opaque, translucent, uniforms, setProcedural };
+  return { opaque, translucent, body, bodyTranslucent, uniforms, setProcedural };
 }
 
-function patchBlockShader(mat, uniforms, options, translucentPass) {
+/**
+ * `mergedBody`: a material for merged BlockBundle bodies (MERGED_BODY, see bundleBody.js):
+ * the geometry isn't instanced; positions are in cm around the lattice origin, `localPos`
+ * is each vertex's place on its own block (so patterns stay per block), `blockIndex` its
+ * block's instance index (for the Delete tool's see-through target), and the normals are the
+ * smoothed body's: every style is shaded smooth, and the rounded styles (Fog, Nimbus, Crawly,
+ * Squirmy) take their "out from the centre" normal from them instead of from the block centre.
+ */
+function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = false) {
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     if (translucentPass) shader.defines = { ...shader.defines, TRANSLUCENT_PASS: '' };
+    if (mergedBody) shader.defines = { ...shader.defines, MERGED_BODY: '' };
     if (!options.procedural) shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -272,6 +289,15 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         varying float vAO;
         varying float vEdgeDist;
         uniform float uDitherIndex;
+        uniform float uSmoothRendering;
+        #ifdef MERGED_BODY
+        attribute vec3 localPos;
+        attribute float blockIndex;
+        #else
+        attribute float blockMerged; // Rendering: Smooth: 1 = this block is drawn by a bundle body instead
+        attribute float blockSmooth; // 1 = smooth shading (World.setSmooth, e.g. excreted blocks)
+        #endif
+        varying float vSmooth;
         varying float vDither;
         varying float vStyle;
         varying float vTint; // opaque creatures: 1 = drawn in a buff's colour (see World._refreshLook)
@@ -285,14 +311,22 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         '#include <begin_vertex>',
         `#include <begin_vertex>
         vEdgeDist = edgeDist;
+        #ifdef MERGED_BODY
+        vDither = abs(blockIndex - uDitherIndex) < 0.5 ? 1.0 : 0.0;
+        vec3 blockPos = localPos;
+        vSmooth = 0.0; // bodies are smooth already
+        #else
+        vSmooth = blockSmooth * uSmoothRendering; // only with Rendering: Smooth (Blocky keeps every block flat)
         vDither = abs(float(gl_InstanceID) - uDitherIndex) < 0.5 ? 1.0 : 0.0;
+        vec3 blockPos = position;
+        #endif
         vStyle = blockStyle.x;
         vTint = blockStyle.z; // (for translucent blocks z is their face mask; only opaque styles read vTint)
         // block-local position (cm), offset per block so each one's pattern differs and
         // stays glued to the block while it slides
-        vNoisePos = position + blockStyle.y * vec3(7.31, 3.17, 5.53);
-        vLocalNormal = normal; // block-local face normal (instances are only translated)
-        vLocalPos = position;  // block-local position without the seed offset
+        vNoisePos = blockPos + blockStyle.y * vec3(7.31, 3.17, 5.53);
+        vLocalNormal = normal; // block-local face normal (instances are only translated; bodies: the smooth normal)
+        vLocalPos = blockPos;  // block-local position without the seed offset
         vSeed = blockStyle.y;
         // block-local directions -> view space (instances are only translated; drop the cm scale)
         {
@@ -317,10 +351,18 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         bool isTranslucent = ${TRANSLUCENT_STYLES.map((s) => `abs(blockStyle.x - ${s.toFixed(1)}) < 0.5`).join(' || ')};
         #ifdef TRANSLUCENT_PASS
         if (!isTranslucent) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        #ifndef MERGED_BODY
         // also skip faces shared with a block of the same translucent type (no inner walls, less overdraw)
         if (((int(blockStyle.z + 0.5) >> int(faceIndex + 0.5)) & 1) == 1) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        #endif
         #else
         if (isTranslucent) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        #endif
+        // hidden block types (Void) are never drawn
+        if (${BLOCK_TYPES.filter((t) => t.hidden).map((t) => `abs(blockStyle.x - ${t.style.toFixed(1)}) < 0.5`).join(' || ') || 'false'}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        #ifndef MERGED_BODY
+        // Rendering: Smooth: blocks drawn by a bundle body instead (bundleBody.js)
+        if (uSmoothRendering > 0.5 && blockMerged > 0.5) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #endif`
       );
     shader.fragmentShader = shader.fragmentShader
@@ -328,6 +370,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         '#include <common>',
         `#include <common>
         varying float vEdgeDist;
+        varying float vSmooth;
         varying float vDither;
         varying float vStyle;
         varying float vTint;
@@ -342,7 +385,12 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         varying float vAO;
         ${NOISE_GLSL}
         ${WATER_GLSL}
-        ${BUMP_GLSL}`
+        ${BUMP_GLSL}
+        #ifdef MERGED_BODY
+        #define BODY_DIR normalize(vLocalNormal)
+        #else
+        #define BODY_DIR normalize(vLocalPos)
+        #endif`
       )
       .replace(
         '#include <clipping_planes_fragment>',
@@ -391,8 +439,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           // Fog: smooth shading, the normal simply points out from the block centre (no face
           // or noise terms), so the block lights like a soft sphere. Nimbus keeps the lumps.
           cloudNormal = vStyle > ${(BLOCK_STYLE.nimbus - 0.5).toFixed(1)}
-            ? normalize(normalize(vLocalPos) + 0.25 * normalize(vLocalNormal) + 0.9 * lump)
-            : normalize(vLocalPos);
+            ? normalize(BODY_DIR + 0.25 * normalize(vLocalNormal) + 0.9 * lump)
+            : BODY_DIR;
           vec3 base = diffuseColor.rgb;
           vec3 col = base * (0.8 + 0.25 * billow + 0.3 * puffs);
           if (vStyle > ${(BLOCK_STYLE.nimbus - 0.5).toFixed(1)}) col *= mix(0.72, 1.0, smoothstep(-1.0, 0.6, vLocalPos.y));
@@ -500,37 +548,48 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           diffuseColor.rgb = max(mix(soil, green, moss), 0.0);
           surfaceRough = 0.95;
         } else if (vStyle > 4.5 && vStyle < 5.5) {
-          // 2D strawberry skin: coordinates in the face's own plane (flat faces, so no
-          // stretching), seeds on a staggered grid, each sitting in a small darker pit
-          vec3 n = normalize(vLocalNormal);
-          vec3 tu = normalize(cross(n, abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
-          vec3 tv = cross(n, tu);
-          vec2 uv = vec2(dot(vNoisePos, tu), dot(vNoisePos, tv)) * 3.6; // ~3.6 seeds per cm
-          float row = floor(uv.y);
-          vec2 cuv = vec2(uv.x + 0.5 * mod(row, 2.0), uv.y);        // offset every other row
-          vec2 cell = floor(cuv);
-          vec3 h = cellHash(vec3(cell, 3.1));
-          vec2 f = fract(cuv) - 0.5 - (h.xy - 0.5) * 0.22;           // jittered seed centre
-          // seed: small teardrop, slightly narrower towards +v
-          vec2 q = f * vec2(1.0 + 1.2 * clamp(f.y * 4.0, 0.0, 1.0), 0.75);
-          float r = length(q);
+          // 3D strawberry flesh: green seeds scattered through the block's volume (one per cell
+          // of a jittered 3D grid, ~2.8 per cm), each a small egg-shaped grain tilted its own
+          // way, so wherever the surface cuts through one it shows as a green oval. Every seed
+          // sits in a darker pit; seeds are bumped up and pits down; the red between is mottled,
+          // wet and shiny.
+          vec3 p = vNoisePos * 2.8;
+          vec3 ip = floor(p);
+          float r = 1e9;       // distance to the nearest seed, in its own stretched frame
+          vec3 sh = vec3(0.0); // that seed's random values
+          for (int z = -1; z <= 1; z++)
+          for (int y = -1; y <= 1; y++)
+          for (int x = -1; x <= 1; x++) {
+            vec3 c = ip + vec3(float(x), float(y), float(z));
+            vec3 h = cellHash(c + 3.1);
+            vec3 d = p - (c + 0.2 + 0.6 * h);                     // from the jittered seed centre
+            vec3 axis = normalize(cellHash(c + 9.7) - 0.5 + 1e-4);  // its long axis
+            float along = dot(d, axis);
+            vec3 perp = d - along * axis;
+            // egg shape: longer along its axis, and a little fatter at one end
+            float rr = sqrt(dot(perp, perp) * (1.0 + 0.8 * clamp(along * 6.0, 0.0, 1.0)) + along * along * 0.45);
+            if (rr < r) { r = rr; sh = h; }
+          }
+          float seedR = 0.13;
           float afw = max(fwidth(r), 1e-4);
-          float seed = 1.0 - smoothstep(0.1 - afw, 0.1 + afw, r);
-          float pit = 1.0 - smoothstep(0.09, 0.27, length(f));
+          float seed = 1.0 - smoothstep(seedR - afw, seedR + afw, r);
+          float pit = (1.0 - smoothstep(seedR, 0.32, r)) * (1.0 - seed);
           vec3 base = diffuseColor.rgb;
-          float mottle = perlin3(vec3(uv * 0.5, 1.7)) * 0.6 + perlin3(vec3(uv * 2.3, 4.2)) * 0.4;
-          vec3 red = base * (0.9 + 0.3 * mottle);
-          red *= mix(1.0, 0.5, pit);                                  // shadowed pit around each seed
-          red = mix(red, base * vec3(1.15, 1.6, 1.5), 0.25 * smoothstep(0.15, 0.6, 0.5 - f.y) * (1.0 - pit)); // soft sheen on the bump
-          vec3 seedCol = mix(vec3(0.8, 0.52, 0.06), vec3(0.45, 0.55, 0.08), h.z); // golden to green-yellow
-          seedCol *= 0.75 + 0.5 * clamp(0.5 - f.y * 4.0, 0.0, 1.0);   // lit from the top edge
+          float mottle = perlin3(vNoisePos * 1.6 + 1.7) * 0.6 + perlin3(vNoisePos * 4.3 + 4.2) * 0.4;
+          vec3 red = base * (0.92 + 0.28 * mottle);
+          red *= mix(1.0, 0.55, pit);                                   // shadowed pit around each seed
+          vec3 seedCol = mix(vec3(0.22, 0.46, 0.07), vec3(0.5, 0.66, 0.14), sh.z); // deep to yellowish green
+          seedCol *= 0.85 + 0.3 * sh.x;
           diffuseColor.rgb = mix(red, seedCol, seed);
-          surfaceRough = mix(0.3, 0.75, max(pit * 0.6, seed));        // glossy skin, matte seeds
+          // relief: seeds are little domes, pits dip around them
+          bumpH = seed * sqrt(max(0.0, 1.0 - (r * r) / (seedR * seedR))) * 0.6 - pit * 0.9;
+          bumpStrength = 0.05;
+          surfaceRough = mix(0.14, 0.5, max(seed, pit * 0.5));           // glossy red, matte seeds
         } else if ((vStyle > 5.5 && vStyle < 6.5) || (vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.buzzy + 0.5).toFixed(1)})) {
           // Crawly and Buzzy (Buzzy = the pearlescent variant): smooth, rounded shading like a
           // Squirmy (the normal points out from the block centre, no flat faces or outlines)
           isPearl = vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} ? 1.0 : 0.0;
-          cloudNormal = normalize(vLocalPos);
+          cloudNormal = BODY_DIR;
           noOutline = 1.0;
           // 2D beetle shell in each face's plane: a smooth, glossy sheen whose colour drifts
           // in broad noise patches. Only the shading is set here; the iridescent hue depends
@@ -578,7 +637,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           vec3 wig = vec3(perlin3(q * 1.3 + vec3(0.0, t * 0.6, 0.0)),
                           perlin3(q * 1.3 + vec3(5.2, t * 0.6, 1.7)),
                           perlin3(q * 1.3 + vec3(9.4, t * 0.6, 3.3)));
-          cloudNormal = normalize(normalize(vLocalPos) + 0.45 * wig);
+          cloudNormal = normalize(BODY_DIR + 0.45 * wig);
           float band = 0.5 + 0.5 * sin(dot(vLocalPos, vec3(0.28, 0.93, 0.21)) * 6.0 - t * 3.0 + perlin3(q * 2.0) * 2.0);
           float vein = 1.0 - smoothstep(0.0, 0.08, abs(perlin3(q * 3.2 + wig * 0.3)));
           float marble = perlinFbm(q * 2.1);
@@ -592,6 +651,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           noOutline = 1.0;
         }
         #endif
+        if (vSmooth > 0.5) noOutline = 1.0; // smooth-shaded blocks: a rounded look, no face outlines
         float fw = max(fwidth(vEdgeDist), 1e-4);
         float edgeW = ${EDGE_WIDTH_CM.toFixed(4)};
         float edgeMix = smoothstep(edgeW - fw, edgeW + fw, vEdgeDist);
@@ -607,6 +667,9 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
       .replace(
         '#include <normal_fragment_maps>',
         `#include <normal_fragment_maps>
+        // smooth-shaded blocks (World.setSmooth): the normal points out from the block centre;
+        // bumps and the style's own normal (clouds, creatures) still go on top
+        if (vSmooth > 0.5) normal = normalize(vLocalToView * normalize(vLocalPos));
         #ifndef SOLID_MATERIALS
         {
           // bump the normal by the surface height; scale converts the cm-space height
@@ -668,5 +731,5 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
       );
   };
   mat.customProgramCacheKey = () =>
-    `${translucentPass ? 'grid-block-translucent' : 'grid-block-opaque'}-${options.procedural ? 'procedural' : 'solid'}`;
+    `${translucentPass ? 'grid-block-translucent' : 'grid-block-opaque'}${mergedBody ? '-body' : ''}-${options.procedural ? 'procedural' : 'solid'}`;
 }

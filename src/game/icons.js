@@ -90,6 +90,31 @@ function drawIconEyes(ctx, cx, cy, size) {
   ctx.restore();
 }
 
+/** Void icon: just the block's wireframe, no faces (back edges fainter). */
+export function drawVoidIcon(ctx, cx, cy, size) {
+  const scale = size / 3.1;
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(1, size / 40);
+  for (const back of [true, false]) {
+    for (const f of FACES) {
+      const n = f.normal.clone().applyMatrix4(ROT);
+      if ((n.z <= 1e-4) !== back) continue;
+      ctx.strokeStyle = back ? 'rgba(220,226,235,0.35)' : 'rgba(235,240,248,0.95)';
+      ctx.beginPath();
+      f.verts.forEach((v, i) => {
+        const p = v.clone().applyMatrix4(ROT);
+        const x = cx + p.x * scale, y = cy - p.y * scale;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 /** Delete tool icon: ghosted block with a red X. */
 export function drawDeleteIcon(ctx, cx, cy, size) {
   drawBlockIcon(ctx, cx, cy, size, '#b0b4ba', { alpha: 0.35, stroke: 'rgba(255,255,255,0.5)' });
@@ -141,6 +166,7 @@ export function drawToolIcon(ctx, tool, cx, cy, size) {
   if (tool.block === BLOCK.CRAWLY) drawCrawlyIcon(ctx, cx, cy, size);
   else if (tool.block === BLOCK.BUZZY) drawBuzzyIcon(ctx, cx, cy, size);
   else if (tool.block === BLOCK.SQUIRMY) drawSquirmyIcon(ctx, cx, cy, size);
+  else if (tool.block === BLOCK.VOID) drawVoidIcon(ctx, cx, cy, size);
   else if (tool.block) drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[tool.block]);
   else if (tool.id === TOOL.SELECT) drawSelectIcon(ctx, cx, cy, size);
   else drawDeleteIcon(ctx, cx, cy, size);

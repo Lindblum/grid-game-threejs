@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { RANDOM_BLOCKS } from './tools.js';
 import { BLOCK, BLOCK_COLORS, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature } from './blocks.js';
-import { NEIGHBOR_DIRS, cellKey, isValidCell } from './lattice.js';
+import { NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
 import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
+import { BundleBodies } from './bundleBody.js';
+import { SOLID_TYPES } from './sim.js';
 import { CreatureEyes, orientCreature } from './creature.js';
 
 /**
@@ -16,7 +18,9 @@ export const STEP_FRACTION = 0.75;
  * `count` blocks of `type`, seeded as `groups` groups (null = count: every block a seed,
  * straight onto the world, layer by layer) that grow by `distribution` and `growth`. With `count: null` and
  * `shells: n`, the count is taken from the world's empty shell (its cell count), and the step
- * runs `n` times, re-polling the shell each time. See generateNew.
+ * runs `n` times, re-polling the shell each time. `addTo` says where the seeds go: "world"
+ * (the default) seeds them in the empty shell around the world, i.e. all the blocks on the
+ * board together; "sky" seeds them at random 50 cm from the origin, like rain. See generateNew.
  */
 //shellSize(i) = 14 + 24*i + 12*i^2
 //shellSize(0) = 1, cumulativeSize(0) = 1
@@ -24,34 +28,41 @@ export const STEP_FRACTION = 0.75;
 //shellSize(2) = 50, cumulativeSize(2) = 65
 //shellSize(3) = 110, cumulativeSize(3) = 175
 //shellSize(4) = 194, cumulativeSize(4) = 369
-//If groups=1, distribution doesn't matter
+//If groups=1, distribution and growth don't matter
 //TODO: a "branching" growth rule
+/** Recipe `addTo: "sky"`: seeds go at random on the sphere this far from the origin (like rain). */
+export const SKY_RADIUS_CM = 50;
+/** "sky" seeding gives up on a seed after this many tries landing on taken cells. */
+const SKY_TRIES = 50;
+
 export const NEW_SCENE_RECIPE = [
   //Geode
-  { type: BLOCK.FOG, groups: 1, count: 20, shells: null, distribution: 'uniform', growth: "worm" },
-  { type: BLOCK.FOG, groups: 1, count: null, shells: 2, distribution: 'uniform', growth: "uniform" },
-  { type: BLOCK.CRYSTAL, groups: 2, count: 30, shells: null, distribution: 'uniform', growth: "uniform" },
-  { type: BLOCK.CRYSTAL, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "random" },
-  { type: BLOCK.STONE, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "uniform" },
-  
-    { type: BLOCK.DIRT, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "uniform" },
-  
-    { type: BLOCK.STONE, count: 50, groups: 1, distribution: 'uniform', growth: "random" },
-    { type: BLOCK.STONE, count: 400, groups: 1, distribution: 'uniform', growth: "uniform" },
-    { type: BLOCK.CRYSTAL, count: 10, groups: 3, distribution: 'random', growth: "uniform" },
-    { type: BLOCK.STONE, count: 300, groups: 1, distribution: 'uniform', growth: "uniform" },
-    { type: BLOCK.DIRT, count: 400, groups: 14, distribution: 'uniform', growth: "uniform" },
-    { type: BLOCK.DIRT, count: 100, groups: null, distribution: 'uniform' },
-    { type: BLOCK.WOOD, count: 20, groups: 5, distribution: 'random' },
-    { type: BLOCK.MOSS, count: 200, groups: 20, distribution: 'random' },
-    { type: BLOCK.WATER, count: 50, groups: 5, distribution: 'random', growth: "random" },
-    { type: BLOCK.CRAWLY, count: 10, groups: 5, distribution: 'random', growth: "worm" },
-    { type: BLOCK.BUZZY, count: 5, groups: 5, distribution: 'random', growth: "worm" },
-    { type: BLOCK.SQUIRMY, count: 10, groups: 3, distribution: 'random', growth: "random" },
-    { type: BLOCK.FOG, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "uniform" },
-    /*
-    */
-  // { type: BLOCK.NIMBUS, count: 500, groups: null },	//v=1210
+  { type: BLOCK.VOID, groups: null, count: 20, shells: null, distribution: 'uniform', growth: "worm", addTo: "world" },
+  { type: BLOCK.VOID, groups: null, count: null, shells: 2, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.CRYSTAL, groups: null, count: null, shells: 1, distribution: 'random', growth: "uniform", addTo: "world" },
+  { type: BLOCK.STONE, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  //Bury geode
+  { type: BLOCK.DIRT, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "random", addTo: "world" },
+  { type: BLOCK.DIRT, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  //Crust
+  { type: BLOCK.STONE, count: 5, groups: 30, shells: null, distribution: 'random', growth: "random", addTo: "world" },
+  { type: BLOCK.STONE, count: 5, groups: 30, shells: null, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.CRYSTAL, count: 20, groups: 5, shells: null, distribution: 'random', growth: "uniform", addTo: "world" },
+  { type: BLOCK.STONE, count: 10, groups: 30, shells: null, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  //Soil
+  { type: BLOCK.DIRT, count: 10, groups: 20, shells: null, distribution: 'random', growth: "random", addTo: "world" },
+  { type: BLOCK.STONE, count: 10, groups: 20, shells: null, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.WOOD, count: 30, groups: 6, shells: null, distribution: 'random', growth: "tree", addTo: "world" },
+  { type: BLOCK.DIRT, count: 10, groups: 30, shells: null, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.MOSS, count: 500, groups: 80, shells: null, distribution: 'random', growth: "uniform", addTo: "world" },
+  //Water and creatures
+  { type: BLOCK.WATER, count: 100, groups: 5, shells: null, distribution: 'random', growth: "random", addTo: "world" },
+  { type: BLOCK.CRAWLY, count: 10, groups: 5, shells: null, distribution: 'random', growth: "worm", addTo: "world", addTo: "world" },
+  { type: BLOCK.BUZZY, count: 5, groups: 5, shells: null, distribution: 'random', growth: "worm", addTo: "world" },
+  { type: BLOCK.SQUIRMY, count: 10, groups: 3, shells: null, distribution: 'random', growth: "random", addTo: "world" },
+  //Fog and clouds
+  { type: BLOCK.FOG, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.NIMBUS, groups: 4, count: 100, shells: null, distribution: 'uniform', growth: "uniform", addTo: "sky" },
 ];
 
 const _m = new THREE.Matrix4();
@@ -83,6 +94,8 @@ export class World {
     this.squirmyOf = new Map(); // Squirmy block -> its squirmy
     this._born = 0;
     this.eyes = new CreatureEyes(parent);
+    this.bundleBodies = new BundleBodies(parent, this.materials); // Options → Rendering: Smooth
+    this.revision = 0; // bumped whenever blocks are added, removed, moved, retyped or recoloured (see _changed)
     this.stepSeconds = STEP_FRACTION; // length of per-turn animations (s); the engine sets it from the turn length
     this.fogEnabled = true; // Options → Fog (set by the engine): generateNew skips Fog steps when off
     this.turn = 0; // current game turn, set by the engine; stamped on blocks as movedTurn
@@ -279,7 +292,11 @@ export class World {
     if (!slot) return null;
     slot.inventory = b.type;
     if (instant) this.remove(b.x, b.y, b.z);
-    else this.vanish(b, a, { toward: true });
+    else {
+      // it shrinks away as a lone block: keep it rounded (Rendering: Smooth), as it was in its body
+      this.setSmooth(b, true);
+      this.vanish(b, a, { toward: true });
+    }
     this.emit('blockConsumed', { by: a, block: b, sound, slot });
     return slot;
   }
@@ -402,6 +419,7 @@ export class World {
     this.mesh.setColorAt(b.index, _c.set(tint?.color ?? BLOCK_COLORS[b.type]));
     if (!isTranslucent(b.type)) this.geometry.getAttribute('blockStyle').setZ(b.index, tint ? 1 : 0);
     this._dirty();
+    this._changed();
   }
 
   /** Where block `b` is drawn right now (mid-slide while it is moving), in cm. */
@@ -426,6 +444,16 @@ export class World {
     const style = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
     style.setUsage(THREE.DynamicDrawUsage);
     this.geometry.setAttribute('blockStyle', style);
+    // per-instance Smooth rendering flag: 1 = drawn by a bundle body instead (rewritten by BundleBodies)
+    const merged = new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1);
+    merged.setUsage(THREE.DynamicDrawUsage);
+    this.geometry.setAttribute('blockMerged', merged);
+    this.revision = (this.revision ?? 0) + 1;
+    // per-instance smooth shading flag (b.shadeSmooth, e.g. excreted blocks; see _writeSmooth)
+    const smooth = new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1);
+    smooth.setUsage(THREE.DynamicDrawUsage);
+    this.geometry.setAttribute('blockSmooth', smooth);
+    for (const b of this.blocks.values()) smooth.setX(b.index, b.shadeSmooth ? 1 : 0);
     if (old) {
       for (let i = 0; i < old.count; i++) {
         old.getMatrixAt(i, _m);
@@ -461,6 +489,7 @@ export class World {
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     this.geometry.getAttribute('blockStyle').needsUpdate = true;
+    this.geometry.getAttribute('blockSmooth').needsUpdate = true;
     this.translucentMesh.count = this.mesh.count;
     this.mesh.boundingSphere = null;
     this.mesh.boundingBox = null;
@@ -501,10 +530,12 @@ export class World {
     this.mesh.setMatrixAt(index, _m);
     this.mesh.setColorAt(index, _c.set(BLOCK_COLORS[type]));
     this.geometry.getAttribute('blockStyle').setXYZW(index, blockProps(type).style, Math.random() * 40, 0, 0);
+    this._writeSmooth(b);
     if (isTranslucent(type)) this._refreshTranslucentAround(x, y, z);
     this._refreshAOAround(x, y, z);
     this.mesh.count = this.blocks.size;
     this._dirty();
+    this._changed();
     if (isSingleCreature(type)) {
       this._watchBehavior(b);
       b.behavior = blockProps(b.type).defaultBehavior;
@@ -541,6 +572,7 @@ export class World {
       const style = this.geometry.getAttribute('blockStyle');
       style.setXYZW(b.index, style.getX(last), style.getY(last), style.getZ(last), style.getW(last));
       lb.index = b.index;
+      this._writeSmooth(lb);
       this.keysByIndex[b.index] = lastKey;
     }
     this.keysByIndex.length = last;
@@ -554,6 +586,7 @@ export class World {
       this.refreshSquirmies();
     }
     this.mesh.count = this.blocks.size;
+    this._changed();
     if (isTranslucent(b.type)) this._refreshTranslucentAround(x, y, z);
     this._refreshAOAround(x, y, z);
     this._dirty();
@@ -572,6 +605,8 @@ export class World {
     b.type = type;
     delete b.buffs; // buffs belong to what the block was
     this.buffed.delete(b);
+    this._changed();
+    if (b.shadeSmooth && blockProps(type).shadeFlat) this.setSmooth(b, false);
     this.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[type]));
     const style = this.geometry.getAttribute('blockStyle');
     style.setX(b.index, blockProps(type).style);
@@ -642,14 +677,47 @@ export class World {
     this._refreshAOAround(fromPos.x, fromPos.y, fromPos.z);
     this._refreshAOAround(to.x, to.y, to.z);
     this._dirty();
+    this._changed();
     return true;
+  }
+
+  /**
+   * Options → Rendering: Smooth (on) draws each BlockBundle as one merged, smoothed,
+   * smooth-shaded body (bundleBody.js); Blocky (off) draws every block on its own.
+   */
+  setSmoothRendering(on) {
+    this.materials.uniforms.uSmoothRendering.value = on ? 1 : 0;
+    this.bundleBodies.setEnabled(on);
+  }
+
+  /**
+   * Smooth shading for block `b` (`b.shadeSmooth`): rounded normals (out from the block
+   * centre) and no face outlines, like a creature, while Options → Rendering is Smooth
+   * (Blocky draws it flat like any block). Ignored for shadeFlat types (Crystal).
+   */
+  setSmooth(b, on) {
+    on = on && !blockProps(b.type).shadeFlat;
+    if (on) b.shadeSmooth = true;
+    else delete b.shadeSmooth;
+    this._writeSmooth(b);
+    this._dirty();
+  }
+
+  _writeSmooth(b) {
+    this.geometry.getAttribute('blockSmooth').setX(b.index, b.shadeSmooth ? 1 : 0);
+  }
+
+  /** Something about the blocks changed (cells, types, looks): Smooth rendering's bodies get rebuilt. */
+  _changed() {
+    this.revision++;
   }
 
   /** Advances sliding blocks, Crawly eyes and the water animation; call once per frame. */
   updateAnimations(now = performance.now()) {
     this.materials.uniforms.uTime.value = now / 1000;
     const p = new THREE.Vector3();
-    this.eyes.update(now, (c, out) => this.renderedPosition(c, now, out), { turn: this.turn, flapSeconds: this.stepSeconds * 0.5 });
+    this.eyes.update(now, (c, out) => this.renderedPosition(c, now, out), { turn: this.turn, flapSeconds: this.stepSeconds * 0.5, stepSeconds: this.stepSeconds });
+    this.bundleBodies.update(this, now);
     if (!this.anims.size && !this.vanishing.size && !this.appearing.size) return;
     for (const [k, a] of this.anims) {
       const b = this.blocks.get(k);
@@ -681,6 +749,7 @@ export class World {
     dir.normalize().multiplyScalar(toward ? -distanceCm : distanceCm);
     if (isTranslucent(b.type)) this._refreshTranslucentAround(b.x, b.y, b.z);
     this.anims.delete(cellKey(b.x, b.y, b.z)); // the vanish animation takes over its matrix
+    this._changed(); // shrinks away on the instanced mesh, not in a bundle body
     this.vanishing.set(b, { from: new THREE.Vector3(b.x, b.y, b.z), dir, t0: performance.now(), dur: durationS * 1000 });
     return true;
   }
@@ -692,6 +761,7 @@ export class World {
    */
   appear(b, from, { durationS = this.stepSeconds } = {}) {
     this.anims.delete(cellKey(b.x, b.y, b.z));
+    this._changed(); // grows in on the instanced mesh, joins its bundle body once there
     this.appearing.set(b, { from: new THREE.Vector3(from.x, from.y, from.z), t0: performance.now(), dur: durationS * 1000 });
     this._updateAppearing(performance.now()); // start at size 0, not full size for a frame
   }
@@ -708,7 +778,10 @@ export class World {
       pos.set(b.x, b.y, b.z).sub(a.from).multiplyScalar(e).add(a.from);
       scale.setScalar(Math.max(e, 1e-4));
       this.mesh.setMatrixAt(b.index, _m.compose(pos, noRot, scale));
-      if (t >= 1) this.appearing.delete(b);
+      if (t >= 1) {
+        this.appearing.delete(b);
+        this._changed();
+      }
     }
     this.mesh.instanceMatrix.needsUpdate = true;
   }
@@ -753,6 +826,7 @@ export class World {
       return null;
     }
     const made = this.get(cell.x, cell.y, cell.z);
+    this.setSmooth(made, true); // excreted blocks are smooth-shaded (unless their type is shadeFlat)
     this.appear(made, tail);
     this.emit('blockExcreted', { by: tail, block: made, sound });
     return made;
@@ -815,6 +889,30 @@ export class World {
   }
 
   /**
+   * "tree" growth: polls the group's empty shell and picks a random cell of it that touches
+   * exactly one block of the group's type and no other solid block (SOLID_TYPES: Stone, Dirt,
+   * Moss, Wood, Berry), so the group branches out into open space without closing loops,
+   * clumping, or growing along the ground or into other blocks of its type; null if there is
+   * none.
+   */
+  _treeCell(members) {
+    const type = members[0].type;
+    const maxSolid = SOLID_TYPES.has(type) ? 1 : 0; // a solid type's parent block counts as the one
+    for (const [x, y, z] of this._shellOf(members)) { // shuffled: the first match is a random one
+      let same = 0, solid = 0;
+      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        const n = this.get(x + dx, y + dy, z + dz);
+        if (!n) continue;
+        if (n.type === type) same++;
+        if (SOLID_TYPES.has(n.type)) solid++;
+        if (same > 1 || solid > maxSolid) break;
+      }
+      if (same === 1 && solid <= maxSolid) return [x, y, z];
+    }
+    return null;
+  }
+
+  /**
    * "worm" growth: an empty cell next to the group's most recently added block that touches
    * no other block of the group, so the group extends as a one-block-thick tube. If the
    * newest block has no such cell, the one before it is tried, and so on back. A random
@@ -839,6 +937,34 @@ export class World {
     return null;
   }
 
+  /**
+   * "up" growth: the empty cell next to the group's most recently added block that is nearest
+   * to the point directly "up" from it, one block (2 cm) away from the origin (gravity pulls
+   * toward the origin; a block at the origin uses +y). Ties are broken at random. If the
+   * newest block has no empty neighbour, the one before it is tried, and so on back; null if
+   * the group can't grow.
+   */
+  _upCell(members) {
+    for (let k = members.length - 1; k >= 0; k--) {
+      const b = members[k];
+      const len = Math.hypot(b.x, b.y, b.z);
+      const [ux, uy, uz] = len > 0 ? [b.x / len, b.y / len, b.z / len] : [0, 1, 0];
+      const tx = b.x + 2 * ux, ty = b.y + 2 * uy, tz = b.z + 2 * uz; // the cell straight up
+      let best = [], bestD = Infinity;
+      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        const x = b.x + dx, y = b.y + dy, z = b.z + dz;
+        if (this.has(x, y, z) || !isValidCell(x, y, z)) continue;
+        const d = (x - tx) ** 2 + (y - ty) ** 2 + (z - tz) ** 2;
+        if (d < bestD - 1e-9) {
+          bestD = d;
+          best = [[x, y, z]];
+        } else if (Math.abs(d - bestD) <= 1e-9) best.push([x, y, z]);
+      }
+      if (best.length) return best[Math.floor(Math.random() * best.length)];
+    }
+    return null;
+  }
+
   /** Takes the next still-empty cell from a shuffled shell (cells filled meanwhile are skipped). */
   _takeFrom(shell) {
     while (shell.length) {
@@ -854,6 +980,9 @@ export class World {
    * The world shell is the layer of empty cells next to the world. It is used up cell by cell
    * (in random order) and only recalculated once every cell in it is filled, so the world
    * grows a layer at a time. For each step:
+   *  - `addTo` picks where its seeds go:
+   *     "world" (default): the world shell, around all the blocks on the board together
+   *     "sky": random cells on the sphere SKY_RADIUS_CM (50 cm) from the origin, like rain
    *  - `groups: null` means `groups = count`: every block is a seed, so all `count` blocks go
    *    straight into world-shell cells and nothing is left to grow.
    *  - otherwise, `groups` seed blocks go into world-shell cells; seeds that touch are
@@ -868,6 +997,12 @@ export class World {
    *                grows in even layers (roundish)
    *     "worm":    next to the group's newest block and touching no other block of the group
    *                (falling back to the block before, and so on): a winding tube
+   *     "up":      the empty cell next to the group's newest block nearest to the cell straight
+   *                up from it (away from the origin; falling back to the block before, and so
+   *                on): a column rising outward
+   *     "tree":    a random cell of the group's (freshly polled) shell that touches exactly one
+   *                block of its type and no other solid block: branches that never touch each
+   *                other or the ground
    *    A group with no empty cells around it stops growing; the others carry on.
    */
   generateNew() {
@@ -883,14 +1018,28 @@ export class World {
       return c;
     };
     /** Runs one recipe step, adding `count` blocks. */
-    const runStep = ({ type, groups: groupCount, distribution = 'random', growth = 'random' }, count) => {
+    /** Where a step's seeds go (`addTo`): a function returning the next seed cell, or null. */
+    const fromSky = () => {
+      for (let i = 0; i < SKY_TRIES; i++) {
+        const c = randomCellOnSphere(SKY_RADIUS_CM);
+        if (!this.has(c.x, c.y, c.z) && isValidCell(c.x, c.y, c.z)) return [c.x, c.y, c.z];
+      }
+      return null;
+    };
+    const seedSource = (addTo) => {
+      if (addTo === 'sky') return fromSky; // random cells SKY_RADIUS_CM from the origin, like rain
+      if (addTo !== 'world') console.warn(`NEW_SCENE_RECIPE: unknown addTo "${addTo}", using "world"`);
+      return fromWorldShell; // "world": the empty shell around all the blocks on the board
+    };
+    const runStep = ({ type, groups: groupCount, distribution = 'random', growth = 'random', addTo = 'world' }, count) => {
+      const nextSeedCell = seedSource(addTo);
       const pickType = () => (type === 'random' ? RANDOM_BLOCKS[Math.floor(Math.random() * RANDOM_BLOCKS.length)] : type);
       // no groups given: every block is its own seed, straight into the world shell
       const groups = groupCount ?? count;
       // seeds
       const seeds = [];
       for (let i = 0; i < Math.min(groups, count); i++) {
-        const c = fromWorldShell();
+        const c = nextSeedCell();
         if (!c) break;
         if (this.add(...c, pickType())) seeds.push(this.get(...c));
       }
@@ -923,6 +1072,10 @@ export class World {
         let c;
         if (growth === 'worm') {
           c = this._wormCell(g.members);
+        } else if (growth === 'up') {
+          c = this._upCell(g.members);
+        } else if (growth === 'tree') {
+          c = this._treeCell(g.members);
         } else if (growth === 'uniform') {
           c = this._takeFrom(g.shell); // fill the current shell first…
           if (!c) {
@@ -944,8 +1097,9 @@ export class World {
       }
     };
 
-    for (const step of NEW_SCENE_RECIPE) {
-      if (step.type === BLOCK.FOG && !this.fogEnabled) continue; // Options → Fog is off
+    NEW_SCENE_RECIPE.forEach((step, line) => {
+      if (step.type === BLOCK.FOG && !this.fogEnabled) return; // Options → Fog is off
+      const before = this.blocks.size;
       if (step.count == null && step.shells != null) {
         // shells mode: the count is the size of the world's current empty shell, and the step
         // runs that way `shells` times (with groups: null, that lays exactly `shells` layers)
@@ -957,7 +1111,17 @@ export class World {
       } else {
         runStep(step, step.count ?? 0);
       }
-    }
+      const { type, groups = null, count = null, shells = null, distribution = 'random', growth = 'random', addTo = 'world' } = step;
+      console.log(
+        `Recipe ${line + 1}/${NEW_SCENE_RECIPE.length}: ${blockProps(type).name} ×${this.blocks.size - before} ` +
+        `(count ${count ?? '—'}, shells ${shells ?? '—'}, groups ${groups ?? 'each block'}, ` +
+        `distribution ${distribution}, growth ${growth}, addTo ${addTo}) → ${this.blocks.size} blocks`
+      );
+    });
+    // Void only holds cells open while the recipe runs: clear it all out now
+    const voids = [...this.blocks.values()].filter((b) => b.type === BLOCK.VOID);
+    for (const b of voids) this.remove(b.x, b.y, b.z);
+    if (voids.length) console.log(`Recipe done: removed ${voids.length} Void blocks → ${this.blocks.size} blocks`);
     this._settleCrawlies();
   }
 
@@ -972,6 +1136,7 @@ export class World {
         .map((b) => ({
           ...this._saveBlock(b),
           ...(b.inventory && { inventory: b.inventory }),
+          ...(b.shadeSmooth && { smooth: true }),
           ...(b.buffs?.length && { buffs: b.buffs.map(({ type, turns, charges }) => ({ type, turns, charges })) }),
         })),
     };
@@ -1018,6 +1183,7 @@ export class World {
         }
         if (isSingleCreature(type) && Number(b.trappedTurns) > 0) this.get(x, y, z).trappedTurns = Number(b.trappedTurns);
         if (BLOCK_COLORS[b.inventory]) this.get(x, y, z).inventory = b.inventory;
+        if (b.smooth === true) this.setSmooth(this.get(x, y, z), true);
         for (const bf of Array.isArray(b.buffs) ? b.buffs : []) {
           // turns / charges: null (or left out) = no limit
           const limit = (v) => (v == null ? null : Number(v));

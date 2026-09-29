@@ -11,11 +11,16 @@
 //                   the plain, flat-colour style
 //   opacity         1 = solid; below 1 = see-through: drawn by the translucent pass, casts no
 //                   ambient occlusion, and this is its alpha in Solid materials mode
+//   hidden          true: never drawn (Void)
+//   shadeFlat       true: always drawn with flat faces. With Options → Rendering: Smooth, its bundles are
+//                   merged but keep their sharp edges and flat face normals instead of being
+//                   rounded off and smooth-shaded (Crystal: a faceted gem)
 // Creatures also have:
 //   creature        true
 //   body            'single' (one block: Crawly, Buzzy) or 'chain' (a Squirmy's segments)
 //   fly             true: it flies (like the Flight buff): any empty cell is a floor, never falls
 //   wings           true: two translucent wings on its sides that flap every turn
+//   legs            true: six black legs on its floor side that step every turn
 //   diet            keys of the block types it can consume (World.consume); CREATURE_DIET and
 //                   blockProps(type).diet give them as ids
 //   priorityDiet    keys of the foods it goes for on its own when it sees one (and eats once
@@ -48,13 +53,14 @@ export const BLOCK_TYPES = [
   { key: 'DIRT', id: 'brown', name: 'Dirt', color: '#8b5a2b', style: 1, opacity: 1 },
   { key: 'BERRY', id: 'red', name: 'Berry', color: '#e53935', style: 5, opacity: 1 },
   { key: 'WOOD', id: 'orange', name: 'Wood', color: '#b8804a', style: 7, opacity: 1 }, // warm tan
-  { key: 'CRYSTAL', id: 'yellow', name: 'Crystal', color: '#e03cd2', style: 8, opacity: 0.9 }, // magenta gem
+  { key: 'CRYSTAL', id: 'yellow', name: 'Crystal', color: '#e03cd2', style: 8, opacity: 0.9, shadeFlat: true }, // magenta gem
   { key: 'MOSS', id: 'green', name: 'Moss', color: '#43a047', style: 4, opacity: 1 },
   { key: 'WATER', id: 'blue', name: 'Water', color: '#1e88e5', style: 3, opacity: 0.55 },
   {
     key: 'CRAWLY', id: 'magenta', name: 'Crawly', color: '#d63ad6', style: 6, opacity: 1,
     creature: true,
     body: 'single',
+    legs: true,
     diet: ['BERRY'],
     priorityDiet: ['BERRY'],
     walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY'],
@@ -71,6 +77,7 @@ export const BLOCK_TYPES = [
     body: 'single',
     fly: true,
     wings: true,
+    legs: true,
     diet: ['BERRY'],
     priorityDiet: ['BERRY'],
     walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY'],
@@ -93,6 +100,9 @@ export const BLOCK_TYPES = [
   },
   { key: 'FOG', id: 'fog', name: 'Fog', color: '#d3d7dd', style: 9, opacity: 0.8 }, // light gray
   { key: 'NIMBUS', id: 'nimbus', name: 'Nimbus', color: '#5b616b', style: 10, opacity: 0.8 }, // dark gray
+  // world-creation helper: a placeholder that takes up cells while the NEW_SCENE_RECIPE runs
+  // (e.g. to leave a cave or gap), then every Void is deleted (World.generateNew). Never drawn.
+  { key: 'VOID', id: 'void', name: 'Void', color: '#ffffff', style: 13, opacity: 1, hidden: true },
 ];
 
 /**

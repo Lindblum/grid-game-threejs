@@ -43,3 +43,19 @@ export function faceFromNormal(n) {
   // hexagon face: normal along a body diagonal (±1,±1,±1)/√3
   return { type: 'hexagon', offset: [Math.sign(n.x), Math.sign(n.y), Math.sign(n.z)] };
 }
+
+/** The lattice cell (all-even or all-odd coordinates) whose centre is nearest (x, y, z). */
+export function nearestCell(x, y, z) {
+  const even = [x, y, z].map((v) => 2 * Math.round(v / 2));
+  const odd = [x, y, z].map((v) => 2 * Math.round((v - 1) / 2) + 1);
+  const d2 = (c) => (c[0] - x) ** 2 + (c[1] - y) ** 2 + (c[2] - z) ** 2;
+  const [cx, cy, cz] = d2(even) <= d2(odd) ? even : odd;
+  return { x: cx, y: cy, z: cz };
+}
+
+/** The lattice cell nearest a uniformly random point on the sphere of radius `radiusCm` around the origin. */
+export function randomCellOnSphere(radiusCm) {
+  // uniform direction: z uniform in [-1, 1], angle uniform around the z axis
+  const z = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - z * z);
+  return nearestCell(r * Math.cos(a) * radiusCm, r * Math.sin(a) * radiusCm, z * radiusCm);
+}

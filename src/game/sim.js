@@ -5,7 +5,7 @@
 // that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
-import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
+import { NEIGHBOR_DIRS, cellKey, randomCellOnSphere } from './lattice.js';
 import { BEHAVIOR, BLOCK, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, canFly } from './blocks.js';
 
 
@@ -139,15 +139,6 @@ export function stepGroups(world) {
 export const RAIN_EVERY = 5;
 export const RAIN_RADIUS_CM = 50;
 
-/** The lattice cell (all-even or all-odd coordinates) whose centre is nearest (x, y, z). */
-function nearestCell(x, y, z) {
-  const even = [x, y, z].map((v) => 2 * Math.round(v / 2));
-  const odd = [x, y, z].map((v) => 2 * Math.round((v - 1) / 2) + 1);
-  const d2 = (c) => (c[0] - x) ** 2 + (c[1] - y) ** 2 + (c[2] - z) ** 2;
-  const [cx, cy, cz] = d2(even) <= d2(odd) ? even : odd;
-  return { x: cx, y: cy, z: cz };
-}
-
 /**
  * Rain, on turns that are a multiple of RAIN_EVERY: picks a uniformly random point on the
  * sphere of radius RAIN_RADIUS_CM around the origin and puts a Water block in the lattice
@@ -180,9 +171,7 @@ export function stepFogForm(world, turn) {
  * radius `radiusCm` around the origin (skipped if that cell is taken). Returns it, or null.
  */
 function spawnOnSphere(world, type, radiusCm) {
-  // uniform direction: z uniform in [-1, 1], angle uniform around the z axis
-  const z = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - z * z);
-  const c = nearestCell(r * Math.cos(a) * radiusCm, r * Math.sin(a) * radiusCm, z * radiusCm);
+  const c = randomCellOnSphere(radiusCm);
   return world.add(c.x, c.y, c.z, type) ? world.get(c.x, c.y, c.z) : null;
 }
 
@@ -508,8 +497,8 @@ export function stepNimbusDrift(world, skip = new Set()) {
 }
 
 /** A Nimbus may rain every NIMBUS_RAIN_EVERY turns, with NIMBUS_RAIN_CHANCE. */
-export const NIMBUS_RAIN_EVERY = 3;
-export const NIMBUS_RAIN_CHANCE = 0.25;
+export const NIMBUS_RAIN_EVERY = 4;
+export const NIMBUS_RAIN_CHANCE = 0.1;
 
 /**
  * Nimbus rain, on turns that are a multiple of NIMBUS_RAIN_EVERY: each Nimbus has a
@@ -534,7 +523,7 @@ export function stepNimbus(world, turn) {
 }
 
 /** Solid block types (Stone, Dirt, Moss, Wood, Berry): Wood only grows into cells away from these. */
-export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY]);
+export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY, BLOCK.CRYSTAL]);
 /** A tree (connected Wood group) needs at least this many Wood blocks to grow Berries. */
 export const BERRY_MIN_TREE_SIZE = 5;
 /** Chance that a big-enough tree grows a Berry instead of Wood when watered. */

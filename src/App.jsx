@@ -165,7 +165,7 @@ function DebugPanel({ engine }) {
     return () => clearInterval(id);
   }, []);
   const info = engine.debugInfo();
-  const logs = getLogs(100);
+  const logs = getLogs(1000);
   const version = getLogVersion();
   useEffect(() => {
     const el = logRef.current;

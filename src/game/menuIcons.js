@@ -267,12 +267,22 @@ const DRAW = {
     line(ctx, P, [[0.24, 0.46], [0.36, 0.56], [0.24, 0.66]]);
     line(ctx, P, [[0.44, 0.68], [0.62, 0.68]]);
   },
-  bevel(ctx, P) {
-    // hexagon with an inset hexagon, joined at the corners: a bevelled edge
+  renderBlocky(ctx, P) {
+    // Rendering: Blocky — a faceted block: hexagon with an inset hexagon, joined at the corners
     const inner = HEX.map(([u, v]) => [0.5 + (u - 0.5) * 0.6, 0.5 + (v - 0.5) * 0.6]);
     poly(ctx, P, HEX);
     poly(ctx, P, inner);
     HEX.forEach((p, i) => line(ctx, P, [p, inner[i]]));
+  },
+  renderSmooth(ctx, P, s) {
+    // Rendering: Smooth — a round blob with a curved highlight
+    circle(ctx, P, 0.5, 0.5, 0.34, s);
+    const arc = [];
+    for (let a = 200; a <= 260; a += 10) {
+      const r = (a * Math.PI) / 180;
+      arc.push([0.5 + 0.22 * Math.cos(r), 0.5 + 0.22 * Math.sin(r)]);
+    }
+    line(ctx, P, arc);
   },
   info(ctx, P, s) {
     circle(ctx, P, 0.5, 0.5, 0.36, s);

@@ -1,7 +1,7 @@
 // Debug log: keeps the most recent console output (and uncaught errors) so the debug panel
 // (DOM HUD in the browser, tablet in XR) can show it. Messages still reach the real console.
 
-const MAX_ENTRIES = 200;
+const MAX_ENTRIES = 2000;
 const entries = []; // { t: 'HH:MM:SS', level: 'log' | 'info' | 'warn' | 'error', text }
 let version = 0; // bumps on every new entry, so panels can tell when to redraw
 
