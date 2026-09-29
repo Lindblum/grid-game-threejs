@@ -6,10 +6,9 @@
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
-import { BEHAVIOR, BLOCK, CREATURE_DIET, blockProps, isCreature } from './blocks.js';
+import { BEHAVIOR, BLOCK, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, canFly } from './blocks.js';
 
-/** Block types (ids) a Crawly is willing to crawl next to: Stone, Dirt, Moss. */
-export const CRAWLY_HABITAT = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS]);
+
 /** Chance that a Crawly decides to move on a given turn (when it has somewhere to go). */
 export const CRAWLY_MOVE_CHANCE = 0.5;
 
@@ -97,7 +96,7 @@ export const CLOUD_TYPES = new Set([BLOCK.FOG, BLOCK.NIMBUS]);
 
 export function stepGroups(world) {
   const moved = new Set();
-  const groups = connectedGroups(world, (b) => !CLOUD_TYPES.has(b.type));
+  const groups = connectedGroups(world, (b) => !CLOUD_TYPES.has(b.type) && !canFly(b)); // clouds and flyers don't fall
   let anchor = null;
   for (const g of groups) {
     const better = !anchor || g.length > anchor.length ||
@@ -228,12 +227,9 @@ export function stepDirt(world, turn) {
   return changed;
 }
 
-/** Blocks a Squirmy crawls along: the solid ones (Stone, Dirt, Moss, Berry, Crystal, Wood). */
-export const SQUIRMY_HABITAT = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.BERRY, BLOCK.CRYSTAL, BLOCK.WOOD]);
-
 /**
  * Whether a Squirmy's head (`head`, body `own`) could step into cell (x, y, z): the cell is
- * empty and touches a SQUIRMY_HABITAT block. On its very next step (`strict`) the cell may
+ * empty and touches a block the Squirmy can walk on (walkableBlocks). On its very next step (`strict`) the cell may
  * touch no Squirmy block but the head; further along a path it may pass next to its own body
  * (which will have moved on by then), but never next to another Squirmy.
  */
@@ -245,14 +241,9 @@ function squirmyCellOk(world, head, own, x, y, z, strict) {
     if (!n || n === head) continue;
     if (n.type === BLOCK.SQUIRMY) {
       if (strict || !own.has(n)) return false;
-    } else if (SQUIRMY_HABITAT.has(n.type)) habitat = true;
+    } else if (canWalkOn(head.type, n.type)) habitat = true;
   }
-  return habitat;
-}
-
-/** The surfaces a creature walks along (for the Select tool's target check). */
-export function habitatOf(c) {
-  return c.type === BLOCK.SQUIRMY ? SQUIRMY_HABITAT : CRAWLY_HABITAT;
+  return habitat || canFly(head); // Flight: no surface needed
 }
 
 /** Whether creature `c` (a Crawly, or a Squirmy's head) can be sent to cell (x, y, z). */
@@ -265,7 +256,7 @@ export function canStand(world, c, x, y, z) {
 /**
  * Squirmies, every turn (bundled first, see World.refreshSquirmies). A Squirmy whose head is
  * on Wander moves as a chain: the head steps to a random empty neighbouring cell that
- * touches a SQUIRMY_HABITAT block and touches no Squirmy block other than the head itself
+ * touches a block it can walk on (walkableBlocks) and touches no Squirmy block other than the head itself
  * (so it can't coil into itself or bump into another Squirmy) — or, if there is no such
  * cell, into any empty neighbouring cell; then each following segment
  * moves into the cell the one ahead of it just left. On Walk (sent with the Select tool) the
@@ -280,9 +271,16 @@ export function stepSquirmies(world, skip = new Set()) {
   let moved = 0;
   for (const sq of shuffle([...world.squirmies])) {
     const head = sq.segments[0];
+    tickWait(head);
     if (sq.segments.some((b) => skip.has(b))) continue;
     const own = new Set(sq.segments);
     const ok = (x, y, z, steps) => squirmyCellOk(world, head, own, x, y, z, steps === 1);
+    // left to itself, a Squirmy goes for Berries it can see (and eats one next to it)
+    const foraged = forage(world, head, (goal) => firstStepToward(world, head, goal, ok), (to) => moveChain(world, sq.segments, to));
+    if (foraged) {
+      if (foraged === 'moved') moved++;
+      continue;
+    }
     let to = null;
     const behavior = head.behavior ?? blockProps(head.type).defaultBehavior;
     if (behavior === BEHAVIOR.WANDER) {
@@ -318,52 +316,99 @@ export function stepSquirmies(world, skip = new Set()) {
       }
     }
     if (to) {
-      // follow the leader: each segment takes the cell the one ahead of it just left
-      let prev = to;
-      for (const seg of sq.segments) {
-        const here = { x: seg.x, y: seg.y, z: seg.z };
-        world.move(seg, prev, world.stepSeconds, { turnCrawly: seg === head });
-        prev = here;
-      }
+      moveChain(world, sq.segments, to);
       moved++;
+    } else if ((behavior === BEHAVIOR.WANDER || behavior === BEHAVIOR.WALK) && !hasEmptyNeighbor(world, head)) {
+      // boxed in (no empty cell next to its head): if its inventory is full it tries to
+      // excrete (World.excrete, out behind its tail); otherwise it eats its way out
+      // (an edible block next to its head, freeing that cell)
+      if (!world.freeSlotFor(head)) world.excrete(world.bundleOf(head), 'excrete');
+      else creatureEatNearby(world, head);
     }
-    squirmyEat(world, head, sq.segments);
   }
   return moved;
 }
 
-/**
- * A Squirmy that sees a Berry (within its head's sightRadius) eats the nearest one (see
- * creatureEat). One Berry per turn.
- */
-function squirmyEat(world, head, segments) {
-  let berry = null, best = Infinity;
-  for (const [dx, dy, dz] of offsetsWithin(head.sightRadius ?? 1)) {
-    const n = world.blocks.get(cellKey(head.x + dx, head.y + dy, head.z + dz));
-    const d = dx * dx + dy * dy + dz * dz;
-    if (n?.type === BLOCK.BERRY && !n.vanishing && d < best) {
-      berry = n;
-      best = d;
-    }
-  }
-  return !!berry && creatureEat(world, head, berry);
+/** Whether block `b` has at least one empty neighbouring cell. */
+function hasEmptyNeighbor(world, b) {
+  return NEIGHBOR_DIRS.some(([dx, dy, dz]) => !world.blocks.has(cellKey(b.x + dx, b.y + dy, b.z + dz)));
 }
 
-/** Sound played when each creature type eats. */
-const EAT_SOUND = { [BLOCK.CRAWLY]: 'crawlyEat', [BLOCK.SQUIRMY]: 'squirmyEat' };
+/** Moves a Squirmy's head to `to`; each following segment takes the cell the one ahead of it just left. */
+function moveChain(world, segments, to) {
+  let prev = to;
+  for (const seg of segments) {
+    const here = { x: seg.x, y: seg.y, z: seg.z };
+    world.move(seg, prev, world.stepSeconds, { turnCrawly: seg === segments[0] });
+    prev = here;
+  }
+}
+
+/**
+ * Foraging, for a creature left to itself (`c.isAssignedBehavior` false: the player hasn't
+ * given it something to do) with an inventory slot free in its bundle. Its priority foods are
+ * its priorityDiet (its type's, plus its buffs', e.g. Rockbiter's Crystal: blocks.js), counting
+ * only those it can eat right now:
+ *  - a priority food right next to it: it eats it (creatureEat)
+ *  - else one it can see (within its sightRadius): it takes one step along the shortest path
+ *    to a cell next to the nearest one it can reach. `stepToward(goal)` finds that step for
+ *    this kind of creature, `moveTo(cell)` makes it.
+ * Returns 'ate', 'moved', or false (nothing to forage: it does its normal behavior).
+ */
+function forage(world, c, stepToward, moveTo) {
+  if (c.isAssignedBehavior || !world.freeSlotFor(c)) return false;
+  const wanted = new Set(priorityDietOf(c).filter((type) => canEat(c, type)));
+  if (!wanted.size) return false;
+  for (const [dx, dy, dz] of shuffle([...NEIGHBOR_DIRS])) {
+    const n = world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz));
+    if (n && wanted.has(n.type) && !n.vanishing && creatureEat(world, c, n)) return 'ate';
+  }
+  const d2 = (b) => (b.x - c.x) ** 2 + (b.y - c.y) ** 2 + (b.z - c.z) ** 2;
+  const foods = offsetsWithin(c.sightRadius ?? blockProps(c.type).sightRadius ?? 0)
+    .map(([dx, dy, dz]) => world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz)))
+    .filter((b) => b && wanted.has(b.type) && !b.vanishing)
+    .sort((a, b) => d2(a) - d2(b));
+  for (const food of foods) {
+    // the cells next to it this creature could stand in, nearest first
+    const goals = NEIGHBOR_DIRS.map(([dx, dy, dz]) => ({ x: food.x + dx, y: food.y + dy, z: food.z + dz }))
+      .filter((g) => canStand(world, c, g.x, g.y, g.z))
+      .sort((a, b) => d2(a) - d2(b));
+    for (const goal of goals) {
+      const step = stepToward(goal);
+      if (step) {
+        moveTo(step);
+        return 'moved';
+      }
+    }
+  }
+  return false;
+}
+
+/** Sound a creature makes consuming a block: sip for Water, eat for anything else. */
+const eatSound = (food) => (food.type === BLOCK.WATER ? 'sip' : 'eat');
 
 /**
  * Creature `c` (a Crawly, or a Squirmy's head) eats block `food`, if its type is in the
- * creature's diet (CREATURE_DIET) and its bundle has a free inventory slot (World.consume:
+ * creature's diet (or a buff's: canEat) and its bundle has a free inventory slot (World.consume:
  * the food shrinks toward `c`, the eat sound plays, the item goes into a slot). A Squirmy
  * that eats a Berry then grows one block at its tail, "worm" style: in an empty cell next to
  * the tail that touches no other block of the Squirmy (falling back to the segment before,
  * and so on). Returns whether it ate.
  */
 export function creatureEat(world, c, food) {
-  if (!food || !CREATURE_DIET[c.type]?.includes(food.type)) return false;
-  const wasBerry = food.type === BLOCK.BERRY;
-  if (!world.consume(c, food, EAT_SOUND[c.type])) return false;
+  if (!food || !canEat(c, food.type)) return false; // its diet, or a buff's (e.g. Rockbiter: Stone)
+  const foodType = food.type;
+  const wasBerry = foodType === BLOCK.BERRY;
+  const slot = world.consume(c, food, eatSound(food));
+  if (!slot) return false;
+  // some foods give a buff (blocks.js eatBuffs, e.g. a Crawly eating a Berry: Rockbiter); the
+  // food is used up into the buff, so it leaves the inventory slot it went into
+  world.useBuffCharges(c, foodType); // a buff's priority food uses up one of its charges
+  const buff = blockProps(c.type).eatBuffs?.[foodType];
+  if (buff) {
+    world.addBuff(c, buff.buff, buff.turns, buff.charges);
+    slot.inventory = null;
+  }
   if (c.type === BLOCK.SQUIRMY && wasBerry) {
     const cell = world._wormCell(world.bundleOf(c));
     if (cell) world.add(...cell, BLOCK.SQUIRMY); // the newest block becomes the tail
@@ -478,8 +523,12 @@ export function stepNimbus(world, turn) {
   for (const n of [...world.blocks.values()].filter((b) => b.type === BLOCK.NIMBUS)) {
     if (!n.x && !n.y && !n.z) continue; // at the origin: no "down"
     if (Math.random() >= NIMBUS_RAIN_CHANCE) continue;
+    if (n.inventory) continue; // its one slot is busy
     const [dx, dy, dz] = closestDir(-n.x, -n.y, -n.z);
-    if (world.add(n.x + dx, n.y + dy, n.z + dz, BLOCK.WATER)) drops++; // add() refuses a filled cell
+    // the drop is excreted, so it grows in out of the cloud (excrete refuses a filled cell)
+    n.inventory = BLOCK.WATER;
+    if (world.excrete([n], null, { cell: { x: n.x + dx, y: n.y + dy, z: n.z + dz } })) drops++;
+    else n.inventory = null;
   }
   return drops;
 }
@@ -544,12 +593,28 @@ export function stepWood(world, turn) {
     const feeder = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === drink.x && w.y + dy === drink.y && w.z + dz === drink.z));
     const instant = cellKey(c.x, c.y, c.z) === drinkKey;
     if (!world.consume(feeder ?? tree[0], drink, 'waterDrip', { instant })) continue; // tree's inventory is full
-    if (world.add(c.x, c.y, c.z, fruit ? BLOCK.BERRY : BLOCK.WOOD)) {
+    // the new block is excreted by the Wood it grows from, so it grows in out of the branch
+    const parent = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === c.x && w.y + dy === c.y && w.z + dz === c.z));
+    const made = growFrom(world, parent ?? tree[0], c, fruit ? BLOCK.BERRY : BLOCK.WOOD);
+    if (made) {
       grown++;
-      if (fruit) world.emit('berryGrow', world.get(c.x, c.y, c.z));
+      if (fruit) world.emit('berryGrow', made);
     }
   }
   return grown;
+}
+
+/**
+ * Block `from` puts out a new block of `type` into empty cell `cell` (next to it) with
+ * World.excrete, so it grows in from `from`. Whatever `from` holds in its inventory slot
+ * stays there. Returns the new block, or null.
+ */
+function growFrom(world, from, cell, type) {
+  const held = from.inventory;
+  from.inventory = type;
+  const made = world.excrete([from], null, { cell });
+  from.inventory = held;
+  return made;
 }
 
 /**
@@ -633,9 +698,10 @@ function stepFlow(world, type, skip) {
 export function isWalkable(world, x, y, z, self = null) {
   const here = world.blocks.get(cellKey(x, y, z));
   if (here && here !== self) return false;
+  if (canFly(self)) return true; // Flight: any empty cell will do
   return NEIGHBOR_DIRS.some(([ex, ey, ez]) => {
     const n = world.blocks.get(cellKey(x + ex, y + ey, z + ez));
-    return n && n !== self && CRAWLY_HABITAT.has(n.type);
+    return n && n !== self && canWalkOn(self?.type ?? BLOCK.CRAWLY, n.type);
   });
 }
 
@@ -715,6 +781,25 @@ function walk(world, c) {
   return moved;
 }
 
+/** Selecting a creature puts it in Wait for this many turns, then it resumes what it was doing. */
+export const SELECT_WAIT_TURNS = 4;
+
+/**
+ * A timed Wait (`c.waitTurns`, set when the Select tool selects it) counts down a turn; at 0
+ * the creature goes back to its `heldBehavior` (it stays selected). A timer left over after
+ * its behavior changed some other way is dropped.
+ */
+function tickWait(c) {
+  if (c.waitTurns == null) return;
+  if (c.behavior !== BEHAVIOR.WAIT) {
+    delete c.waitTurns;
+    return;
+  }
+  if (c.waitTurns-- > 0) return; // waits this turn (waitTurns = turns still to wait after it)
+  delete c.waitTurns;
+  c.behavior = c.heldBehavior ?? blockProps(c.type).defaultBehavior;
+}
+
 /**
  * A walk is over (arrived, or gave up): the creature goes back to Wander, or, while it is
  * still selected (the Select tool keeps a creature selected after sending it), it waits
@@ -723,6 +808,7 @@ function walk(world, c) {
 function endWalk(c) {
   delete c.walkTarget;
   delete c.walkStuck;
+  if (!c.isSelected) c.isAssignedBehavior = false; // the order is done: it may forage again
   if (c.isSelected) {
     c.behavior = BEHAVIOR.WAIT;
     c.heldBehavior = BEHAVIOR.WANDER;
@@ -794,12 +880,19 @@ function checkTrapped(world, c) {
  * Returns the number of Crawlies that moved.
  */
 export function stepCrawlies(world, skip = new Set()) {
-  const crawlies = shuffle([...world.blocks.values()].filter((b) => b.type === BLOCK.CRAWLY));
+  const crawlies = shuffle([...world.blocks.values()].filter((b) => isSingleCreature(b.type)));
   let moved = 0;
   for (const c of crawlies) {
     // being trapped is checked for every Crawly, even one that fell with its group this turn
     if (!checkTrapped(world, c)) continue; // trapped (or just died): no action this turn
+    tickWait(c);
     if (skip.has(c)) continue;
+    // left to itself, a Crawly goes for Berries it can see (and eats one next to it)
+    const foraged = forage(world, c, (goal) => firstStepToward(world, c, goal), (to) => world.move(c, to, world.stepSeconds));
+    if (foraged) {
+      if (foraged === 'moved') moved++;
+      continue;
+    }
     switch (c.behavior ?? blockProps(c.type).defaultBehavior) {
       case BEHAVIOR.WANDER:
         if (wander(world, c)) moved++;

@@ -54,6 +54,13 @@ export function menuModel(state) {
         BACK,
         { id: 'controls', label: 'Controls', icon: 'controls' },
         { id: 'sound', label: `Sound: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff' },
+        {
+          id: 'speed',
+          label: `Speed: ${state.speed} turns/min`,
+          icon: 'speed',
+          slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
+        },
+        xr,
         background(state),
         {
           id: 'materials',
@@ -62,14 +69,8 @@ export function menuModel(state) {
         },
         { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff' },
         { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff' },
-        xr,
-        {
-          id: 'speed',
-          label: `Speed: ${state.speed} turns/min`,
-          icon: 'speed',
-          slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
-        },
         { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff' },
+        { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff' },
         { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug' },
         // developer options: only offered while Debug is on
         ...(state.debugMode

@@ -75,7 +75,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 
 /* the panel never outgrows the window: title and Back stay put, the item list scrolls */
 .menu-panel {
-  width: min(470px, 100%); padding: 24px;
+  width: min(560px, 100%); padding: 24px;
   max-height: calc(100vh - 32px); display: flex; flex-direction: column;
 }
 .menu-panel > .menu-items:not(.menu-back) { overflow-y: auto; min-height: 0; flex: 1 1 auto; padding-right: 6px; margin-right: -6px; }

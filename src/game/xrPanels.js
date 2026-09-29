@@ -147,12 +147,12 @@ export class RightHudPanel extends CanvasPanel {
   }
 }
 
-const MENU_WIDTH_M = 0.26;
+const MENU_WIDTH_M = 0.31; // wide enough for the longer Options labels
 
 /** Menu panel for XR: docked above the Left HUD (or floating in front of the face if there is no left controller). */
 export class MenuPanel extends CanvasPanel {
   constructor() {
-    super(800, 1160, MENU_WIDTH_M); // tall enough for Options with the debug-only items
+    super(954, 1320, MENU_WIDTH_M); // same pixel density as before (800 px per 0.26 m); tall enough for Options (13 items)
     this.anchorBottom = false;
     this.mesh.name = 'xr-menu';
     this.material.depthTest = false;

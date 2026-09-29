@@ -274,6 +274,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         uniform float uDitherIndex;
         varying float vDither;
         varying float vStyle;
+        varying float vTint; // opaque creatures: 1 = drawn in a buff's colour (see World._refreshLook)
         varying vec3 vNoisePos;
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
@@ -286,6 +287,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         vEdgeDist = edgeDist;
         vDither = abs(float(gl_InstanceID) - uDitherIndex) < 0.5 ? 1.0 : 0.0;
         vStyle = blockStyle.x;
+        vTint = blockStyle.z; // (for translucent blocks z is their face mask; only opaque styles read vTint)
         // block-local position (cm), offset per block so each one's pattern differs and
         // stays glued to the block while it slides
         vNoisePos = position + blockStyle.y * vec3(7.31, 3.17, 5.53);
@@ -328,6 +330,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         varying float vEdgeDist;
         varying float vDither;
         varying float vStyle;
+        varying float vTint;
         varying vec3 vNoisePos;
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
@@ -354,6 +357,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         float bumpH = 0.0;        // height (roughly 0..1 per few mm) for bump mapping
         float bumpStrength = 0.0; // 0 = no bump
         float isShell = 0.0;      // Crawly shell: its view-dependent colour is applied once the normal is known
+        float isPearl = 0.0;      // Buzzy: the same shell, pearlescent instead of beetle-iridescent
         float shellPhase = 0.0;
         vec3 shellBase = vec3(0.0);
         vec3 crystalGlow = vec3(0.0); // Crystal inner glow / cloud light scattering, added as emission
@@ -522,7 +526,12 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           seedCol *= 0.75 + 0.5 * clamp(0.5 - f.y * 4.0, 0.0, 1.0);   // lit from the top edge
           diffuseColor.rgb = mix(red, seedCol, seed);
           surfaceRough = mix(0.3, 0.75, max(pit * 0.6, seed));        // glossy skin, matte seeds
-        } else if (vStyle > 5.5 && vStyle < 6.5) {
+        } else if ((vStyle > 5.5 && vStyle < 6.5) || (vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.buzzy + 0.5).toFixed(1)})) {
+          // Crawly and Buzzy (Buzzy = the pearlescent variant): smooth, rounded shading like a
+          // Squirmy (the normal points out from the block centre, no flat faces or outlines)
+          isPearl = vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} ? 1.0 : 0.0;
+          cloudNormal = normalize(vLocalPos);
+          noOutline = 1.0;
           // 2D beetle shell in each face's plane: a smooth, glossy sheen whose colour drifts
           // in broad noise patches. Only the shading is set here; the iridescent hue depends
           // on the view angle and is added after the normal.
@@ -619,8 +628,20 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           vec3 irid = 0.5 + 0.5 * cos(6.2831853 * (ph + vec3(0.0, 0.33, 0.67)));
           irid *= vec3(0.55, 1.0, 1.05);
           vec3 shell = mix(shellBase * 0.5, irid, 0.75) * 0.7;
+          // Buzzy: pearlescent — its own colour, with a soft pastel play of colour and a milky
+          // sheen that grow toward the glancing edges (like mother-of-pearl)
+          float rim = 1.0 - ndv;
+          vec3 pearl = shellBase * 1.1 + (irid * 0.35 + 0.1) * rim + vec3(0.55, 0.6, 0.58) * pow(rim, 2.5);
+          shell = mix(shell, pearl, isPearl);
+          // a buff's colour (e.g. Rockbiter gold) takes over the whole shell: bright, warm gold
+          // with a slow shimmer across the angle, glossy, and glowing a little yellow
+          float tint = clamp(vTint, 0.0, 1.0);
+          vec3 gold = shellBase * (1.25 + 0.2 * cos(6.2831853 * ph * 0.5));
+          shell = mix(shell, gold, tint);
           diffuseColor.rgb *= shell; // keeps the soft shading and face outlines
-          metalnessFactor = 0.35;    // tints highlights with the shell colour
+          metalnessFactor = mix(mix(0.35, 0.15, isPearl), 0.5, tint); // tints highlights with the shell colour (pearl: softer)
+          roughnessFactor = mix(roughnessFactor, 0.12, tint); // polished gold
+          crystalGlow += vec3(1.0, 0.75, 0.2) * 0.3 * tint; // yellow emissive light
         }
         #endif
         #ifdef TRANSLUCENT_PASS

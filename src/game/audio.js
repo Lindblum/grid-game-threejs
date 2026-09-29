@@ -6,8 +6,8 @@ import assignUrl from '../../sfx/assign.wav?url';
 import crawlyDoneUrl from '../../sfx/crawly-done.wav?url';
 import crawlyTrappedUrl from '../../sfx/crawly-trapped.wav?url';
 import crawlyDeathUrl from '../../sfx/crawly-death.wav?url';
-import squirmyEatUrl from '../../sfx/squirmy-eat.wav?url';
-import crawlyEatUrl from '../../sfx/crawly-eat.wav?url';
+import eatUrl from '../../sfx/eat.wav?url';
+import sipUrl from '../../sfx/sip.wav?url';
 import waterDripUrl from '../../sfx/water-drip.wav?url';
 import ineffectiveUrl from '../../sfx/ineffective.wav?url';
 import breezeUrl from '../../sfx/breeze.wav?url';
@@ -47,8 +47,8 @@ const SAMPLE_URLS = {
   crawlyDone: crawlyDoneUrl,
   crawlyTrapped: crawlyTrappedUrl,
   crawlyDeath: crawlyDeathUrl,
-  squirmyEat: squirmyEatUrl,
-  crawlyEat: crawlyEatUrl,
+  eat: eatUrl,
+  sip: sipUrl,
   waterDrip: waterDripUrl,
   ineffective: ineffectiveUrl,
   breeze: breezeUrl,

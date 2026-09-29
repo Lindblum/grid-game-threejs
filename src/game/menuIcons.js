@@ -243,6 +243,18 @@ const DRAW = {
     cloud(ctx, P, s);
     for (const u of [0.34, 0.5, 0.66]) line(ctx, P, [[u, 0.64], [u - 0.05, 0.8]]); // falling drops
   },
+  fogOn(ctx, P) {
+    // three wavy bands of mist
+    for (const v of [0.34, 0.5, 0.66]) {
+      const pts = [];
+      for (let i = 0; i <= 8; i++) pts.push([0.16 + i * 0.085, v + Math.sin(i * 1.3 + v * 9) * 0.035]);
+      line(ctx, P, pts);
+    }
+  },
+  fogOff(ctx, P, s) {
+    DRAW.fogOn(ctx, P, s);
+    line(ctx, P, [[0.2, 0.84], [0.8, 0.16]]); // struck through
+  },
   rainOff(ctx, P, s) {
     cloud(ctx, P, s);
     line(ctx, P, [[0.2, 0.84], [0.8, 0.24]]); // struck through

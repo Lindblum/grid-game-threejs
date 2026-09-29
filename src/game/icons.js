@@ -51,6 +51,16 @@ export function drawCrawlyIcon(ctx, cx, cy, size) {
   drawIconEyes(ctx, cx, cy, size);
 }
 
+/** Buzzy icon: dark green with a pale pearly sheen on the faces toward the light, and eyes. */
+export function drawBuzzyIcon(ctx, cx, cy, size) {
+  const pearl = (n) => {
+    const t = 0.5 + 0.5 * n.y; // paler toward the top
+    return new THREE.Color().setHSL(0.4 - 0.12 * t, 0.45, 0.2 + 0.3 * t);
+  };
+  drawBlockIcon(ctx, cx, cy, size, '#ffffff', { faceColor: pearl });
+  drawIconEyes(ctx, cx, cy, size);
+}
+
 /** Squirmy icon: a pink, fleshy head block with eyes. */
 export function drawSquirmyIcon(ctx, cx, cy, size) {
   drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[BLOCK.SQUIRMY], { stroke: 'rgba(90,20,40,0.35)' });
@@ -129,6 +139,7 @@ export const SELECT_GREEN = '#3ddc5a';
 
 export function drawToolIcon(ctx, tool, cx, cy, size) {
   if (tool.block === BLOCK.CRAWLY) drawCrawlyIcon(ctx, cx, cy, size);
+  else if (tool.block === BLOCK.BUZZY) drawBuzzyIcon(ctx, cx, cy, size);
   else if (tool.block === BLOCK.SQUIRMY) drawSquirmyIcon(ctx, cx, cy, size);
   else if (tool.block) drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[tool.block]);
   else if (tool.id === TOOL.SELECT) drawSelectIcon(ctx, cx, cy, size);

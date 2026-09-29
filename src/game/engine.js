@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World } from './world.js';
-import { canStand, habitatOf, stepSquirmies, stepSight, stepNimbus, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepFog, stepFogForm, stepNimbusDrift, stepWood, updateBlockBundles, creatureEatNearby } from './sim.js';
+import { canStand, stepSquirmies, stepSight, stepNimbus, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepFog, stepFogForm, stepNimbusDrift, stepWood, updateBlockBundles, creatureEatNearby, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
-import { BEHAVIOR } from './blocks.js';
+import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
 import { EDGE_SHADE, EDGE_WIDTH_CM, truncatedOctahedronFaces } from './geometry.js';
@@ -15,10 +15,11 @@ import {
 } from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
 import { menuModel, displayName, PAGE_SIZE, SPEED } from './menu.js';
+import { loadOptionsCookie, saveOptionsCookie } from './optionsCookie.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
 
 const CM = 0.01; // world units are metres; lattice units are cm
-const COUNTDOWN_SECONDS = 3; // the page opens with a T -3 … 0 countdown before play starts
+const COUNTDOWN_SECONDS = 3; // the page, New and Load all start with a T -3 … 0 countdown before play
 const BLOCK_VOLUME_CM3 = 4; // space per block: the lattice packs two blocks into every 2 cm cube
 const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
@@ -98,6 +99,7 @@ export class Engine {
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
       speed: SPEED.default, // Options → Speed: turns per minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
+      fog: true, // Options → Fog: Fog recipe steps in New scenes, and Fog forming far out
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet) and developer options
       bevel: false, // Options → Bevel (Experimental), debug-only: not implemented yet
       saves: null,
@@ -134,6 +136,7 @@ export class Engine {
     this._initXR();
     this._bindEvents();
     this._detectXR();
+    this._applyOptions(loadOptionsCookie()); // Options saved last time (cookie), if any
 
     this.world.generateNew();
     this._syncCount();
@@ -149,14 +152,68 @@ export class Engine {
   };
   getState = () => this.state;
   setState(patch) {
+    const inOptions = (s) => s.paused && (s.menu === 'options' || s.menu === 'controls');
+    const wasInOptions = inOptions(this.state);
     this.state = { ...this.state, ...patch };
+    if (wasInOptions && !inOptions(this.state)) this._saveOptions(); // left Options (Back, Esc, Resume, …)
     for (const fn of this.listeners) fn();
+  }
+
+  /** The settings the Options menu controls, as saved to the options cookie. */
+  static OPTION_KEYS = ['soundOn', 'passthrough', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'bevel'];
+
+  _saveOptions() {
+    saveOptionsCookie(Object.fromEntries(Engine.OPTION_KEYS.map((k) => [k, this.state[k]])));
+  }
+
+  /**
+   * Applies saved Options settings (from the cookie): each one sets the state and does what
+   * its menu item does (mutes audio, recompiles materials, sets shader uniforms, …). Unknown
+   * or wrongly-typed values are ignored, so an old or damaged cookie can't break anything.
+   */
+  _applyOptions(saved) {
+    if (!saved) return;
+    const bool = (k) => typeof saved[k] === 'boolean';
+    if (bool('soundOn')) {
+      setMuted(!saved.soundOn);
+      this.setState({ soundOn: saved.soundOn });
+    }
+    if (bool('passthrough')) {
+      this.setState({ passthrough: saved.passthrough });
+      this._applyBackground();
+    }
+    if (bool('proceduralMaterials')) {
+      this.world.materials.setProcedural(saved.proceduralMaterials);
+      this.setState({ proceduralMaterials: saved.proceduralMaterials });
+    }
+    if (bool('outlines')) {
+      this.world.materials.uniforms.uOutlines.value = saved.outlines ? 1 : 0;
+      this.setState({ outlines: saved.outlines });
+    }
+    if (bool('ambientOcclusion')) {
+      this.world.materials.uniforms.uAO.value = saved.ambientOcclusion ? 1 : 0;
+      this.setState({ ambientOcclusion: saved.ambientOcclusion });
+    }
+    if (typeof saved.speed === 'number') this.setSpeed(saved.speed);
+    for (const k of ['rain', 'debugMode', 'bevel']) if (bool(k)) this.setState({ [k]: saved[k] });
+    if (bool('fog')) this.setFog(saved.fog);
   }
   toast(text, kind = 'info') {
     if (kind === 'error') playError();
     this.setState({ toast: { text, kind, id: ++this._toastId } });
     this._hudMessage = { text, until: performance.now() + 2200 };
   }
+  /**
+   * One line in the console (and so the debug panel's log) for a game event:
+   * "[turn 42] consume | Crawly #17 | size 1 | ate Berry". The index is the block's instance
+   * index, the size its BlockBundle's (a Squirmy's length, a tree's Wood count, …).
+   */
+  _logEvent(kind, block, detail) {
+    const inWorld = this.world.get(block.x, block.y, block.z) === block;
+    const size = inWorld ? this.world.bundleOf(block).length : 1;
+    console.log(` | Turn ${this.world.turn} | ${blockProps(block.type).name} #${block.index} | size ${size} | ${kind} | ${detail}`);
+  }
+
   /** Refreshes the HUD's block totals (overall, and per type for the tool labels). */
   _syncCount() {
     const counts = {};
@@ -218,6 +275,15 @@ export class Engine {
     this.world.on('crawlyTrapped', () => playCrawlyTrapped());
     this.world.on('blockConsumed', ({ sound }) => playSfx(sound));
     this.world.on('blockExcreted', ({ sound }) => playSfx(sound));
+    // event log (console, so it also shows in the debug panel): consume, excrete, buffs, behavior
+    const nameOf = (type) => blockProps(type).name;
+    this.world.on('blockConsumed', ({ by, block }) => this._logEvent('consume', by, `ate ${nameOf(block.type)}`));
+    this.world.on('blockExcreted', ({ by, block }) => this._logEvent('excrete', by, `excreted ${nameOf(block.type)}`));
+    this.world.on('buffAdded', ({ block, buff, refreshed }) => this._logEvent('buff', block, `${refreshed ? 'refreshed' : 'gained'} ${describeBuff(buff)}`));
+    this.world.on('buffChargeUsed', ({ block, type, charges }) =>
+      this._logEvent('buff', block, `used a ${BUFF_TYPES[type]?.name ?? type} charge (${charges} left)`));
+    this.world.on('buffExpired', ({ block, type }) => this._logEvent('buff', block, `${BUFF_TYPES[type]?.name ?? type} wore off`));
+    this.world.on('behaviorChanged', ({ block, from, to }) => this._logEvent('behavior', block, `${from} → ${to}`));
     this.world.on('blockBlown', ({ sound }) => playSfx(sound, 250)); // many clouds at once: one breeze
     this.world.on('blockVanished', () => this._syncCount());
     this.world.on('crawlyFreed', () => playCrawlyDone()); // same "made it" sound as arriving
@@ -528,12 +594,13 @@ export class Engine {
       ['Index', b.index],
       ['Creature', isCreature(b.type) ? 'yes' : 'no'],
     ];
-    const g = this.world.bundleByBlock.get(b);
-    if (g) rows.push(['Group', `${g.blocks.length} connected ${name}`]);
+    const bundle = this.world.bundleOf(b); // its BlockBundle, right now
+    rows.push(['Bundle size', `${bundle.length} block${bundle.length === 1 ? '' : 's'}`]);
     if (b.movedTurn != null) rows.push(['Last moved', `turn ${b.movedTurn}`]);
+    rows.push(['Buffs', b.buffs?.length ? b.buffs.map(describeBuff).join(', ') : 'none']);
+    if (isCreature(b.type)) rows.push(['Flies', blockProps(b.type).fly ? 'yes (its type)' : canFly(b) ? 'yes (Flight buff)' : 'no']);
     rows.push(['Inventory', b.inventory ? (TOOLS.find((t) => t.block === b.inventory)?.label ?? b.inventory) : 'empty']);
     if (b.type === BLOCK.WOOD || isCreature(b.type)) {
-      const bundle = this.world.bundleOf(b);
       rows.push(['Bundle slots', `${bundle.filter((x) => x.inventory).length} of ${bundle.length} full`]);
     }
     if (b.type === BLOCK.SQUIRMY) {
@@ -544,33 +611,44 @@ export class Engine {
     }
     if (isCreature(b.type) && (b.type !== BLOCK.SQUIRMY || b.isHead)) {
       rows.push(['Behavior', b.behavior ?? '—']);
+      rows.push(['Assigned', b.isAssignedBehavior ? 'yes (by the player)' : 'no (forages for Berries)']);
       if (b.sightRadius != null) rows.push(['Sight radius', `${b.sightRadius} blocks`]);
       rows.push(['Front', b.front ? fmt(b.front) : '—']);
       rows.push(['Floor', b.floor ? fmt(b.floor) : 'none']);
       if (b.walkTarget) rows.push(['Walk target', fmt(b.walkTarget)]);
       if (b.walkStuck) rows.push(['Walk stuck', `${b.walkStuck} turn(s)`]);
       if (b.trappedTurns) rows.push(['Trapped for', `${b.trappedTurns} turn(s)`]);
+      if (b.waitTurns != null) rows.push(['Wait left', `${b.waitTurns} turn(s)`]);
     }
     return { title: `${sel ? 'Selected' : 'Targeted'}: ${name}`, rows };
   }
 
   /**
-   * Sets the Select tool's selection. A selected Crawly waits (Wait behavior) until it is
-   * deselected, then goes back to what it was doing (`heldBehavior`), unless its behavior
-   * changed meanwhile (sent somewhere → Walk, or Trapped).
+   * Sets the Select tool's selection. A newly selected creature waits (Wait behavior) for
+   * SELECT_WAIT_TURNS turns, or until it is deselected, then goes back to what it was doing
+   * (`heldBehavior`), unless its behavior changed meanwhile (sent somewhere → Walk, or Trapped).
    */
   _setSelected(list) {
-    for (const c of this.selected) c.isSelected = false;
-    for (const c of list) c.isSelected = true; // lets the sim hold it at the end of a walk (endWalk)
+    for (const c of this.selected) {
+      c.isSelected = false;
+      // deselected: no longer under orders, unless it is still on its way somewhere
+      if (!list.includes(c) && c.behavior !== BEHAVIOR.WALK) c.isAssignedBehavior = false;
+    }
+    for (const c of list) {
+      c.isSelected = true; // lets the sim hold it at the end of a walk (endWalk)
+      c.isAssignedBehavior = true; // the Select tool put it in Wait: no foraging while selected
+    }
     for (const c of this.selected) {
       if (list.includes(c)) continue;
       if (c.behavior === BEHAVIOR.WAIT && c.heldBehavior) c.behavior = c.heldBehavior;
       delete c.heldBehavior;
+      delete c.waitTurns;
     }
     for (const c of list) {
       if (this.selected.includes(c) || c.heldBehavior) continue;
       c.heldBehavior = c.behavior;
       c.behavior = BEHAVIOR.WAIT;
+      c.waitTurns = SELECT_WAIT_TURNS; // then it resumes heldBehavior (sim: tickWait)
     }
     this.selected = list;
     const phase = list.length ? 'target' : 'select';
@@ -608,6 +686,8 @@ export class Engine {
     for (const c of this.selected) {
       if (c.behavior === BEHAVIOR.TRAPPED) continue; // can't wander off while walled in
       c.behavior = behavior;
+      c.isAssignedBehavior = true;
+      delete c.waitTurns; // X's Wait lasts until deselected
       if (behavior === BEHAVIOR.WANDER) {
         c.heldBehavior = BEHAVIOR.WANDER; // what it resumes if put back in Wait and deselected
         delete c.walkTarget;
@@ -638,12 +718,12 @@ export class Engine {
   _isSelectTarget(t) {
     if (!t?.block || !t.place || !t.placeFree) return false;
     // a surface the selected creature walks on, with room for it beside it
-    return this.selected.some((c) => habitatOf(c).has(t.block.type) && canStand(this.world, c, ...t.place));
+    return this.selected.some((c) => (canWalkOn(c.type, t.block.type) || canFly(c)) && canStand(this.world, c, ...t.place));
   }
 
   /** The creature a block belongs to: a Crawly itself, or a Squirmy segment's head. Else null. */
   _creatureOf(b) {
-    if (b?.type === BLOCK.CRAWLY) return b;
+    if (isSingleCreature(b?.type)) return b;
     if (b?.type === BLOCK.SQUIRMY) return this.world.squirmyOf.get(b)?.segments[0] ?? b;
     return null;
   }
@@ -673,11 +753,13 @@ export class Engine {
     }
     const [x, y, z] = t.place;
     for (const c of this.selected) {
-      if (!habitatOf(c).has(t.block.type) || !canStand(this.world, c, x, y, z)) continue;
+      if (!(canWalkOn(c.type, t.block.type) || canFly(c)) || !canStand(this.world, c, x, y, z)) continue;
       c.behavior = BEHAVIOR.WALK; // replaces the Wait it had while selected (a Squirmy: its head)
+      c.isAssignedBehavior = true; // sent by the Select tool: it won't stop to forage on the way
       c.heldBehavior = BEHAVIOR.WALK; // X (Wait) then deselect: carries on walking there
       c.walkTarget = { x, y, z };
       delete c.walkStuck;
+      delete c.waitTurns;
     }
     // it stays selected, so it can be re-targeted straight away
     playAssign();
@@ -749,12 +831,22 @@ export class Engine {
     return `${p(Math.floor(sec / 3600))}:${p(Math.floor(sec / 60) % 60)}:${p(sec % 60)}`;
   }
 
+  /** New / Load: back to the T -3 … 0 countdown (tools and the simulation wait for it, like on page load). */
   _resetClock() {
     this._clock = 0;
-    this.setState({ gameTime: 0 });
+    this.setState({ gameTime: -COUNTDOWN_SECONDS });
   }
 
   /** Game clock: runs only while playing (not while the menu is open). One turn per turnSeconds (Options → Speed). */
+  /**
+   * Options → Fog: on, New scenes include the recipe's Fog steps and new Fog forms far out
+   * each few turns; off, neither happens (Fog already in the world stays).
+   */
+  setFog(on) {
+    this.world.fogEnabled = on;
+    this.setState({ fog: on });
+  }
+
   /** Sets a menu slider's value (XR pointer, gamepad). */
   _setSlider(id, value) {
     if (value == null) return;
@@ -787,6 +879,7 @@ export class Engine {
   /** Everything that happens once per turn (`turn` = 1, 2, 3… since New / Load). */
   _turn(turn) {
     this.world.turn = turn; // moves this turn are stamped with it (Water settling)
+    this.world.tickBuffs(); // buffs count down a turn (and wear off)
     const moved = stepGroups(this.world); // detached groups fall toward the origin first…
     for (const w of stepWater(this.world, moved)) moved.add(w); // …then Water flows…
     for (const f of stepFog(this.world, moved)) moved.add(f); // …Fog bundles settle down, whole…
@@ -797,7 +890,7 @@ export class Engine {
     stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
     stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss…
     if (this.state.rain) stepRain(this.world, turn); // …a raindrop appears far out now and then (Options → Rain)…
-    stepFogForm(this.world, turn); // …and so does a wisp of Fog…
+    if (this.state.fog) stepFogForm(this.world, turn); // …and so does a wisp of Fog (Options → Fog)…
     stepNimbus(this.world, turn); // …and every 3rd turn each Nimbus may rain one Water below it
     updateBlockBundles(this.world); // finally, bucket non-creature blocks into same-type BlockBundles
     this._syncCount(); // rain, Nimbus and growth add blocks: keep the HUD's count (and diameter) current
@@ -905,6 +998,7 @@ export class Engine {
       return this.setState({ ambientOcclusion: on });
     }
     if (id === 'rain') return this.setState({ rain: !s.rain });
+    if (id === 'fog') return this.setFog(!s.fog);
     if (id === 'debug') {
       const on = !s.debugMode;
       this.setState({ debugMode: on });

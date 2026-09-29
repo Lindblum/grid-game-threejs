@@ -44,9 +44,11 @@ offer VR with a solid background). The grid origin appears
 The same table (with button icons) is under **Options → Controls** in the game.
 
 **Menu:** the game opens straight into a freshly generated scene, with a countdown (T -3, -2, -1 with a
-"ready" beep each, then a higher "go" beep at 0); tools work from 0. The menu
+"ready" beep each, then a higher "go" beep at 0); tools work from 0. New and Load start the same countdown. The menu
 (titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
-materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, speed (12–240 turns per minute in steps of 12, default 60), rain on/off, debug on/off, Controls).
+materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, speed (12–240 turns per minute in steps of 12, default 60), rain on/off, fog on/off, debug on/off, Controls).
+The Options settings are saved in a cookie whenever you leave the Options menu, and restored
+when the page loads (XR itself is not: it always starts off).
 
 **Debug** (Options) adds a panel under the HUDs with the selected (or pointed-at) block's
 properties, a Crawly's behavior among them, and the recent console log. In XR it is a
@@ -58,10 +60,12 @@ In XR each is docked above its own controller, tilted to face up toward you
 (position and tilt are `HUD_DOCK` in `src/game/xrPanels.js`); in the browser they sit in the
 bottom-left and bottom-right corners.
 
-Tools: Select, Stone (gray), Dirt (brown), Berry (red), Wood (orange), Crystal (yellow), Moss (green),
-Water (blue), Crawly (magenta), and Delete.
+Tools: Select, Delete, Crawly (magenta), Buzzy (dark green), Squirmy (pink), Stone (gray),
+Dirt (brown), Moss (green), Crystal (magenta), Wood (tan), Berry (red), Water (blue), Nimbus
+(dark gray), and Fog (light gray).
 
-**Select** has two phases. *Select*: click a Crawly to select it (green wireframe).
+**Select** has two phases. *Select*: click a Crawly to select it (green wireframe); it waits
+for 4 turns, then carries on with what it was doing (it stays selected).
 *Target*: point at a surface a Crawly can walk on (Stone, Dirt, Moss) and the empty cell
 beside it gets a green indicator, with a shrinking copy every turn; click it and the Crawly
 switches to the **Walk** behavior, heading there by the shortest path one step per turn. It
@@ -70,17 +74,29 @@ there, otherwise it goes back to **Wander**. Clicking another creature while tar
 that one instead; clicking anything else (or empty space), or switching tools, clears the
 selection.
 
+**Buzzy** (dark green, pearlescent creature): a Crawly that flies, as if it always had the
+Flight buff: any empty cell is a floor to it, and it never falls. It eats Berries and wanders,
+waits, walks and gets trapped like a Crawly. Crawlies and Buzzies are shaded smooth and
+round; a Buzzy has two small translucent bug wings on its sides that flap once every turn.
+
 **Squirmy** (pink creature): touching Squirmy blocks form one chain; the first placed is
 the head (with eyes), the last the tail. On Wander, each turn the head steps to an empty
 cell beside a solid block that touches no other Squirmy block, and each segment follows
 into the cell the one ahead of it left. The Select tool can select a Squirmy (the whole
-body lights up); it waits while selected, and can be sent to a spot like a Crawly.
+body lights up); like a Crawly, it waits 4 turns when selected, and can be sent to a spot.
 
 **Eating and inventories:** every block has one inventory slot. When something consumes
 a block (a Squirmy eating a Berry, Dirt or a tree drinking Water) the block shrinks toward the
 eater, a sound plays, and its type goes into a slot: Wood and creatures pass it to the last
 empty slot of their BlockBundle (a tree, or a Squirmy's chain), other blocks keep it in their
-own. Crawlies eat Berries; Squirmies eat Berries and Dirt. With a creature selected, press A
+own. Crawlies eat Berries; Squirmies eat Berries, Dirt and Water. Blocks can carry buffs, limited
+by turns (counted down every turn) and/or charges (one used each time the creature eats one of
+the buff's priority foods); with neither, a buff is permanent, and it wears off when either runs
+out. A Crawly that eats a Berry becomes a gold **Rockbiter** with 5 charges: able to eat Stone
+and Crystal too, it goes after any Crystal it sees, and each Crystal it eats uses a charge.
+**Flight** (a buff) makes any empty cell a floor to it, and it doesn't fall. A creature left to itself (not given
+a behavior by the player: selecting it, sending it, or Y / X) with a free slot goes for any
+Berry it can see and eats it once it is next to it; one following the player's orders doesn't. With a creature selected, press A
 (gamepad or Touch controller) to make it eat the block in front of it; if it can't, the
 "ineffective" sound plays. Press B to make it excrete: the item in its tail's slot becomes a
 block in an empty cell behind the tail (it grows in from the tail), and the other items move
@@ -150,7 +166,7 @@ downloading / opening a .json file instead.
 | `src/game/controls.js` | The control mappings shown on the Controls panel |
 | `src/game/inputIcons.js` | Key, mouse, gamepad and Touch-controller button glyphs |
 | `src/game/sim.js` | Per-turn simulation (falling groups, Water, Crawlies, Wood growth) |
-| `src/game/crawly.js` | Crawly floor/front orientation and eyes |
+| `src/game/creature.js` | Shared by all creatures: floor/front orientation, eyes, and wings |
 | `src/game/audio.js` | Synthesised sounds: place, delete, resume, new/load, save (no audio files) |
 | `src/App.jsx` | React UI: Left/Right HUD, menu, toasts |
 
