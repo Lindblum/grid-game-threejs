@@ -43,9 +43,15 @@ offer VR with a solid background). The grid origin appears
 
 The same table (with button icons) is under **Options → Controls** in the game.
 
-**Menu:** the game opens on a freshly generated scene with the menu up. The menu
+**Menu:** the game opens straight into a freshly generated scene, with a countdown (T -3, -2, -1 with a
+"ready" beep each, then a higher "go" beep at 0); tools work from 0. The menu
 (titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
-materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, Controls). Leave XR with Options → XR: On.
+materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, speed (12–120 turns per minute, default 60), rain on/off, debug on/off, Controls).
+
+**Debug** (Options) adds a panel under the HUDs with the selected (or pointed-at) block's
+properties, a Crawly's behavior among them, and the recent console log. In XR it is a
+floating tablet: squeeze a grip near it, or while pointing at it, to move it. Debug also
+unlocks developer options in Options (Bevel (Experimental), not implemented yet). Leave XR with Options → XR: On.
 
 **HUD:** the Left HUD holds the Menu (≡) button, the Right HUD holds the tool selector.
 In XR each is docked above its own controller, tilted to face up toward you
@@ -61,6 +67,12 @@ beside it gets a green indicator, with a shrinking copy every turn; click it and
 switches to the **Walk** behavior, heading there by the shortest path one step per turn,
 then goes back to **Wander**. Clicking another Crawly while targeting selects that one
 instead; clicking anything else (or empty space), or switching tools, clears the selection.
+
+**Squirmy** (pink creature): touching Squirmy blocks form one chain; the first placed is
+the head (with eyes), the last the tail. On Wander, each turn the head steps to an empty
+cell beside a solid block that touches no other Squirmy block, and each segment follows
+into the cell the one ahead of it left. The Select tool can select a Squirmy (the whole
+body lights up); it waits while selected, and can be sent to a spot like a Crawly.
 
 **Trapped:** a Crawly walled in on all 14 sides by non-creature blocks switches to the
 Trapped behavior and does nothing. A turn with an empty neighbouring cell frees it (back to

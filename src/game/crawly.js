@@ -11,6 +11,13 @@ export const CRAWLY_BEHAVIOR = Object.freeze({
   TRAPPED: 'trapped', // walled in on all sides: does nothing; freed by a gap, dies if it lasts too long
 });
 export const DEFAULT_CRAWLY_BEHAVIOR = CRAWLY_BEHAVIOR.WANDER;
+/**
+ * How far a Crawly sees, in blocks (1 block = 2 cm, the spacing of square-face neighbours),
+ * stored per Crawly as `sightRadius`. Every turn, Fog within this distance is cleared.
+ */
+export const CRAWLY_SIGHT_RADIUS = 3;
+/** A Squirmy sees (and clears Fog) this many blocks around its head. */
+export const SQUIRMY_SIGHT_RADIUS = 1;
 export const isCrawlyBehavior = (v) => Object.values(CRAWLY_BEHAVIOR).includes(v);
 
 /** Block types a Crawly can use as its floor: Stone, Dirt. */
@@ -65,27 +72,28 @@ export function orientCrawly(world, c, moveDir = null) {
 }
 
 /**
- * Rotation taking the Crawly frame (right, up, forward) to world axes. Up points straight
- * away from the floor, and forward is the front direction flattened into the floor's plane,
- * so the eyes always sit level with (parallel to) the floor surface, even after a diagonal
- * step. With no floor, up is world up.
+ * Rotation taking the Crawly frame (right, up, forward) to world axes. Forward is the
+ * direction it last moved (its front), so the eyes sit on the side it moved through. Up is
+ * "away from the floor" with its forward part removed, which keeps the line between the two
+ * eyes perpendicular to the floor normal: the pair stays level with the floor surface even
+ * after a diagonal step. With no floor, world up is used.
  */
 function frameQuaternion(c, out) {
+  _f.set(...c.front).normalize();
   if (c.floor) _up.set(...c.floor).negate().normalize();
   else _up.set(0, 1, 0);
-  _f.set(...c.front).normalize();
-  _f.addScaledVector(_up, -_f.dot(_up)); // flatten front into the floor plane
-  if (_f.lengthSq() < 1e-6) {
-    // front points straight at / away from the floor: keep the last level forward, or any
-    if (c.eyeForward) {
-      _f.set(...c.eyeForward);
-      _f.addScaledVector(_up, -_f.dot(_up));
+  _up.addScaledVector(_f, -_up.dot(_f)); // make up perpendicular to forward
+  if (_up.lengthSq() < 1e-6) {
+    // moved straight toward / away from the floor: keep the previous up, or pick any
+    if (c.eyeUp) {
+      _up.set(...c.eyeUp);
+      _up.addScaledVector(_f, -_up.dot(_f));
     }
-    if (_f.lengthSq() < 1e-6) _f.set(1, 0, 0).addScaledVector(_up, -_up.x);
-    if (_f.lengthSq() < 1e-6) _f.set(0, 0, 1).addScaledVector(_up, -_up.z);
+    if (_up.lengthSq() < 1e-6) _up.set(0, 1, 0).addScaledVector(_f, -_f.y);
+    if (_up.lengthSq() < 1e-6) _up.set(1, 0, 0).addScaledVector(_f, -_f.x);
   }
-  _f.normalize();
-  c.eyeForward = _f.toArray();
+  _up.normalize();
+  c.eyeUp = _up.toArray();
   _right.crossVectors(_up, _f);
   return out.setFromRotationMatrix(_basis.makeBasis(_right, _up, _f));
 }

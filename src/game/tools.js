@@ -12,6 +12,9 @@ export const BLOCK = Object.freeze({
   MOSS: 'green',
   WATER: 'blue',
   CRAWLY: 'magenta',
+  FOG: 'fog', // newer types use plain ids
+  NIMBUS: 'nimbus',
+  SQUIRMY: 'squirmy',
 });
 
 /**
@@ -19,7 +22,7 @@ export const BLOCK = Object.freeze({
  * other type is terrain or material, and those are what form same-type block groups.
  * Add new creature types here as they arrive.
  */
-export const CREATURE_TYPES = new Set([BLOCK.CRAWLY]);
+export const CREATURE_TYPES = new Set([BLOCK.CRAWLY, BLOCK.SQUIRMY]);
 export const isCreature = (type) => CREATURE_TYPES.has(type);
 
 export const BLOCK_COLORS = {
@@ -27,8 +30,11 @@ export const BLOCK_COLORS = {
   [BLOCK.WOOD]: '#b8804a', // warm tan
   [BLOCK.CRYSTAL]: '#e03cd2', // magenta
   [BLOCK.MOSS]: '#43a047',
+  [BLOCK.FOG]: '#d3d7dd', // light gray
+  [BLOCK.NIMBUS]: '#5b616b', // dark gray
   [BLOCK.WATER]: '#1e88e5',
   [BLOCK.CRAWLY]: '#d63ad6',
+  [BLOCK.SQUIRMY]: '#f07898', // pink
   [BLOCK.DIRT]: '#8b5a2b',
   [BLOCK.STONE]: '#9aa0a6',
 };
@@ -46,6 +52,9 @@ export const TOOLS = [
   { id: BLOCK.MOSS, label: 'Moss', block: BLOCK.MOSS },
   { id: BLOCK.WATER, label: 'Water', block: BLOCK.WATER },
   { id: BLOCK.CRAWLY, label: 'Crawly', block: BLOCK.CRAWLY },
+  { id: BLOCK.SQUIRMY, label: 'Squirmy', block: BLOCK.SQUIRMY },
+  { id: BLOCK.FOG, label: 'Fog', block: BLOCK.FOG },
+  { id: BLOCK.NIMBUS, label: 'Nimbus', block: BLOCK.NIMBUS },
   { id: TOOL.DELETE, label: 'Delete', block: null },
 ];
 

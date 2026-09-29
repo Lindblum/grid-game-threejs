@@ -48,7 +48,17 @@ export function drawCrawlyIcon(ctx, cx, cy, size) {
     return new THREE.Color().setHSL(((hue % 1) + 1) % 1, 0.75, 0.55);
   };
   drawBlockIcon(ctx, cx, cy, size, '#ffffff', { faceColor: shell });
-  // eyes on the front (+z) face, where they sit on a real Crawly; drawn as small glossy spheres
+  drawIconEyes(ctx, cx, cy, size);
+}
+
+/** Squirmy icon: a pink, fleshy head block with eyes. */
+export function drawSquirmyIcon(ctx, cx, cy, size) {
+  drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[BLOCK.SQUIRMY], { stroke: 'rgba(90,20,40,0.35)' });
+  drawIconEyes(ctx, cx, cy, size);
+}
+
+/** Two glossy black eyes on the icon's front (+z) face, where they sit on a real creature. */
+function drawIconEyes(ctx, cx, cy, size) {
   const scale = size / 3.1;
   ctx.save();
   for (const sx of [-0.34, 0.34]) {
@@ -119,6 +129,7 @@ export const SELECT_GREEN = '#3ddc5a';
 
 export function drawToolIcon(ctx, tool, cx, cy, size) {
   if (tool.block === BLOCK.CRAWLY) drawCrawlyIcon(ctx, cx, cy, size);
+  else if (tool.block === BLOCK.SQUIRMY) drawSquirmyIcon(ctx, cx, cy, size);
   else if (tool.block) drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[tool.block]);
   else if (tool.id === TOOL.SELECT) drawSelectIcon(ctx, cx, cy, size);
   else drawDeleteIcon(ctx, cx, cy, size);

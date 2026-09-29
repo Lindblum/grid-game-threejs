@@ -143,9 +143,9 @@ export const EDGE_SHADE = 0.725;
 export const AO_STRENGTH = 0.45;
 
 /** Values for the per-instance `blockStyle.x` attribute (surface shader to use). */
-export const BLOCK_STYLE = { plain: 0, dirt: 1, stone: 2, water: 3, moss: 4, berry: 5, crawly: 6, wood: 7, crystal: 8 };
+export const BLOCK_STYLE = { plain: 0, dirt: 1, stone: 2, water: 3, moss: 4, berry: 5, crawly: 6, wood: 7, crystal: 8, fog: 9, nimbus: 10, squirmy: 11 };
 /** Styles drawn by the translucent pass (the rest are opaque). */
-export const TRANSLUCENT_STYLES = [BLOCK_STYLE.water, BLOCK_STYLE.crystal];
+export const TRANSLUCENT_STYLES = [BLOCK_STYLE.water, BLOCK_STYLE.crystal, BLOCK_STYLE.fog, BLOCK_STYLE.nimbus];
 
 // Noise lookups from the pre-baked 3D texture (see noiseTexture.js): one texture fetch
 // each instead of evaluating Perlin (8 gradient hashes) or Voronoi (27 cells) per pixel.
@@ -352,16 +352,50 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         float isShell = 0.0;      // Crawly shell: its view-dependent colour is applied once the normal is known
         float shellPhase = 0.0;
         vec3 shellBase = vec3(0.0);
-        vec3 crystalGlow = vec3(0.0); // Crystal: faint inner glow, added as emission
+        vec3 crystalGlow = vec3(0.0); // Crystal inner glow / cloud light scattering, added as emission
+        vec3 cloudNormal = vec3(0.0); // Fog / Nimbus: block-local "fluffy" normal, replaces the flat face normal
+        // Fog / Nimbus: purely diffuse, no specular highlights or reflections (any Materials mode)
+        float isCloud = vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.nimbus + 0.5).toFixed(1)} ? 1.0 : 0.0;
+        float noOutline = isCloud; // soft, rounded bodies skip face outlines and corner shading
         vec3 facetTilt = vec3(0.0);   // Crystal: per-facet normal tilt (block-local), applied with the normal
         #if defined(SOLID_MATERIALS)
           // Options → Materials: Solid — flat instance colour only
           #ifdef TRANSLUCENT_PASS
-          diffuseColor.a = vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.8 : 0.55;
-          surfaceRough = vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.04 : 0.08;
+          // Water 55 %, Crystal 90 % opaque and glossy, Fog / Nimbus 80 % opaque and matte
+          diffuseColor.a = vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)} ? 0.8 : vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.9 : 0.55;
+          surfaceRough = vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)} ? 1.0 : vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.04 : 0.08;
           #endif
         #elif defined(TRANSLUCENT_PASS)
-        if (vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)}) {
+        if (vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)}) {
+          // Fog / Nimbus: fluffy, slowly churning cloud. Everything is 3D noise in block space,
+          // detailed down to ~1 mm so a single 2 cm block still looks soft:
+          //  - "billow" noise (sums of |Perlin|) gives rounded puffs at several sizes
+          //  - the normal points out from the block centre (so the block shades like a soft
+          //    ball, not flat faces) and is jostled by noise, so light breaks up into lumps
+          //  - some of the cloud's own colour is added as glow (light scattering inside it),
+          //    which flattens the contrast the way real cloud lighting does
+          // Nimbus uses the same shader with its darker colour, plus a heavier, darker bottom.
+          vec3 drift = vec3(uTime * 0.05, uTime * 0.02, -uTime * 0.035);
+          vec3 q = vNoisePos + drift;
+          float billow = perlinFbm(q * 1.1);
+          float puffs = abs(perlin3(q * 2.4)) * 0.5 + abs(perlin3(q * 5.1 + 3.7)) * 0.3 + abs(perlin3(q * 10.7 + 8.1)) * 0.2;
+          vec3 lump = vec3(perlin3(q * 2.1 + 1.3), perlin3(q * 2.1 + 6.1), perlin3(q * 2.1 + 12.9));
+          // Fog: smooth shading, the normal simply points out from the block centre (no face
+          // or noise terms), so the block lights like a soft sphere. Nimbus keeps the lumps.
+          cloudNormal = vStyle > ${(BLOCK_STYLE.nimbus - 0.5).toFixed(1)}
+            ? normalize(normalize(vLocalPos) + 0.25 * normalize(vLocalNormal) + 0.9 * lump)
+            : normalize(vLocalPos);
+          vec3 base = diffuseColor.rgb;
+          vec3 col = base * (0.8 + 0.25 * billow + 0.3 * puffs);
+          if (vStyle > ${(BLOCK_STYLE.nimbus - 0.5).toFixed(1)}) col *= mix(0.72, 1.0, smoothstep(-1.0, 0.6, vLocalPos.y));
+          diffuseColor.rgb = col;
+          // opacity: its own slowly drifting 3D Perlin density field, around 80 % opaque, so
+          // the cloud thins and thickens in patches independently of its shading
+          float density = perlinFbm(vNoisePos * 0.9 + drift * 0.6 + vec3(11.3, 4.7, 7.9));
+          diffuseColor.a = clamp(0.8 + 0.35 * density, 0.55, 0.95);
+          surfaceRough = 1.0;
+          crystalGlow = col * 0.22;
+        } else if (vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)}) {
           // Crystal (magenta gem): Voronoi cells are internal facets. Each facet tilts the
           // normal its own way so highlights break up into glints; the colour runs from a pale
           // pink tint to a deep violet shade of the instance colour per facet, with a faint
@@ -383,7 +417,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           float epw = length(fwidth(vNoisePos)) * 0.6 * 1.4; // pixel footprint in border-distance units
           col += (base * 0.25 + 0.06) * lineCoverage(vor.x, 0.02, epw); // bright facet edges, antialiased
           diffuseColor.rgb = col;
-          diffuseColor.a = mix(0.68, 0.84, vor.y);
+          diffuseColor.a = mix(0.82, 0.94, vor.y);
           surfaceRough = 0.04;
           crystalGlow = col * 0.12;
         } else {
@@ -521,13 +555,36 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
           col *= 0.92 + 0.16 * h.z;                          // per-block tone
           diffuseColor.rgb = max(col, 0.0);
           surfaceRough = mix(0.6, 0.8, late);
+        } else if (vStyle > ${(BLOCK_STYLE.squirmy - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.squirmy + 0.5).toFixed(1)}) {
+          // Squirmy: wet, shiny, smooth flesh that wiggles. The normal points out from the
+          // block centre (a rounded body, no flat faces) and wobbles with slowly drifting 3D
+          // noise; ring-like folds ripple along it over time; thin dark veins and paler fatty
+          // marbling make it read as meat; a little glow stands in for light under the skin.
+          vec3 q = vNoisePos;
+          float t = uTime;
+          vec3 wig = vec3(perlin3(q * 1.3 + vec3(0.0, t * 0.6, 0.0)),
+                          perlin3(q * 1.3 + vec3(5.2, t * 0.6, 1.7)),
+                          perlin3(q * 1.3 + vec3(9.4, t * 0.6, 3.3)));
+          cloudNormal = normalize(normalize(vLocalPos) + 0.45 * wig);
+          float band = 0.5 + 0.5 * sin(dot(vLocalPos, vec3(0.28, 0.93, 0.21)) * 6.0 - t * 3.0 + perlin3(q * 2.0) * 2.0);
+          float vein = 1.0 - smoothstep(0.0, 0.08, abs(perlin3(q * 3.2 + wig * 0.3)));
+          float marble = perlinFbm(q * 2.1);
+          vec3 base = diffuseColor.rgb;
+          vec3 col = base * (0.9 + 0.2 * marble) * mix(0.82, 1.08, band);
+          col = mix(col, base * vec3(0.55, 0.2, 0.28), vein * 0.55);
+          col = mix(col, vec3(1.0, 0.86, 0.86), smoothstep(0.35, 0.7, marble) * 0.25);
+          diffuseColor.rgb = col;
+          crystalGlow = col * 0.12;
+          surfaceRough = 0.22;
+          noOutline = 1.0;
         }
         #endif
         float fw = max(fwidth(vEdgeDist), 1e-4);
         float edgeW = 0.045;
         float edgeMix = smoothstep(edgeW - fw, edgeW + fw, vEdgeDist);
-        diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, max(edgeMix, 1.0 - uOutlines));
-        diffuseColor.rgb *= 1.0 - uAO * ${AO_STRENGTH.toFixed(3)} * vAO; // corners hemmed in by neighbours go darker`
+        // (clouds skip both: hard outlines and dark corners make them look like tiles)
+        diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, max(max(edgeMix, 1.0 - uOutlines), noOutline));
+        diffuseColor.rgb *= 1.0 - uAO * ${AO_STRENGTH.toFixed(3)} * vAO * (1.0 - noOutline); // corners hemmed in by neighbours go darker`
       )
       .replace(
         '#include <roughnessmap_fragment>',
@@ -548,6 +605,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         }
         // Crystal facets: tilt the normal directly (block-local tilt -> view space)
         if (dot(facetTilt, facetTilt) > 0.0) normal = normalize(normal + vLocalToView * facetTilt);
+        // Fog / Nimbus: replace the flat face normal with the fluffy one (block-local -> view)
+        if (dot(cloudNormal, cloudNormal) > 0.0) normal = normalize(vLocalToView * cloudNormal);
         if (isShell > 0.5) {
           // thin-film-like iridescence: the hue cycles as the viewing angle changes,
           // biased toward beetle greens, blues and violets plus the instance colour
@@ -562,11 +621,20 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         #endif
         #ifdef TRANSLUCENT_PASS
         {
-          // Fresnel: grazing angles reflect more and look less see-through
+          // Fresnel: grazing angles reflect more and look less see-through (not for clouds)
           float fres = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 3.0);
-          diffuseColor.a = mix(diffuseColor.a, 0.9, fres);
+          diffuseColor.a = mix(diffuseColor.a, max(diffuseColor.a, 0.9), fres * (1.0 - isCloud)); // never less opaque at the rim
         }
         #endif`
+      )
+      .replace(
+        '#include <aomap_fragment>',
+        `#include <aomap_fragment>
+        if (isCloud > 0.5) {
+          // clouds don't reflect: drop all specular light (highlights and environment)
+          reflectedLight.directSpecular = vec3(0.0);
+          reflectedLight.indirectSpecular = vec3(0.0);
+        }`
       )
       .replace(
         '#include <emissivemap_fragment>',

@@ -59,15 +59,15 @@ const SLOT = 104, SLOT_GAP = 14, SLOT_Y = 72;
 /** Left HUD (docked to the left controller): game time and the Menu button. */
 export class LeftHudPanel extends CanvasPanel {
   constructor() {
-    super(200, 200, 200 * PX_TO_M);
+    super(200, 250, 200 * PX_TO_M); // time, Mean Diameter, then the Menu button
     this.mesh.name = 'xr-hud-left';
     dockAboveController(this.mesh);
-    this.button = { x: (200 - SLOT) / 2, y: SLOT_Y, w: SLOT, h: SLOT };
+    this.button = { x: (200 - SLOT) / 2, y: SLOT_Y + 44, w: SLOT, h: SLOT };
     this._last = '';
   }
 
-  draw(hover, menuOpen, timeText = '00:00:00') {
-    const sig = `${hover}|${menuOpen}|${timeText}`;
+  draw(hover, menuOpen, timeText = '00:00:00', diameterText = '') {
+    const sig = `${hover}|${menuOpen}|${timeText}|${diameterText}`;
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
@@ -85,6 +85,12 @@ export class LeftHudPanel extends CanvasPanel {
       ctx.stroke();
     }
     drawMenuIcon(ctx, x + w / 2, y + h / 2, w * 0.8);
+    // Mean Diameter between the time and the button
+    ctx.fillStyle = 'rgba(232, 236, 242, 0.75)';
+    ctx.font = '600 28px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(diameterText, W / 2, 84);
     this.texture.needsUpdate = true;
   }
 
@@ -113,10 +119,17 @@ export class RightHudPanel extends CanvasPanel {
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
     hudBackground(ctx, W, H);
-    hudLabel(ctx, message || label, W / 2, message ? '#ffd166' : '#e8ecf2');
-
     const total = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP;
     const x0 = (W - total) / 2;
+    if (message) {
+      hudLabel(ctx, message, W / 2, '#ffd166'); // messages stay centred
+    } else {
+      // tool name directly above the selected slot, kept inside the panel
+      ctx.font = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
+      const half = ctx.measureText(label).width / 2;
+      const cx = x0 + toolIndex * (SLOT + SLOT_GAP) + SLOT / 2;
+      hudLabel(ctx, label, Math.min(Math.max(cx, 28 + half), W - 28 - half));
+    }
     TOOLS.forEach((t, i) => {
       const x = x0 + i * (SLOT + SLOT_GAP);
       roundRect(ctx, x, SLOT_Y, SLOT, SLOT, 16);
@@ -139,7 +152,7 @@ const MENU_WIDTH_M = 0.26;
 /** Menu panel for XR: docked above the Left HUD (or floating in front of the face if there is no left controller). */
 export class MenuPanel extends CanvasPanel {
   constructor() {
-    super(800, 960, MENU_WIDTH_M);
+    super(800, 1160, MENU_WIDTH_M); // tall enough for Options with the debug-only items
     this.anchorBottom = false;
     this.mesh.name = 'xr-menu';
     this.material.depthTest = false;
@@ -205,6 +218,23 @@ export class MenuPanel extends CanvasPanel {
       const tx = bx + 22 + iconSize + 18;
       let right = bx + bw - 28;
       ctx.textBaseline = 'middle';
+      let track = null;
+      if (it.slider) {
+        // slider: track + knob in the right half; the label gets the left half
+        const { min, max, value } = it.slider;
+        track = { x0: bx + bw * 0.55, x1: bx + bw - 34, min, max, step: it.slider.step ?? 1 };
+        const ty = y + bh / 2;
+        const kx = track.x0 + ((value - min) / (max - min)) * (track.x1 - track.x0);
+        ctx.lineCap = 'round';
+        ctx.lineWidth = 10;
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.beginPath(); ctx.moveTo(track.x0, ty); ctx.lineTo(track.x1, ty); ctx.stroke();
+        ctx.strokeStyle = '#5aa0ff';
+        ctx.beginPath(); ctx.moveTo(track.x0, ty); ctx.lineTo(kx, ty); ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(kx, ty, 17, 0, Math.PI * 2); ctx.fill();
+        right = track.x0 - 24;
+      }
       if (it.sub) {
         ctx.font = '400 24px system-ui, -apple-system, Segoe UI, sans-serif';
         const sub = fit(ctx, it.sub, bw * 0.3);
@@ -218,7 +248,7 @@ export class MenuPanel extends CanvasPanel {
       ctx.fillStyle = it.disabled ? 'rgba(255,255,255,0.4)' : '#ffffff';
       ctx.fillText(fit(ctx, it.label, right - tx), tx, y + bh / 2);
       ctx.textAlign = 'center';
-      if (!it.disabled) this.rects.push({ id: it.id, x: bx, y: y + offY, w: bw, h: bh });
+      if (!it.disabled) this.rects.push({ id: it.id, x: bx, y: y + offY, w: bw, h: bh, track });
       y += bh + gap;
     });
     if (model.table && lead >= model.items.length) this._drawControlsTable(ctx, W, y - 22, TABLE_HEAD, TABLE_ROW);
@@ -265,6 +295,15 @@ export class MenuPanel extends CanvasPanel {
     return r ? r.id : null;
   }
 
+  /** For a slider item: the value under uv (clamped to the track, snapped to its step), else null. */
+  sliderValueAt(uv, id) {
+    const r = this.rects.find((q) => q.id === id);
+    if (!r?.track) return null;
+    const { x0, x1, min, max, step } = r.track;
+    const t = Math.min(1, Math.max(0, (uv.x * this.canvas.width - x0) / (x1 - x0)));
+    return Math.round((min + t * (max - min)) / step) * step;
+  }
+
   /** True when `uv` is on the visible panel (not the transparent rest of the canvas). */
   contains(uv) {
     const c = this.content;
@@ -280,4 +319,78 @@ function fit(ctx, text, maxW) {
   let s = text;
   while (s.length > 1 && ctx.measureText(s + '…').width > maxW) s = s.slice(0, -1);
   return s + '…';
+}
+
+const TABLET_W = 1000, TABLET_H = 760;
+const LOG_COLORS = { log: '#c9d1dc', info: '#9cc8ff', warn: '#ffd166', error: '#ff8a80' };
+
+/**
+ * Debug tablet for XR: a free-floating panel showing the same content as the browser's debug
+ * HUD panel (properties of the selected / targeted block, then the recent console log).
+ * It lives in the scene, and can be picked up and moved with either grip.
+ */
+export class DebugTablet extends CanvasPanel {
+  constructor() {
+    super(TABLET_W, TABLET_H, 0.34);
+    this.mesh.name = 'xr-debug-tablet';
+    this.mesh.visible = false;
+    this._last = '';
+  }
+
+  /** info = { title, rows: [[key, value]] } (Engine.debugInfo); logs = debugLog entries. */
+  draw(info, logs, logVersion, grabbed) {
+    const sig = JSON.stringify([info, logVersion, grabbed]);
+    if (sig === this._last) return;
+    this._last = sig;
+    const { ctx } = this;
+    const W = TABLET_W, H = TABLET_H;
+    ctx.clearRect(0, 0, W, H);
+    roundRect(ctx, 4, 4, W - 8, H - 8, 30);
+    ctx.fillStyle = 'rgba(12, 15, 22, 0.94)';
+    ctx.fill();
+    ctx.strokeStyle = grabbed ? '#9cc8ff' : 'rgba(255,255,255,0.22)';
+    ctx.lineWidth = grabbed ? 6 : 3;
+    ctx.stroke();
+
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 34px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText('Debug', 32, 42);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.font = '400 22px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText('grip to move', W - 32, 42);
+
+    // properties
+    const mono = (size, weight = 400) => `${weight} ${size}px ui-monospace, Consolas, monospace`;
+    let y = 96;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#e8ecf2';
+    ctx.font = '600 26px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText(fit(ctx, info.title, W - 64), 32, y);
+    y += 40;
+    for (const [k, v] of info.rows.slice(0, 11)) {
+      ctx.font = mono(22, 600);
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillText(k, 40, y);
+      ctx.font = mono(22);
+      ctx.fillStyle = '#e8ecf2';
+      ctx.fillText(fit(ctx, String(v), W - 300), 270, y);
+      y += 30;
+    }
+
+    // log, newest at the bottom
+    const logTop = Math.max(y + 16, 420);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(24, logTop - 4, W - 48, 2);
+    const lineH = 26;
+    const fitLines = Math.floor((H - 24 - logTop) / lineH);
+    ctx.font = mono(19);
+    logs.slice(-fitLines).forEach((e, i) => {
+      ctx.fillStyle = LOG_COLORS[e.level] ?? LOG_COLORS.log;
+      ctx.fillText(fit(ctx, `${e.t} ${e.text}`, W - 64), 32, logTop + 16 + i * lineH);
+    });
+    this.texture.needsUpdate = true;
+  }
 }

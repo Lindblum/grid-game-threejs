@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, useLayoutEffect } from 'react';
 import { Engine } from './game/engine.js';
 import { TOOLS } from './game/tools.js';
 import { toolIconURL, menuIconURL } from './game/icons.js';
@@ -6,6 +6,7 @@ import { menuModel } from './game/menu.js';
 import { menuItemIconURL } from './game/menuIcons.js';
 import { CONTROLS, CONTROL_COLUMNS } from './game/controls.js';
 import { cellURL } from './game/inputIcons.js';
+import { getLogs, getLogVersion } from './game/debugLog.js';
 
 export default function App() {
   const hostRef = useRef(null);
@@ -79,10 +80,37 @@ function ControlsTable() {
 }
 
 function Hud({ engine, s }) {
+  const slotsRef = useRef(null);
+  const labelRef = useRef(null);
+  const [labelX, setLabelX] = useState(null);
+  const label = engine.toolLabel(s);
+  // keep the current tool visible when the bar is scrolled (e.g. switching with the keys)
+  useEffect(() => {
+    slotsRef.current?.querySelector('.slot.selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [s.toolIndex]);
+  // put the tool name directly above the selected slot (kept inside the panel)
+  const placeLabel = () => {
+    const bar = slotsRef.current, lab = labelRef.current;
+    const slot = bar?.querySelector('.slot.selected');
+    if (!bar || !lab || !slot) return;
+    const panel = bar.parentElement;
+    const centre = slot.getBoundingClientRect().left + slot.offsetWidth / 2 - panel.getBoundingClientRect().left;
+    const half = lab.offsetWidth / 2, pad = 8;
+    setLabelX(Math.min(Math.max(centre, half + pad), panel.clientWidth - half - pad));
+  };
+  useLayoutEffect(placeLabel, [s.toolIndex, label]);
+  useEffect(() => {
+    window.addEventListener('resize', placeLabel);
+    return () => window.removeEventListener('resize', placeLabel);
+  });
   return (
     <div className="hud-wrap">
+      <div className="hud-row">
       <div className="panel hud hud-left">
         <div className="hud-label hud-time" title="Game time">{Engine.formatTime(s.gameTime)}</div>
+        <div className="hud-label hud-diameter" title="Mean Diameter: estimated from the block count">
+          {Engine.formatDiameter(s.blockCount)}
+        </div>
         <button
           className={`slot menu-slot${s.paused ? ' selected' : ''}`}
           title="Menu (Esc)"
@@ -92,10 +120,20 @@ function Hud({ engine, s }) {
         </button>
       </div>
       <div className="panel hud hud-right">
-        <div className="hud-label">
-          {engine.toolLabel(s)}
+        <div className="hud-label tool-label-row">
+          <span ref={labelRef} className="tool-label" style={labelX == null ? undefined : { left: labelX }}>
+            {label}
+          </span>
         </div>
-        <div className="slots">
+        <div
+          className="slots"
+          ref={slotsRef}
+          onScroll={placeLabel}
+          onWheel={(e) => {
+            // a plain mouse wheel scrolls the bar sideways
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
+          }}
+        >
           {TOOLS.map((t, i) => (
             <button
               key={t.id}
@@ -107,6 +145,64 @@ function Hud({ engine, s }) {
             </button>
           ))}
         </div>
+      </div>
+      </div>
+      {s.debugMode && <DebugPanel engine={engine} />}
+    </div>
+  );
+}
+
+/**
+ * Options → Debug (browser): the selected / targeted block's properties, and the recent
+ * console log. Polls the engine a few times a second rather than re-rendering every frame.
+ */
+function DebugPanel({ engine }) {
+  const [, setTick] = useState(0);
+  const logRef = useRef(null);
+  const stick = useRef(true); // keep the log scrolled to the bottom unless the user scrolled up
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 250);
+    return () => clearInterval(id);
+  }, []);
+  const info = engine.debugInfo();
+  const logs = getLogs(100);
+  const version = getLogVersion();
+  useEffect(() => {
+    const el = logRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [version]);
+  return (
+    <div className="panel debug-panel">
+      <div className="debug-props">
+        <div className="debug-title">{info.title}</div>
+        <table>
+          <tbody>
+            {info.rows.map(([k, v]) => (
+              <tr key={k}>
+                <th>{k}</th>
+                <td>{String(v)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div
+        className="debug-log"
+        ref={logRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+        }}
+      >
+        {logs.length ? (
+          logs.map((e, i) => (
+            <div key={i} className={`log-${e.level}`}>
+              <span className="log-time">{e.t}</span> {e.text}
+            </div>
+          ))
+        ) : (
+          <div className="log-empty">No log output yet</div>
+        )}
       </div>
     </div>
   );
@@ -139,7 +235,21 @@ function MenuScreen({ engine, s }) {
     }
   };
 
-  const renderItem = (it) => (
+  const renderItem = (it) =>
+    it.slider ? (
+      <label key={it.id} className={`btn menu-btn menu-slider${s.menuFocus === it.id ? ' focused' : ''}`}>
+        {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
+        <span className="label">{it.label}</span>
+        <input
+          type="range"
+          min={it.slider.min}
+          max={it.slider.max}
+          step={it.slider.step}
+          value={it.slider.value}
+          onChange={(e) => engine.setSpeed(e.target.value)}
+        />
+      </label>
+    ) : (
     <button
       key={it.id}
       className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}

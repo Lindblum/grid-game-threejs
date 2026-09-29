@@ -30,7 +30,7 @@ function background(state) {
 const BACK = { id: 'back', label: 'Back', icon: 'back' };
 
 /**
- * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent? }] } for the current
+ * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent?, slider? }] } for the current
  * menu screen. Every submenu lists Back first; renderers draw it at the very top of the panel
  * (above the Controls table / save-name row).
  */
@@ -49,6 +49,7 @@ export function menuModel(state) {
       title: 'Options',
       items: [
         BACK,
+        { id: 'controls', label: 'Controls', icon: 'controls' },
         { id: 'sound', label: `Sound: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff' },
         background(state),
         {
@@ -59,7 +60,18 @@ export function menuModel(state) {
         { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff' },
         { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff' },
         xr,
-        { id: 'controls', label: 'Controls', icon: 'controls' },
+        {
+          id: 'speed',
+          label: `Speed: ${state.speed} turns/min`,
+          icon: 'speed',
+          slider: { min: 12, max: 120, step: 1, value: state.speed }, // drawn as a slider, not a button
+        },
+        { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff' },
+        { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug' },
+        // developer options: only offered while Debug is on
+        ...(state.debugMode
+          ? [{ id: 'bevel', label: `Bevel (Experimental): ${state.bevel ? 'On' : 'Off'}`, icon: 'bevel' }]
+          : []),
       ],
     };
   }

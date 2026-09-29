@@ -1,22 +1,27 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-import { STEP_SECONDS, World } from './world.js';
-import { CRAWLY_HABITAT, isWalkable, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepWood, updateBlockGroups } from './sim.js';
-import { BLOCK, BLOCK_COLORS, TOOL, TOOLS } from './tools.js';
+import { STEP_FRACTION, World } from './world.js';
+import { canStand, habitatOf, stepSquirmies, stepSight, stepNimbus, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepWood, updateBlockGroups } from './sim.js';
+import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
+import { getLogs, getLogVersion } from './debugLog.js';
 import { CRAWLY_BEHAVIOR } from './crawly.js';
 import { SELECT_GREEN } from './icons.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
 import { EDGE_SHADE, truncatedOctahedronFaces } from './geometry.js';
 import {
   playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
-  playBerryGrow, playCrawlySelected, playCrawlySent, playCrawlyDone, playCrawlyTrapped, playCrawlyDeath,
+  playReady, playGo, playBerryGrow, playSquirmyEat, playCrawlySelected, playCrawlySent, playCrawlyDone, playCrawlyTrapped, playCrawlyDeath,
 } from './audio.js';
-import { LeftHudPanel, RightHudPanel, MenuPanel } from './xrPanels.js';
+import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
 import { menuModel, displayName, PAGE_SIZE } from './menu.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
 
 const CM = 0.01; // world units are metres; lattice units are cm
+/** Options → Speed: turns per minute. A turn lasts 60 / speed seconds. */
+export const SPEED = Object.freeze({ min: 12, max: 120, default: 60 });
+const COUNTDOWN_SECONDS = 3; // the page opens with a T -3 … 0 countdown before play starts
+const BLOCK_VOLUME_CM3 = 4; // space per block: the lattice packs two blocks into every 2 cm cube
 const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
 const WHEEL_TOOL_REARM_MS = 200; // horizontal-scroll tool switching: quiet gap that ends one push
@@ -26,6 +31,19 @@ const ORBIT_RADIUS_CM = 300; // 3 m radius
 const ORBIT_PERIOD_S = 60; // one revolution per minute
 const GRAB_MIN_SCALE = 0.1; // two-hand zoom limits, relative to life size (1 lattice cm = 1 cm)
 const GRAB_MAX_SCALE = 20;
+// Browser camera vs blocks: closer than CAMERA_PUSH_WITHIN_CM to the nearest block centre, the
+// camera is pushed straight away from it, at least CAMERA_PUSH_TO_CM and on into a clear cell.
+const FLY_M_PER_WHEEL_PX = 0.00005; // zoomed all the way in, scrolling flies forward: ~0.5 cm per wheel notch
+const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's left stick flies up to 8 cm/s
+const CAMERA_PUSH_WITHIN_CM = 1.25;
+const CAMERA_PUSH_TO_CM = 1.5;
+/** The lattice cell containing point p (cm): the all-even or all-odd cell centre nearest to it. */
+function nearestLatticeCell(p) {
+  const even = [p.x, p.y, p.z].map((v) => 2 * Math.round(v / 2));
+  const odd = [p.x, p.y, p.z].map((v) => 2 * Math.round((v - 1) / 2) + 1);
+  const d2 = (c) => (c[0] - p.x) ** 2 + (c[1] - p.y) ** 2 + (c[2] - p.z) ** 2;
+  return d2(even) <= d2(odd) ? even : odd;
+}
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
 
 /** Thick wireframe of a truncated octahedron made from thin cylinders (visible in XR too). */
@@ -69,14 +87,18 @@ export class Engine {
     this.listeners = new Set();
     this.state = {
       screen: 'playing',
-      paused: true, // the game opens on a New scene with the menu up
+      paused: false, // the game opens straight into a New scene, with a countdown
       menu: 'main', // 'main' | 'load' | 'save' | 'options'
       soundOn: true,
-      gameTime: 0, // whole seconds (turns) since New / Load
+      gameTime: -COUNTDOWN_SECONDS, // whole seconds (turns) since New / Load; negative = countdown
       passthrough: true, // Options → Background: XR passthrough (true) or solid colour
       proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
       outlines: true, // Options → Outlines: darkened face edges on blocks
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
+      speed: SPEED.default, // Options → Speed: turns per minute (sets the turn and animation length)
+      rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
+      debugMode: false, // Options → Debug: debug panel (HUD / XR tablet) and developer options
+      bevel: false, // Options → Bevel (Experimental), debug-only: not implemented yet
       saves: null,
       savesError: null,
       page: 0,
@@ -86,12 +108,14 @@ export class Engine {
       xrAR: false, // browser supports immersive-ar (passthrough), e.g. Quest Browser
       xrVR: false, // browser supports immersive-vr, e.g. PC Chrome with a headset over Link
       blockCount: 0,
+      blockCounts: {}, // block type -> how many are in the world (tool labels: "Stone (x100)")
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
       selectPhase: 'select', // Select tool: 'select' (pick a Crawly) or 'target' (pick where it walks)
     };
     this._toastId = 0;
+    this.turnSeconds = 60 / SPEED.default;
     this.mouse = null;
     this.target = null;
     this.hands = { left: null, right: null };
@@ -112,6 +136,8 @@ export class Engine {
 
     this.world.generateNew();
     this._syncCount();
+    this._clock = 0;
+    playReady(); // T -3 (silent until the page has had a click or key press: browser audio policy)
     this.renderer.setAnimationLoop(this._tick);
   }
 
@@ -130,8 +156,14 @@ export class Engine {
     this.setState({ toast: { text, kind, id: ++this._toastId } });
     this._hudMessage = { text, until: performance.now() + 2200 };
   }
+  /** Refreshes the HUD's block totals (overall, and per type for the tool labels). */
   _syncCount() {
-    if (this.state.blockCount !== this.world.size) this.setState({ blockCount: this.world.size });
+    const counts = {};
+    for (const b of this.world.blocks.values()) counts[b.type] = (counts[b.type] || 0) + 1;
+    const prev = this.state.blockCounts;
+    const same = this.state.blockCount === this.world.size &&
+      Object.keys(counts).length === Object.keys(prev).length && Object.keys(counts).every((k) => prev[k] === counts[k]);
+    if (!same) this.setState({ blockCount: this.world.size, blockCounts: counts });
   }
 
   // ---------------------------------------------------------------- setup
@@ -183,6 +215,9 @@ export class Engine {
     this.world.on('berryGrow', () => playBerryGrow());
     this.world.on('crawlyArrived', () => playCrawlyDone());
     this.world.on('crawlyTrapped', () => playCrawlyTrapped());
+    this.world.on('squirmyAte', () => playSquirmyEat());
+    this.world.on('blockVanished', () => this._syncCount());
+    this.world.on('crawlyFreed', () => playCrawlyDone()); // same "made it" sound as arriving
     this.world.on('crawlyDied', () => {
       playCrawlyDeath();
       this._syncCount(); // its block is gone
@@ -206,10 +241,10 @@ export class Engine {
     // Select tool: green wireframes around selected Crawlies, a lighter one around a Crawly
     // you could select, and the target-cell indicator (plus its per-turn shrinking copies)
     this.selectHLs = [];
-    this.hoverHL = makeWireframe('#9be8a8', 0.03);
-    this.hoverHL.scale.setScalar(1.08);
+    this.hoverHLs = []; // light green, around every block of a creature you could select
+    this._hoverCreature = null;
     this.targetHL = makeWireframe(SELECT_GREEN, 0.04);
-    root.add(this.hoverHL, this.targetHL);
+    root.add(this.targetHL);
 
     // Small origin marker so an empty world still has a reference point.
     const originDot = new THREE.Mesh(
@@ -237,6 +272,10 @@ export class Engine {
     this.menuPanel = new MenuPanel();
     this.menuPanel.mesh.visible = false;
     this.scene.add(this.menuPanel.mesh);
+    this.debugTablet = new DebugTablet(); // Options → Debug, in XR
+    this.scene.add(this.debugTablet.mesh);
+    this._tabletGrab = null; // { slot, offset: Matrix4 } while a grip holds the tablet
+    this._tabletHover = false; // right controller ray is on the tablet
 
     for (let i = 0; i < 2; i++) {
       const ctrl = r.xr.getController(i);
@@ -267,12 +306,18 @@ export class Engine {
       ctrl.addEventListener('selectstart', () => {
         if (this.hands.right === slot) this._onRightTrigger();
       });
+      ctrl.addEventListener('selectend', () => {
+        if (this.hands.right === slot) this._sliderDrag = null;
+      });
       // Grips: one hand drags the build, both hands rotate + scale it (Tilt Brush style).
+      // A grip near the debug tablet (or the right grip while its ray is on it) moves the tablet instead.
       ctrl.addEventListener('squeezestart', () => {
+        if (this._tryGrabTablet(slot)) return;
         slot.gripHeld = true;
         this._beginGrab();
       });
       ctrl.addEventListener('squeezeend', () => {
+        if (this._tabletGrab?.slot === slot) this._tabletGrab = null;
         slot.gripHeld = false;
         this._beginGrab();
       });
@@ -332,6 +377,12 @@ export class Engine {
     // arrives here. One step per push: re-armed once no sideways scroll has come in for
     // WHEEL_TOOL_REARM_MS (the stick went back to centre).
     this._onWheel = (e) => {
+      // scrolling in once the zoom limit is reached flies forward instead (see _flyForward)
+      if (e.deltaY < 0 && Math.abs(e.deltaY) > Math.abs(e.deltaX) && !this.state.inXR) {
+        const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 800 : 1; // lines / pages -> px
+        this._flyForward(-e.deltaY * unit * FLY_M_PER_WHEEL_PX);
+        return;
+      }
       if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) || Math.abs(e.deltaX) < 1) return;
       e.preventDefault();
       const now = performance.now();
@@ -418,7 +469,13 @@ export class Engine {
     playTick();
   }
 
+  /** Tools can be used once the opening countdown has finished (game time >= 0). */
+  toolsReady(s = this.state) {
+    return s.gameTime >= 0;
+  }
+
   useTool() {
+    if (!this.toolsReady()) return false;
     const tool = TOOLS[this.state.toolIndex];
     const t = this.target;
     if (tool.id === TOOL.SELECT) return this._useSelect(t);
@@ -446,11 +503,64 @@ export class Engine {
   /** HUD label for the current tool (the Select tool shows its phase). */
   toolLabel(s = this.state) {
     const tool = TOOLS[s.toolIndex];
+    if (tool.block) return `${tool.label} (x${s.blockCounts[tool.block] ?? 0})`; // e.g. "Stone (x100)"
     if (tool.id !== TOOL.SELECT) return tool.label;
     return s.selectPhase === 'target' ? 'Select: pick a target' : 'Select: pick a Crawly';
   }
 
+  /**
+   * Debug panel content: properties of the selected Crawly, or else of the block under the
+   * pointer. Returns { title, rows: [[key, value]] }.
+   */
+  debugInfo() {
+    const sel = this.selected[0];
+    const b = sel ?? this.target?.block ?? null;
+    if (!b) return { title: 'Nothing selected or targeted', rows: [] };
+    const fmt = (v) => (Array.isArray(v) ? `[${v.join(', ')}]` : v && typeof v === 'object' ? `[${v.x}, ${v.y}, ${v.z}]` : String(v));
+    const name = TOOLS.find((t) => t.block === b.type)?.label ?? b.type;
+    const rows = [
+      ['Type', `${name} ('${b.type}')`],
+      ['Cell', fmt([b.x, b.y, b.z])],
+      ['Index', b.index],
+      ['Creature', isCreature(b.type) ? 'yes' : 'no'],
+    ];
+    const g = this.world.groupOf.get(b);
+    if (g) rows.push(['Group', `${g.blocks.length} connected ${name}`]);
+    if (b.movedTurn != null) rows.push(['Last moved', `turn ${b.movedTurn}`]);
+    if (b.type === BLOCK.SQUIRMY) {
+      const segs = this.world.squirmyOf.get(b)?.segments ?? [b];
+      const i = segs.indexOf(b);
+      rows.push(['Segment', `${i + 1} of ${segs.length}${b.isHead ? ' (head)' : b.isTail ? ' (tail)' : ''}`]);
+      if (!b.isHead) rows.push(['Behavior', `${segs[0].behavior ?? '—'} (the head's)`]);
+    }
+    if (isCreature(b.type) && (b.type !== BLOCK.SQUIRMY || b.isHead)) {
+      rows.push(['Behavior', b.behavior ?? '—']);
+      if (b.sightRadius != null) rows.push(['Sight radius', `${b.sightRadius} blocks`]);
+      rows.push(['Front', b.front ? fmt(b.front) : '—']);
+      rows.push(['Floor', b.floor ? fmt(b.floor) : 'none']);
+      if (b.walkTarget) rows.push(['Walk target', fmt(b.walkTarget)]);
+      if (b.walkStuck) rows.push(['Walk stuck', `${b.walkStuck} turn(s)`]);
+      if (b.trappedTurns) rows.push(['Trapped for', `${b.trappedTurns} turn(s)`]);
+    }
+    return { title: `${sel ? 'Selected' : 'Targeted'}: ${name}`, rows };
+  }
+
+  /**
+   * Sets the Select tool's selection. A selected Crawly waits (Wait behavior) until it is
+   * deselected, then goes back to what it was doing (`heldBehavior`), unless its behavior
+   * changed meanwhile (sent somewhere → Walk, or Trapped).
+   */
   _setSelected(list) {
+    for (const c of this.selected) {
+      if (list.includes(c)) continue;
+      if (c.behavior === CRAWLY_BEHAVIOR.WAIT && c.heldBehavior) c.behavior = c.heldBehavior;
+      delete c.heldBehavior;
+    }
+    for (const c of list) {
+      if (this.selected.includes(c) || c.heldBehavior) continue;
+      c.heldBehavior = c.behavior;
+      c.behavior = CRAWLY_BEHAVIOR.WAIT;
+    }
     this.selected = list;
     const phase = list.length ? 'target' : 'select';
     if (this.state.selectPhase !== phase) this.setState({ selectPhase: phase });
@@ -458,15 +568,30 @@ export class Engine {
 
   /** A cell a selected Crawly can be sent to: empty, next to the pointed-at walking surface. */
   _isSelectTarget(t) {
-    if (!t?.block || !t.place || !t.placeFree || !CRAWLY_HABITAT.has(t.block.type)) return false;
-    return this.selected.some((c) => isWalkable(this.world, ...t.place, c));
+    if (!t?.block || !t.place || !t.placeFree) return false;
+    // a surface the selected creature walks on, with room for it beside it
+    return this.selected.some((c) => habitatOf(c).has(t.block.type) && canStand(this.world, c, ...t.place));
+  }
+
+  /** The creature a block belongs to: a Crawly itself, or a Squirmy segment's head. Else null. */
+  _creatureOf(b) {
+    if (b?.type === BLOCK.CRAWLY) return b;
+    if (b?.type === BLOCK.SQUIRMY) return this.world.squirmyOf.get(b)?.segments[0] ?? b;
+    return null;
+  }
+
+  /** Every block of a creature: a Squirmy's whole chain, or just the Crawly. */
+  _bodyOf(c) {
+    return c.type === BLOCK.SQUIRMY ? this.world.squirmyOf.get(c)?.segments ?? [c] : [c];
   }
 
   _useSelect(t) {
-    // clicking a Crawly selects it (in either phase: in 'target' it swaps the selection)
-    if (t?.block?.type === BLOCK.CRAWLY) {
-      if (this.selected.length === 1 && this.selected[0] === t.block) return false;
-      this._setSelected([t.block]);
+    // clicking a creature (Crawly, or any segment of a Squirmy) selects it (in either phase:
+    // in 'target' it swaps the selection)
+    const creature = this._creatureOf(t?.block);
+    if (creature) {
+      if (this.selected.length === 1 && this.selected[0] === creature) return false;
+      this._setSelected([creature]);
       playCrawlySelected();
       return true;
     }
@@ -480,7 +605,8 @@ export class Engine {
     }
     const [x, y, z] = t.place;
     for (const c of this.selected) {
-      c.behavior = CRAWLY_BEHAVIOR.WALK;
+      if (!habitatOf(c).has(t.block.type) || !canStand(this.world, c, x, y, z)) continue;
+      c.behavior = CRAWLY_BEHAVIOR.WALK; // replaces the Wait it had while selected (a Squirmy: its head)
       c.walkTarget = { x, y, z };
       delete c.walkStuck;
     }
@@ -505,30 +631,51 @@ export class Engine {
 
   /** Per frame: selection wireframes follow their (possibly sliding) Crawlies; pulses shrink. */
   _updateSelectionVisuals(now) {
-    // a selected Crawly that was deleted, or changed type, drops out of the selection
-    const alive = this.selected.filter((c) => this.world.crawlies.has(c));
+    // a selected creature that was deleted, or changed type, drops out of the selection
+    const alive = this.selected.filter((c) => this.world.get(c.x, c.y, c.z) === c && this._creatureOf(c));
     if (alive.length !== this.selected.length) this._setSelected(alive);
-    while (this.selectHLs.length < this.selected.length) {
-      const hl = makeWireframe(SELECT_GREEN, 0.05);
-      hl.scale.setScalar(1.1);
-      this.worldRoot.add(hl);
-      this.selectHLs.push(hl);
-    }
-    this.selectHLs.forEach((hl, i) => {
-      const c = this.selected[i];
-      hl.visible = !!c;
-      if (c) this.world.renderedPosition(c, now, hl.position);
-    });
+    // wireframes around every block of each selected creature (a Squirmy's whole chain),
+    // and lighter ones around a creature you are pointing at
+    const place = (pool, blocks, colour, radius, scale) => {
+      while (pool.length < blocks.length) {
+        const hl = makeWireframe(colour, radius);
+        hl.scale.setScalar(scale);
+        this.worldRoot.add(hl);
+        pool.push(hl);
+      }
+      pool.forEach((hl, i) => {
+        const b = blocks[i];
+        hl.visible = !!b;
+        if (b) this.world.renderedPosition(b, now, hl.position);
+      });
+    };
+    place(this.selectHLs, this.selected.flatMap((c) => this._bodyOf(c)), SELECT_GREEN, 0.05, 1.1);
+    place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], '#9be8a8', 0.03, 1.08);
     for (const p of this._pulses) {
       if (!p.obj.visible) continue;
-      const k = (now - p.t0) / (STEP_SECONDS * 1000);
+      const k = (now - p.t0) / (this.world.stepSeconds * 1000);
       if (k >= 1) p.obj.visible = false;
       else p.obj.scale.setScalar(1 - k);
     }
   }
 
+  /**
+   * Left HUD "Mean Diameter": the diameter of a solid ball holding `count` blocks. Each
+   * block takes up BLOCK_VOLUME_CM3 of space, so the ball's volume is count * 4 cm³ and
+   * d = 2 * (3 * V / 4π)^(1/3). Returns cm.
+   */
+  static meanDiameter(count) {
+    return 2 * Math.cbrt((3 * BLOCK_VOLUME_CM3 * count) / (4 * Math.PI));
+  }
+
+  /** Formats a Mean Diameter for the HUD, e.g. "Ø 23.4 cm". */
+  static formatDiameter(count) {
+    return `Ø ${Engine.meanDiameter(count).toFixed(1)} cm`;
+  }
+
   /** Formats seconds as HH:mm:ss. */
   static formatTime(sec) {
+    if (sec < 0) return `T ${sec}`; // countdown: "T -3", "T -2", "T -1"
     const p = (n) => String(n).padStart(2, '0');
     return `${p(Math.floor(sec / 3600))}:${p(Math.floor(sec / 60) % 60)}:${p(sec % 60)}`;
   }
@@ -538,16 +685,32 @@ export class Engine {
     this.setState({ gameTime: 0 });
   }
 
-  /** Game clock: runs only while playing (not while the menu is open). One turn per second. */
+  /** Game clock: runs only while playing (not while the menu is open). One turn per turnSeconds (Options → Speed). */
+  /** Sets a menu slider's value (XR pointer, gamepad). */
+  _setSlider(id, value) {
+    if (value == null) return;
+    if (id === 'speed') this.setSpeed(value);
+  }
+
+  /** Options → Speed: sets the turns per minute, and with it the turn and animation length. */
+  setSpeed(turnsPerMinute) {
+    const v = Math.round(THREE.MathUtils.clamp(Number(turnsPerMinute) || SPEED.default, SPEED.min, SPEED.max));
+    this.turnSeconds = 60 / v;
+    this.world.stepSeconds = STEP_FRACTION * this.turnSeconds;
+    if (v !== this.state.speed) this.setState({ speed: v });
+  }
+
   _advanceClock(dt) {
     const s = this.state;
     if (s.screen !== 'playing' || s.paused) return;
     this._clock = (this._clock || 0) + dt;
-    while (this._clock >= 1) {
-      this._clock -= 1;
+    while (this._clock >= this.turnSeconds) {
+      this._clock -= this.turnSeconds;
       const turn = this.state.gameTime + 1;
       this.setState({ gameTime: turn });
-      this._turn(turn);
+      if (turn < 0) playReady(); // countdown…
+      else if (turn === 0) playGo(); // …go: tools work from here, the simulation from turn 1
+      else this._turn(turn);
     }
   }
 
@@ -557,10 +720,14 @@ export class Engine {
     const moved = stepGroups(this.world); // detached groups fall toward the origin first…
     for (const w of stepWater(this.world, moved)) moved.add(w); // …then Water flows…
     stepCrawlies(this.world, moved); // …then Crawlies (a Crawly that just fell with its group waits)…
+    stepSquirmies(this.world, moved); // …and Squirmies crawl as chains, head first…
+    stepSight(this.world); // …and every Crawly clears the Fog it can see (it shrinks away, then goes)…
     stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
     stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss…
-    stepRain(this.world, turn); // …and every 10th turn a raindrop appears 1 m out
+    if (this.state.rain) stepRain(this.world, turn); // …and every 10th turn a raindrop appears 1 m out (Options → Rain)…
+    stepNimbus(this.world, turn); // …and every 3rd turn each Nimbus may rain one Water below it
     updateBlockGroups(this.world); // finally, bucket non-creature blocks into same-type groups
+    this._syncCount(); // rain, Nimbus and growth add blocks: keep the HUD's count (and diameter) current
     if (this.targetHL.visible) this._pulseTarget(); // Select tool: a turn tick on the pointed-at target
   }
 
@@ -664,6 +831,15 @@ export class Engine {
       this.world.materials.uniforms.uAO.value = on ? 1 : 0;
       return this.setState({ ambientOcclusion: on });
     }
+    if (id === 'rain') return this.setState({ rain: !s.rain });
+    if (id === 'debug') {
+      const on = !s.debugMode;
+      this.setState({ debugMode: on });
+      if (on && this.renderer.xr.isPresenting) this._placeDebugTablet();
+      console.info(`Debug mode ${on ? 'on' : 'off'}`);
+      return;
+    }
+    if (id === 'bevel') return this.setState({ bevel: !s.bevel }); // placeholder: no effect yet
     if (id === 'enterxr') return this.enterXR();
     if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
     if (id === 'back') return this.setState({ menu: s.menu === 'controls' ? 'options' : 'main', page: 0 });
@@ -702,6 +878,7 @@ export class Engine {
       this._applyBackground();
       this._xrFrames = 0;
       this._needsXRPlacement = true;
+      this._needsTabletPlacement = true; // debug tablet: re-place in front of the player each session
       this.controls.enabled = false;
       this.setState({ inXR: true, screen: 'playing', menu: 'main' });
     } catch (e) {
@@ -711,6 +888,8 @@ export class Engine {
   }
 
   _onXREnd() {
+    this.debugTablet.mesh.visible = false;
+    this._tabletGrab = null;
     this._xrMode = null;
     this.scene.background = BG;
     if (this.menuPanel.mesh.parent !== this.scene) this.scene.add(this.menuPanel.mesh);
@@ -720,8 +899,6 @@ export class Engine {
     this.menuPanel.mesh.visible = false;
     this.rayDot.visible = false;
     this._grab = null;
-    this.selected = []; // Select tool: the selected Crawlies (currently at most one)
-    this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
     if (this._savedView) {
       this.camera.position.copy(this._savedView.pos);
       this.camera.quaternion.identity();
@@ -731,6 +908,46 @@ export class Engine {
     this.controls.update();
     this._onResize();
     this.setState({ inXR: false, paused: true, menu: 'main' });
+  }
+
+  // ---------------------------------------------------------------- XR debug tablet
+
+  /** Puts the debug tablet in front of the player, a little to the left and below eye level. */
+  _placeDebugTablet() {
+    const m = this.debugTablet.mesh;
+    const { pos, dir } = this._headPose();
+    const flat = new THREE.Vector3(dir.x, 0, dir.z);
+    if (flat.lengthSq() < 1e-6) flat.set(0, 0, -1);
+    flat.normalize();
+    const left = new THREE.Vector3(flat.z, 0, -flat.x);
+    m.position.copy(pos).addScaledVector(flat, 0.5).addScaledVector(left, 0.22);
+    m.position.y -= 0.12;
+    m.lookAt(pos);
+    this._needsTabletPlacement = false;
+  }
+
+  /** Starts moving the tablet with this controller's grip if it is within reach (or pointed at). */
+  _tryGrabTablet(slot) {
+    const m = this.debugTablet.mesh;
+    if (!m.visible) return false;
+    const local = m.worldToLocal(this._gripPos(slot));
+    const { width, height } = m.geometry.parameters;
+    const near = Math.abs(local.z) < 0.12 && Math.abs(local.x) < width / 2 + 0.06 && Math.abs(local.y) < height / 2 + 0.06;
+    const pointed = this.hands.right === slot && this._tabletHover;
+    if (!near && !pointed) return false;
+    slot.grip.updateMatrixWorld();
+    m.updateMatrixWorld();
+    this._tabletGrab = { slot, offset: slot.grip.matrixWorld.clone().invert().multiply(m.matrixWorld) };
+    return true;
+  }
+
+  /** While grabbed, the tablet keeps its pose relative to the hand holding it. */
+  _updateTabletGrab() {
+    const g = this._tabletGrab;
+    if (!g) return;
+    const m = this.debugTablet.mesh;
+    g.slot.grip.updateMatrixWorld();
+    new THREE.Matrix4().multiplyMatrices(g.slot.grip.matrixWorld, g.offset).decompose(m.position, m.quaternion, m.scale);
   }
 
   // ---------------------------------------------------------------- XR grab (grips)
@@ -744,8 +961,6 @@ export class Engine {
     const r = this.worldRoot;
     if (!held.length) {
       this._grab = null;
-      this.selected = []; // Select tool: the selected Crawlies (currently at most one)
-      this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
       return;
     }
     const base = { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x };
@@ -798,8 +1013,6 @@ export class Engine {
   _resetPlayerView() {
     if (this.renderer.xr.isPresenting) {
       this._grab = null;
-      this.selected = []; // Select tool: the selected Crawlies (currently at most one)
-      this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
       this.worldRoot.quaternion.identity();
       this.worldRoot.scale.setScalar(CM);
       this._placeWorldInFront();
@@ -865,8 +1078,13 @@ export class Engine {
 
   _onRightTrigger() {
     if (this._hudHover === 'menu') return this.toggleMenu();
+    if (this._tabletHover) return; // pointing at the debug tablet: the trigger does nothing
     if (this.isMenuOpen()) {
-      if (this._menuHover) this.menuAction(this._menuHover);
+      const slider = this._menuHover && this.menuPanel.sliderValueAt(this._menuHoverUV, this._menuHover);
+      if (slider != null) {
+        this._sliderDrag = this._menuHover; // hold the trigger to drag
+        this._setSlider(this._menuHover, slider);
+      } else if (this._menuHover) this.menuAction(this._menuHover);
       else if (!this._menuPanelHover) this.resume(); // clicked outside the pause panel
       return;
     }
@@ -915,7 +1133,7 @@ export class Engine {
   _updateTarget() {
     this.placeHL.visible = false;
     this.deleteHL.visible = false;
-    this.hoverHL.visible = false;
+    this._hoverCreature = null;
     this.targetHL.visible = false;
     this.world.setDithered(null);
     this.target = null;
@@ -927,6 +1145,7 @@ export class Engine {
     const menuOpen = this.isMenuOpen(s);
     this._menuHover = null;
     this._menuPanelHover = false; // ray is on the pause panel (button or not)
+    this._tabletHover = false;
     this._hudHover = null;
     let uiHit = null;
 
@@ -936,8 +1155,13 @@ export class Engine {
       const targets = [];
       if (this.leftHud.mesh.visible && this.leftHud.mesh.parent) targets.push(this.leftHud.mesh);
       if (menuOpen) targets.push(this.menuPanel.mesh);
+      if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
       for (const hit of this.raycaster.intersectObjects(targets, false)) {
-        if (hit.object === this.leftHud.mesh) {
+        if (hit.object === this.debugTablet.mesh) {
+          this._tabletHover = true; // grip now grabs it; the trigger does nothing here
+          uiHit = hit;
+          break;
+        } else if (hit.object === this.leftHud.mesh) {
           if (this.leftHud.hitTest(hit.uv)) {
             this._hudHover = 'menu';
             uiHit = hit;
@@ -946,6 +1170,11 @@ export class Engine {
         } else if (this.menuPanel.contains(hit.uv)) {
           // only the visible panel counts; its transparent margin is "outside"
           this._menuHover = this.menuPanel.hitTest(hit.uv);
+          this._menuHoverUV = hit.uv;
+          // dragging a slider: follow the ray along its track while the trigger is held
+          if (this._sliderDrag && this._menuHover === this._sliderDrag) {
+            this._setSlider(this._sliderDrag, this.menuPanel.sliderValueAt(hit.uv, this._sliderDrag));
+          }
           this._menuPanelHover = true;
           uiHit = hit;
           break;
@@ -959,7 +1188,7 @@ export class Engine {
     }
     if (xr && menuOpen) this.menuPanel.draw(menuModel(s), this._menuHover);
 
-    if (s.screen === 'playing' && !s.paused && !uiHit) {
+    if (s.screen === 'playing' && !s.paused && !uiHit && this.toolsReady(s)) {
       let ok = false;
       if (xr) {
         ok = this._setRayFromController();
@@ -1019,9 +1248,9 @@ export class Engine {
     this.world.setDithered(t && tool.id === TOOL.DELETE ? t.block : null);
     if (!t) return;
     if (tool.id === TOOL.SELECT) {
-      if (t.block?.type === BLOCK.CRAWLY && !this.selected.includes(t.block)) {
-        this.hoverHL.position.set(t.block.x, t.block.y, t.block.z); // a Crawly you could select
-        this.hoverHL.visible = true;
+      const creature = this._creatureOf(t.block);
+      if (creature && !this.selected.includes(creature)) {
+        this._hoverCreature = creature; // a creature you could select: drawn in _updateSelectionVisuals
       } else if (this.selected.length && this._isSelectTarget(t)) {
         this.targetHL.position.set(...t.place);
         this.targetHL.visible = true;
@@ -1037,6 +1266,53 @@ export class Engine {
       this.deleteHL.position.set(t.block.x, t.block.y, t.block.z);
       this.deleteHL.visible = true;
     }
+  }
+
+  /**
+   * Browser only: keeps the camera out of blocks. If the nearest block centre is within
+   * CAMERA_PUSH_WITHIN_CM, the camera is pushed straight away from that block: out to at
+   * least CAMERA_PUSH_TO_CM, and further along the same direction until it sits in a clear
+   * (empty) cell. The orbit target stays put, so orbiting and zooming carry on from there.
+   */
+  _pushCameraOutOfBlocks() {
+    const p = this.worldRoot.worldToLocal(this.camera.position.clone()); // cm, lattice space
+    // nearest block centre (cells within ±2 cm per axis cover the 1.25 cm radius)
+    let nearest = null, best = CAMERA_PUSH_WITHIN_CM;
+    const x0 = Math.floor(p.x) - 1, y0 = Math.floor(p.y) - 1, z0 = Math.floor(p.z) - 1;
+    for (let x = x0; x <= x0 + 3; x++) for (let y = y0; y <= y0 + 3; y++) for (let z = z0; z <= z0 + 3; z++) {
+      if (!this.world.has(x, y, z)) continue;
+      const d = Math.hypot(p.x - x, p.y - y, p.z - z);
+      if (d < best) {
+        best = d;
+        nearest = new THREE.Vector3(x, y, z);
+      }
+    }
+    if (!nearest) return;
+    const dir = p.clone().sub(nearest);
+    if (dir.lengthSq() < 1e-12) dir.copy(this.camera.position).sub(this.controls.target); // dead centre: back off along the view line
+    dir.normalize();
+    // step outward from that block until the camera's cell is empty (give up after 30 cm)
+    for (let dist = CAMERA_PUSH_TO_CM; dist <= 30; dist += 0.25) {
+      p.copy(nearest).addScaledVector(dir, dist);
+      if (!this.world.has(...nearestLatticeCell(p))) break;
+    }
+    this.camera.position.copy(this.worldRoot.localToWorld(p));
+  }
+
+  /**
+   * Browser: once the camera is zoomed all the way in on its orbit target (minDistance),
+   * further zooming in moves the camera and the target forward together, along the view
+   * direction. So you can always fly on in the direction you face, e.g. out of a hollow
+   * chamber through its entrance, instead of being stuck zooming at a target inside it.
+   * `sph`: the gamepad's spherical offset, when called from _padCamera (then it applies there).
+   */
+  _flyForward(metres, sph = null) {
+    const c = this.controls, cam = this.camera;
+    const dist = sph ? sph.radius : cam.position.distanceTo(c.target);
+    if (dist > c.minDistance * 1.05 || metres <= 0) return;
+    const fwd = c.target.clone().sub(cam.position).normalize().multiplyScalar(metres);
+    c.target.add(fwd);
+    cam.position.add(fwd);
   }
 
   _updateOrbitLight(timeMs) {
@@ -1103,6 +1379,14 @@ export class Engine {
       playTick();
       return;
     }
+    // D-pad left / right adjusts a focused slider (Options → Speed)
+    const slider = items[idx]?.slider;
+    if (slider && (edge(14) || edge(15))) {
+      this._setSlider(items[idx].id, slider.value + (edge(15) ? 6 : -6));
+      playTick();
+      return;
+    }
+    if (slider && edge(0)) return; // A on a slider: nothing to press
     if (edge(0)) return this.menuAction(items[idx].id); // A
     if (edge(1)) {
       // B
@@ -1122,6 +1406,7 @@ export class Engine {
     sph.theta += rx * 2.2 * dt;
     sph.phi += ry * 1.6 * dt;
     sph.radius = THREE.MathUtils.clamp(sph.radius * Math.exp(ly * 1.6 * dt), c.minDistance, c.maxDistance);
+    if (ly < 0) this._flyForward(-ly * FLY_M_PER_PAD_S * dt, sph); // stick past the zoom limit: fly forward
     sph.makeSafe();
     off.setFromSpherical(sph);
     const pan = new THREE.Vector3();
@@ -1149,6 +1434,7 @@ export class Engine {
     if (!xr) {
       this._pollBrowserGamepad(dt);
       this.controls.update();
+      this._pushCameraOutOfBlocks();
     } else {
       this._xrFrames++;
       if (this._needsXRPlacement && this._xrFrames > 2) {
@@ -1158,11 +1444,20 @@ export class Engine {
       }
       this._pollGamepads();
       this._updateGrab();
+      const dbg = this.state.debugMode;
+      this.debugTablet.mesh.visible = dbg;
+      if (dbg) {
+        if (this._needsTabletPlacement !== false && this._xrFrames > 2) this._placeDebugTablet();
+        this._updateTabletGrab();
+        this.debugTablet.draw(this.debugInfo(), getLogs(40), getLogVersion(), !!this._tabletGrab || this._tabletHover);
+      } else {
+        this._tabletGrab = null;
+      }
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
       const playing = this.state.screen === 'playing';
       this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel());
-      this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime));
+      this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime), Engine.formatDiameter(this.state.blockCount));
       this.rightHud.mesh.visible = playing;
       this.leftHud.mesh.visible = playing;
       const open = this.isMenuOpen();

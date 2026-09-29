@@ -6,6 +6,7 @@ import crawlySentUrl from '../../sfx/crawly-sent.wav?url';
 import crawlyDoneUrl from '../../sfx/crawly-done.wav?url';
 import crawlyTrappedUrl from '../../sfx/crawly-trapped.wav?url';
 import crawlyDeathUrl from '../../sfx/crawly-death.wav?url';
+import squirmyEatUrl from '../../sfx/squirmy-eat.wav?url';
 
 let ctx = null;
 let muted = false;
@@ -40,6 +41,7 @@ const SAMPLE_URLS = {
   crawlyDone: crawlyDoneUrl,
   crawlyTrapped: crawlyTrappedUrl,
   crawlyDeath: crawlyDeathUrl,
+  squirmyEat: squirmyEatUrl,
 };
 const samples = new Map(); // name -> Promise<AudioBuffer | null>
 
@@ -87,6 +89,8 @@ export const playCrawlyDone = () => playSample('crawlyDone');
 export const playCrawlyTrapped = () => playSample('crawlyTrapped');
 /** A Crawly died. */
 export const playCrawlyDeath = () => playSample('crawlyDeath');
+/** A Squirmy ate a Berry. */
+export const playSquirmyEat = () => playSample('squirmyEat');
 
 function tone(c, { type = 'sine', f0, f1, t0, dur, gain = 0.2 }) {
   const o = c.createOscillator();
@@ -143,6 +147,30 @@ export function playTick() {
   const c = ac();
   if (!c) return;
   tone(c, { type: 'sine', f0: 1500, f1: 1400, t0: c.currentTime, dur: 0.035, gain: 0.05 });
+}
+
+/**
+ * Countdown beeps. Before the page has had a click / key press the browser keeps audio
+ * suspended; beeps then are skipped rather than queued (they would all fire at the first click).
+ */
+function runningCtx() {
+  const c = ac();
+  return c && c.state === 'running' ? c : null;
+}
+const COUNTDOWN_HZ = 880; // A5; "go" is one octave higher
+
+/** Countdown: a "ready" beep for each negative second. */
+export function playReady() {
+  const c = runningCtx();
+  if (!c) return;
+  tone(c, { type: 'sine', f0: COUNTDOWN_HZ, f1: COUNTDOWN_HZ, t0: c.currentTime, dur: 0.16, gain: 0.16 });
+}
+
+/** Countdown: the "go" beep at 0, one octave above "ready", held a little longer. */
+export function playGo() {
+  const c = runningCtx();
+  if (!c) return;
+  tone(c, { type: 'sine', f0: COUNTDOWN_HZ * 2, f1: COUNTDOWN_HZ * 2, t0: c.currentTime, dur: 0.4, gain: 0.18 });
 }
 
 /** Short bell-like note (sine + quiet octave overtone). */

@@ -73,12 +73,20 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   transform: translate(-50%, -50%); background: #fff; border-radius: 50%;
 }
 
-.menu-panel { width: min(470px, 100%); padding: 24px; }
+/* the panel never outgrows the window: title and Back stay put, the item list scrolls */
+.menu-panel {
+  width: min(470px, 100%); padding: 24px;
+  max-height: calc(100vh - 32px); display: flex; flex-direction: column;
+}
+.menu-panel > .menu-items:not(.menu-back) { overflow-y: auto; min-height: 0; flex: 1 1 auto; padding-right: 6px; margin-right: -6px; }
 .menu-panel h2 { margin: 0 0 16px; text-align: center; font-size: 28px; }
 .menu-items { display: flex; flex-direction: column; gap: 9px; }
 .menu-items.menu-back { margin-bottom: 12px; } /* Back sits at the top, above the rest of the panel */
 .menu-btn { display: flex; align-items: center; gap: 12px; text-align: left; font-size: 17px; }
 .menu-btn .menu-icon { width: 26px; height: 26px; flex: none; }
+/* slider items (Options → Speed) */
+.menu-slider { cursor: default; flex-wrap: wrap; }
+.menu-slider input[type='range'] { flex: 1 1 140px; min-width: 120px; accent-color: var(--accent); cursor: pointer; }
 .save-new-btn { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .save-new-btn .menu-icon { width: 22px; height: 22px; }
 .menu-btn:disabled .menu-icon { opacity: 0.5; }
@@ -98,16 +106,46 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 /* ---------- HUD ---------- */
 .hud-wrap {
   position: absolute; left: 0; right: 0; bottom: 16px;
-  display: flex; justify-content: space-between; align-items: flex-end; gap: 12px;
+  display: flex; flex-direction: column; gap: 10px;
   pointer-events: none; padding: 0 16px;
   z-index: 5; /* stays clickable above the pause overlay */
 }
+.hud-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+
+/* Options → Debug: third HUD panel, below the other two */
+.debug-panel {
+  pointer-events: auto; display: grid; grid-template-columns: minmax(220px, 1fr) 2fr; gap: 14px;
+  height: min(30vh, 240px); padding: 10px 14px; font-size: 12px;
+}
+.debug-props { overflow: auto; min-height: 0; }
+.debug-title { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+.debug-props table { border-collapse: collapse; width: 100%; }
+.debug-props th { text-align: left; color: var(--muted); font-weight: 600; padding: 2px 10px 2px 0; white-space: nowrap; vertical-align: top; }
+.debug-props td { font-family: ui-monospace, Consolas, monospace; padding: 2px 0; word-break: break-all; }
+.debug-log {
+  overflow: auto; min-height: 0; font-family: ui-monospace, Consolas, monospace; line-height: 1.45;
+  background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 6px 10px;
+}
+.debug-log .log-time { color: var(--muted); }
+.debug-log .log-info { color: #9cc8ff; }
+.debug-log .log-warn { color: #ffd166; }
+.debug-log .log-error { color: #ff8a80; }
+.debug-log .log-empty { color: var(--muted); }
 .hud { pointer-events: auto; padding: 8px 12px 12px; }
 .hud-label {
   display: flex; justify-content: space-between; align-items: baseline;
   font-size: 14px; font-weight: 600; padding: 0 4px 8px;
 }
-.slots { display: flex; gap: 8px; }
+/* the tool bar scrolls sideways when the tools don't fit the window */
+.hud-row > .hud-right { min-width: 0; }
+.slots { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; margin-bottom: -6px; }
+.slots > .slot { flex: none; }
+
+/* visible, slim scrollbars (menu list, tool bar) */
+.menu-items, .slots { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.35) transparent; }
+.menu-items::-webkit-scrollbar, .slots::-webkit-scrollbar { width: 8px; height: 8px; }
+.menu-items::-webkit-scrollbar-thumb, .slots::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.35); border-radius: 4px; }
+.menu-items::-webkit-scrollbar-track, .slots::-webkit-scrollbar-track { background: transparent; }
 .slot {
   width: clamp(30px, 7vw, 60px); aspect-ratio: 1;
   padding: 4px; border-radius: 10px; cursor: pointer;
@@ -115,7 +153,12 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   border: 2px solid transparent;
 }
 .hud-left .hud-label, .hud-right .hud-label { justify-content: center; }
+/* tool name sits directly above the selected slot (App positions it) */
+.hud-right .tool-label-row { position: relative; height: 1.6em; padding: 0; margin-bottom: 4px; }
+.tool-label { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); white-space: nowrap; }
 .hud-time { font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
+.hud-time { padding-bottom: 2px; } /* time and Mean Diameter sit together above the Menu button */
+.hud-diameter { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
 .slot img { width: 100%; height: 100%; display: block; pointer-events: none; }
 .slot:hover { background: rgba(255, 255, 255, 0.14); }
 .slot.selected {

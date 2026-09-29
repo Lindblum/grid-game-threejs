@@ -52,6 +52,18 @@ function speaker(ctx, P) {
   poly(ctx, P, [[0.14, 0.4], [0.28, 0.4], [0.48, 0.22], [0.48, 0.78], [0.28, 0.6], [0.14, 0.6]]);
 }
 
+/** Small cloud outline in the upper half of the icon box. */
+function cloud(ctx, P, s) {
+  ctx.beginPath();
+  const [x0, y0] = P(0.22, 0.56);
+  ctx.moveTo(x0, y0);
+  ctx.arc(...P(0.3, 0.46), 0.1 * s, Math.PI * 0.5, Math.PI * 1.5);
+  ctx.arc(...P(0.46, 0.36), 0.14 * s, Math.PI * 1.05, Math.PI * 1.95);
+  ctx.arc(...P(0.66, 0.44), 0.12 * s, Math.PI * 1.4, Math.PI * 0.5);
+  ctx.closePath();
+  ctx.stroke();
+}
+
 /** Regular hexagon (pointy top) filling most of the icon box. */
 const HEX = [0, 1, 2, 3, 4, 5].map((i) => {
   const a = -Math.PI / 2 + (i * Math.PI) / 3;
@@ -216,6 +228,39 @@ const DRAW = {
     // the same two blocks, no shadow
     poly(ctx, P, [[0.14, 0.2], [0.44, 0.2], [0.44, 0.82], [0.14, 0.82]]);
     poly(ctx, P, [[0.44, 0.52], [0.86, 0.52], [0.86, 0.82], [0.44, 0.82]]);
+  },
+  speed(ctx, P, s) {
+    // speedometer: an arc with a needle
+    const [cx, cy] = P(0.5, 0.64);
+    ctx.beginPath();
+    ctx.arc(cx, cy, 0.34 * s, Math.PI, 2 * Math.PI);
+    ctx.stroke();
+    line(ctx, P, [[0.5, 0.64], [0.72, 0.42]]);
+    ctx.fillStyle = INK;
+    circle(ctx, P, 0.5, 0.64, 0.05, s, { fill: true });
+  },
+  rainOn(ctx, P, s) {
+    cloud(ctx, P, s);
+    for (const u of [0.34, 0.5, 0.66]) line(ctx, P, [[u, 0.64], [u - 0.05, 0.8]]); // falling drops
+  },
+  rainOff(ctx, P, s) {
+    cloud(ctx, P, s);
+    line(ctx, P, [[0.2, 0.84], [0.8, 0.24]]); // struck through
+  },
+  debug(ctx, P, s) {
+    // terminal window with a ">_" prompt
+    roundedRect(ctx, P, 0.12, 0.2, 0.76, 0.6, 0.07, s);
+    ctx.stroke();
+    line(ctx, P, [[0.12, 0.34], [0.88, 0.34]]);
+    line(ctx, P, [[0.24, 0.46], [0.36, 0.56], [0.24, 0.66]]);
+    line(ctx, P, [[0.44, 0.68], [0.62, 0.68]]);
+  },
+  bevel(ctx, P) {
+    // hexagon with an inset hexagon, joined at the corners: a bevelled edge
+    const inner = HEX.map(([u, v]) => [0.5 + (u - 0.5) * 0.6, 0.5 + (v - 0.5) * 0.6]);
+    poly(ctx, P, HEX);
+    poly(ctx, P, inner);
+    HEX.forEach((p, i) => line(ctx, P, [p, inner[i]]));
   },
   info(ctx, P, s) {
     circle(ctx, P, 0.5, 0.5, 0.36, s);
