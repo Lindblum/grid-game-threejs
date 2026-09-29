@@ -19,6 +19,7 @@ import { loadOptionsCookie, saveOptionsCookie } from './optionsCookie.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
 
 const CM = 0.01; // world units are metres; lattice units are cm
+const FPS_WINDOW_MS = 500; // Debug → Performance: FPS is averaged over this long
 const COUNTDOWN_SECONDS = 3; // the page, New and Load all start with a T -3 … 0 countdown before play
 const BLOCK_VOLUME_CM3 = 4; // space per block: the lattice packs two blocks into every 2 cm cube
 const XR_RAY_LENGTH = 1.0; // 1 m
@@ -873,7 +874,11 @@ export class Engine {
       this.setState({ gameTime: turn });
       if (turn < 0) playReady(); // countdown…
       else if (turn === 0) playGo(); // …go: tools work from here, the simulation from turn 1
-      else this._turn(turn);
+      else {
+        const t0 = performance.now();
+        this._turn(turn);
+        this.turnMs = performance.now() - t0; // Debug → Performance
+      }
     }
   }
 
@@ -1615,10 +1620,30 @@ export class Engine {
     cam.lookAt(c.target);
   }
 
+  /**
+   * Debug → Performance: frames per second, averaged over the last FPS_WINDOW_MS (updated
+   * each window, so the number is steady enough to read).
+   */
+  fps = 0;
+  turnMs = null; // Debug → Performance: how long the last turn's actions (_turn) took, ms
+  _fpsFrames = 0;
+  _fpsSince = null;
+
+  _countFrame(now) {
+    this._fpsSince ??= now;
+    this._fpsFrames++;
+    if (now - this._fpsSince >= FPS_WINDOW_MS) {
+      this.fps = (this._fpsFrames * 1000) / (now - this._fpsSince);
+      this._fpsFrames = 0;
+      this._fpsSince = now;
+    }
+  }
+
   _tick = (time) => {
     const now = time ?? performance.now();
     const dt = Math.min(0.1, Math.max(0, (now - (this._lastTime ?? now)) / 1000));
     this._lastTime = now;
+    this._countFrame(now);
     this._updateOrbitLight(now);
     this._advanceClock(dt);
     this.world.updateAnimations();

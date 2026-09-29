@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { cellKey } from './lattice.js';
 import { FACE_DIRS, truncatedOctahedronFaces } from './geometry.js';
-import { blockProps, isCreature, isTranslucent } from './blocks.js';
+import { BLOCK, blockProps, isCreature, isTranslucent } from './blocks.js';
 
 const FACES = truncatedOctahedronFaces();
 /** Taubin smoothing (shrink, then inflate) passes over a welded body: rounds its edges off. */
@@ -201,11 +201,12 @@ export class BundleBodies {
     g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
     g.setAttribute('blockIndex', new THREE.BufferAttribute(new Float32Array(n), 1));
     const type = blocks[0].type;
-    const mesh = new THREE.Mesh(g, isTranslucent(type) ? this.materials.bodyTranslucent : this.materials.body);
+    const isCloud = type === BLOCK.FOG || type === BLOCK.NIMBUS;
+    const mesh = new THREE.Mesh(g, isCloud ? this.materials.bodyCloud : isTranslucent(type) ? this.materials.bodyTranslucent : this.materials.body);
     mesh.name = 'bundle-body';
     mesh.frustumCulled = false;
     mesh.raycast = () => { }; // picking uses the (hidden) blocks
-    if (isTranslucent(type)) mesh.renderOrder = 1; // after the opaque bodies
+    if (isTranslucent(type)) mesh.renderOrder = isCloud ? 1 : 2; // clouds first (they write depth), then Water / Crystal
     this.parent.add(mesh);
     return { mesh, blocks, topo, flat, indices: [], normals: new Float32Array(topo.owners.length * 3), welded: new Float32Array(topo.owners.length * 3) };
   }

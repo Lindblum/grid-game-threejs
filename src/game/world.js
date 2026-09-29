@@ -4,7 +4,7 @@ import { BLOCK, BLOCK_COLORS, blockProps, canBehave, isCreature, isTranslucent, 
 import { NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
 import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
 import { BundleBodies } from './bundleBody.js';
-import { SOLID_TYPES } from './sim.js';
+import { SOLID_TYPES, stepFog, stepGroups, stepWater } from './sim.js';
 import { CreatureEyes, orientCreature } from './creature.js';
 
 /**
@@ -61,7 +61,7 @@ export const NEW_SCENE_RECIPE = [
   { type: BLOCK.BUZZY, count: 5, groups: 5, shells: null, distribution: 'random', growth: "worm", addTo: "world" },
   { type: BLOCK.SQUIRMY, count: 10, groups: 3, shells: null, distribution: 'random', growth: "random", addTo: "world" },
   //Fog and clouds
-  { type: BLOCK.FOG, groups: null, count: null, shells: 1, distribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.FOG, groups: null, count: null, shells: 2, distribution: 'uniform', growth: "uniform", addTo: "world" },
   { type: BLOCK.NIMBUS, groups: 4, count: 100, shells: null, distribution: 'uniform', growth: "uniform", addTo: "sky" },
 ];
 
@@ -80,6 +80,7 @@ export class World {
     this.geometry = createBlockGeometry();
     this.materials = createBlockMaterials();
     this.translucentMesh = null;
+    this.cloudMesh = null;
     this.blocks = new Map(); // key -> { x, y, z, type, index }
     this.keysByIndex = [];
     this.anims = new Map(); // key -> { from, to, t0, dur } for sliding blocks
@@ -131,6 +132,7 @@ export class World {
   }
 
   emit(name, data) {
+    if (this._quiet) return; // settling a new scene: no sounds or log lines
     for (const fn of this.listeners.get(name) ?? []) fn(data);
   }
 
@@ -466,9 +468,10 @@ export class World {
       this.parent.remove(old);
       old.dispose();
     }
-    if (this.translucentMesh) {
-      this.parent.remove(this.translucentMesh);
-      this.translucentMesh.dispose();
+    for (const m of [this.translucentMesh, this.cloudMesh]) {
+      if (!m) continue;
+      this.parent.remove(m);
+      m.dispose();
     }
     // same instances, translucent material (Water, Crystal); raycasts go through `mesh` only
     const translucent = new THREE.InstancedMesh(this.geometry, this.materials.translucent, capacity);
@@ -477,10 +480,21 @@ export class World {
     translucent.frustumCulled = false;
     translucent.name = 'translucent-blocks';
     translucent.raycast = () => { };
+    translucent.renderOrder = 2; // after the clouds
+    // and again for the clouds (Fog, Nimbus): drawn before Water / Crystal, writing depth
+    const cloud = new THREE.InstancedMesh(this.geometry, this.materials.cloud, capacity);
+    cloud.instanceMatrix = mesh.instanceMatrix;
+    cloud.instanceColor = mesh.instanceColor;
+    cloud.frustumCulled = false;
+    cloud.name = 'cloud-blocks';
+    cloud.raycast = () => { };
+    cloud.renderOrder = 1;
     this.parent.add(mesh);
+    this.parent.add(cloud);
     this.parent.add(translucent);
     this.mesh = mesh;
     this.translucentMesh = translucent;
+    this.cloudMesh = cloud;
     this.capacity = capacity;
     this._dirty();
   }
@@ -490,7 +504,7 @@ export class World {
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     this.geometry.getAttribute('blockStyle').needsUpdate = true;
     this.geometry.getAttribute('blockSmooth').needsUpdate = true;
-    this.translucentMesh.count = this.mesh.count;
+    this.translucentMesh.count = this.cloudMesh.count = this.mesh.count;
     this.mesh.boundingSphere = null;
     this.mesh.boundingBox = null;
   }
@@ -1122,7 +1136,42 @@ export class World {
     const voids = [...this.blocks.values()].filter((b) => b.type === BLOCK.VOID);
     for (const b of voids) this.remove(b.x, b.y, b.z);
     if (voids.length) console.log(`Recipe done: removed ${voids.length} Void blocks → ${this.blocks.size} blocks`);
+    this._settleFalls(); // loose chunks and Fog drop into place, and Water flows, before play starts
     this._settleCrawlies();
+  }
+
+  /**
+   * Lets every block that can fall (detached groups, Fog bundles) fall, and Water flow, until nothing moves,
+   * all at once: no time passes and nothing animates. Clouds blown aside by falling blocks
+   * are removed straight away instead of shrinking. Stops after `maxPasses` passes.
+   */
+  _settleFalls(maxPasses = 2000) {
+    this._quiet = true;
+    let passes = 0, steps = 0;
+    try {
+      for (; passes < maxPasses; passes++) {
+        const moved = stepGroups(this);
+        for (const b of stepWater(this, moved)) moved.add(b); // Water flows until it pools
+        for (const b of stepFog(this, moved)) moved.add(b);
+        let blown = 0;
+        for (const b of [...this.vanishing.keys()]) {
+          this.vanishing.delete(b);
+          if (this.remove(b.x, b.y, b.z)) blown++;
+        }
+        steps += moved.size;
+        if (!moved.size && !blown) break;
+      }
+    } finally {
+      this._quiet = false;
+    }
+    // no slides: every block sits in its cell right away
+    for (const k of this.anims.keys()) {
+      const b = this.blocks.get(k);
+      if (b) this.mesh.setMatrixAt(b.index, _m.makeTranslation(b.x, b.y, b.z));
+    }
+    this.anims.clear();
+    this._dirty();
+    console.log(`Settled: ${steps} block moves in ${passes} passes → ${this.blocks.size} blocks`);
   }
 
   toJSON() {

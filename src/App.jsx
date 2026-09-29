@@ -153,8 +153,8 @@ function Hud({ engine, s }) {
 }
 
 /**
- * Options → Debug (browser): the selected / targeted block's properties, and the recent
- * console log. Polls the engine a few times a second rather than re-rendering every frame.
+ * Options → Debug (browser): Performance (FPS), the Inspector (the selected / targeted
+ * block's properties) and Logging (the recent console log). Polls the engine a few times a second rather than re-rendering every frame.
  */
 function DebugPanel({ engine }) {
   const [, setTick] = useState(0);
@@ -173,7 +173,23 @@ function DebugPanel({ engine }) {
   }, [version]);
   return (
     <div className="panel debug-panel">
+      <div className="debug-perf">
+        <div className="debug-section">Performance</div>
+        <table>
+          <tbody>
+            <tr>
+              <th>FPS</th>
+              <td>{engine.fps.toFixed(0)}</td>
+            </tr>
+            <tr>
+              <th>Turn</th>
+              <td>{engine.turnMs == null ? '—' : `${engine.turnMs.toFixed(1)} ms`}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div className="debug-props">
+        <div className="debug-section">Inspector</div>
         <div className="debug-title">{info.title}</div>
         <table>
           <tbody>
@@ -186,6 +202,8 @@ function DebugPanel({ engine }) {
           </tbody>
         </table>
       </div>
+      <div className="debug-logging">
+      <div className="debug-section">Logging</div>
       <div
         className="debug-log"
         ref={logRef}
@@ -203,6 +221,7 @@ function DebugPanel({ engine }) {
         ) : (
           <div className="log-empty">No log output yet</div>
         )}
+      </div>
       </div>
     </div>
   );

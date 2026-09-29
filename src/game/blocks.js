@@ -98,8 +98,8 @@ export const BLOCK_TYPES = [
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
   },
-  { key: 'FOG', id: 'fog', name: 'Fog', color: '#d3d7dd', style: 9, opacity: 0.8 }, // light gray
-  { key: 'NIMBUS', id: 'nimbus', name: 'Nimbus', color: '#5b616b', style: 10, opacity: 0.8 }, // dark gray
+  { key: 'FOG', id: 'fog', name: 'Fog', color: '#d3d7dd', style: 9, opacity: 0.93 }, // light gray
+  { key: 'NIMBUS', id: 'nimbus', name: 'Nimbus', color: '#5b616b', style: 10, opacity: 0.93 }, // dark gray
   // world-creation helper: a placeholder that takes up cells while the NEW_SCENE_RECIPE runs
   // (e.g. to leave a cave or gap), then every Void is deleted (World.generateNew). Never drawn.
   { key: 'VOID', id: 'void', name: 'Void', color: '#ffffff', style: 13, opacity: 1, hidden: true },
