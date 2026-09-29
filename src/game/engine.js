@@ -2,24 +2,22 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World } from './world.js';
-import { canStand, habitatOf, stepSquirmies, stepSight, stepNimbus, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepWood, updateBlockGroups } from './sim.js';
+import { canStand, habitatOf, stepSquirmies, stepSight, stepNimbus, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepFog, stepFogForm, stepNimbusDrift, stepWood, updateBlockBundles, creatureEatNearby } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
-import { CRAWLY_BEHAVIOR } from './crawly.js';
+import { BEHAVIOR } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
-import { EDGE_SHADE, truncatedOctahedronFaces } from './geometry.js';
+import { EDGE_SHADE, EDGE_WIDTH_CM, truncatedOctahedronFaces } from './geometry.js';
 import {
   playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
-  playReady, playGo, playBerryGrow, playSquirmyEat, playCrawlySelected, playCrawlySent, playCrawlyDone, playCrawlyTrapped, playCrawlyDeath,
+  playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCrawlyDone, playCrawlyTrapped, playCrawlyDeath,
 } from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE } from './menu.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED } from './menu.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
 
 const CM = 0.01; // world units are metres; lattice units are cm
-/** Options → Speed: turns per minute. A turn lasts 60 / speed seconds. */
-export const SPEED = Object.freeze({ min: 12, max: 120, default: 60 });
 const COUNTDOWN_SECONDS = 3; // the page opens with a T -3 … 0 countdown before play starts
 const BLOCK_VOLUME_CM3 = 4; // space per block: the lattice packs two blocks into every 2 cm cube
 const XR_RAY_LENGTH = 1.0; // 1 m
@@ -35,6 +33,9 @@ const GRAB_MAX_SCALE = 20;
 // camera is pushed straight away from it, at least CAMERA_PUSH_TO_CM and on into a clear cell.
 const FLY_M_PER_WHEEL_PX = 0.00005; // zoomed all the way in, scrolling flies forward: ~0.5 cm per wheel notch
 const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's left stick flies up to 8 cm/s
+// Select tool wireframes (selected / pointed-at creatures, the target cell and its pulses): tubes
+// no thicker than the blocks' own face outlines.
+const SELECT_WIRE_RADIUS = EDGE_WIDTH_CM / 2;
 const CAMERA_PUSH_WITHIN_CM = 1.25;
 const CAMERA_PUSH_TO_CM = 1.5;
 /** The lattice cell containing point p (cm): the all-even or all-odd cell centre nearest to it. */
@@ -215,7 +216,9 @@ export class Engine {
     this.world.on('berryGrow', () => playBerryGrow());
     this.world.on('crawlyArrived', () => playCrawlyDone());
     this.world.on('crawlyTrapped', () => playCrawlyTrapped());
-    this.world.on('squirmyAte', () => playSquirmyEat());
+    this.world.on('blockConsumed', ({ sound }) => playSfx(sound));
+    this.world.on('blockExcreted', ({ sound }) => playSfx(sound));
+    this.world.on('blockBlown', ({ sound }) => playSfx(sound, 250)); // many clouds at once: one breeze
     this.world.on('blockVanished', () => this._syncCount());
     this.world.on('crawlyFreed', () => playCrawlyDone()); // same "made it" sound as arriving
     this.world.on('crawlyDied', () => {
@@ -243,7 +246,7 @@ export class Engine {
     this.selectHLs = [];
     this.hoverHLs = []; // light green, around every block of a creature you could select
     this._hoverCreature = null;
-    this.targetHL = makeWireframe(SELECT_GREEN, 0.04);
+    this.targetHL = makeWireframe(SELECT_GREEN, SELECT_WIRE_RADIUS);
     root.add(this.targetHL);
 
     // Small origin marker so an empty world still has a reference point.
@@ -497,7 +500,8 @@ export class Engine {
 
   // ---------------------------------------------------------------- Select tool
   // Two phases: 'select' (click a Crawly to select it) and 'target' (click an empty cell on
-  // a surface the Crawly can walk on: it Walks there, the selection clears, back to 'select').
+  // a surface the creature can walk on: it Walks there and stays selected, so it can be sent
+  // on again; clicking empty space or anything else deselects it).
   // Clicking anything else in 'target' (or empty space) just clears the selection.
 
   /** HUD label for the current tool (the Select tool shows its phase). */
@@ -524,9 +528,14 @@ export class Engine {
       ['Index', b.index],
       ['Creature', isCreature(b.type) ? 'yes' : 'no'],
     ];
-    const g = this.world.groupOf.get(b);
+    const g = this.world.bundleByBlock.get(b);
     if (g) rows.push(['Group', `${g.blocks.length} connected ${name}`]);
     if (b.movedTurn != null) rows.push(['Last moved', `turn ${b.movedTurn}`]);
+    rows.push(['Inventory', b.inventory ? (TOOLS.find((t) => t.block === b.inventory)?.label ?? b.inventory) : 'empty']);
+    if (b.type === BLOCK.WOOD || isCreature(b.type)) {
+      const bundle = this.world.bundleOf(b);
+      rows.push(['Bundle slots', `${bundle.filter((x) => x.inventory).length} of ${bundle.length} full`]);
+    }
     if (b.type === BLOCK.SQUIRMY) {
       const segs = this.world.squirmyOf.get(b)?.segments ?? [b];
       const i = segs.indexOf(b);
@@ -551,19 +560,78 @@ export class Engine {
    * changed meanwhile (sent somewhere → Walk, or Trapped).
    */
   _setSelected(list) {
+    for (const c of this.selected) c.isSelected = false;
+    for (const c of list) c.isSelected = true; // lets the sim hold it at the end of a walk (endWalk)
     for (const c of this.selected) {
       if (list.includes(c)) continue;
-      if (c.behavior === CRAWLY_BEHAVIOR.WAIT && c.heldBehavior) c.behavior = c.heldBehavior;
+      if (c.behavior === BEHAVIOR.WAIT && c.heldBehavior) c.behavior = c.heldBehavior;
       delete c.heldBehavior;
     }
     for (const c of list) {
       if (this.selected.includes(c) || c.heldBehavior) continue;
       c.heldBehavior = c.behavior;
-      c.behavior = CRAWLY_BEHAVIOR.WAIT;
+      c.behavior = BEHAVIOR.WAIT;
     }
     this.selected = list;
     const phase = list.length ? 'target' : 'select';
     if (this.state.selectPhase !== phase) this.setState({ selectPhase: phase });
+  }
+
+  /**
+   * Gamepad / Touch A: each selected creature eats the block in front of it (its `front`
+   * side; for a Squirmy, its head's), or else any other edible block next to it, if its
+   * bundle has an inventory slot free. If none of them can, "ineffective" plays.
+   */
+  selectedEat() {
+    if (!this.selected.length || !this.toolsReady()) return false;
+    let ate = false;
+    for (const c of this.selected) {
+      if (creatureEatNearby(this.world, c)) ate = true;
+    }
+    if (ate) this._syncCount();
+    else playSfx('ineffective', 0);
+    return ate;
+  }
+
+  /**
+   * Gamepad / Touch Y (Wander) and X (Wait): sets the behavior of every selected creature
+   * (a Squirmy's is its head's) while it stays selected. Wander drops any walk target, and
+   * becomes what the creature keeps doing once deselected; Wait (as on selecting) holds it
+   * still until it is deselected. Plays assign.wav for Wander and wait.wav for Wait, or
+   * ineffective.wav with nothing selected.
+   */
+  selectedBehavior(behavior) {
+    if (!this.selected.length || !this.toolsReady()) {
+      playSfx('ineffective', 0);
+      return false;
+    }
+    for (const c of this.selected) {
+      if (c.behavior === BEHAVIOR.TRAPPED) continue; // can't wander off while walled in
+      c.behavior = behavior;
+      if (behavior === BEHAVIOR.WANDER) {
+        c.heldBehavior = BEHAVIOR.WANDER; // what it resumes if put back in Wait and deselected
+        delete c.walkTarget;
+        delete c.walkStuck;
+      }
+    }
+    if (behavior === BEHAVIOR.WANDER) playAssign();
+    else playWait();
+    return true;
+  }
+
+  /**
+   * Gamepad / Touch B: each selected creature excretes the item in its tail's inventory slot
+   * (World.excrete on its BlockBundle). If none of them can, "ineffective" plays.
+   */
+  selectedExcrete() {
+    if (!this.selected.length || !this.toolsReady()) return false;
+    let did = false;
+    for (const c of this.selected) {
+      if (this.world.excrete(this.world.bundleOf(c), 'excrete')) did = true;
+    }
+    if (did) this._syncCount();
+    else playSfx('ineffective', 0);
+    return did;
   }
 
   /** A cell a selected Crawly can be sent to: empty, next to the pointed-at walking surface. */
@@ -592,7 +660,7 @@ export class Engine {
     if (creature) {
       if (this.selected.length === 1 && this.selected[0] === creature) return false;
       this._setSelected([creature]);
-      playCrawlySelected();
+      playWait(); // selecting puts it in Wait
       return true;
     }
     if (!this.selected.length) return false;
@@ -606,12 +674,13 @@ export class Engine {
     const [x, y, z] = t.place;
     for (const c of this.selected) {
       if (!habitatOf(c).has(t.block.type) || !canStand(this.world, c, x, y, z)) continue;
-      c.behavior = CRAWLY_BEHAVIOR.WALK; // replaces the Wait it had while selected (a Squirmy: its head)
+      c.behavior = BEHAVIOR.WALK; // replaces the Wait it had while selected (a Squirmy: its head)
+      c.heldBehavior = BEHAVIOR.WALK; // X (Wait) then deselect: carries on walking there
       c.walkTarget = { x, y, z };
       delete c.walkStuck;
     }
-    this._setSelected([]);
-    playCrawlySent();
+    // it stays selected, so it can be re-targeted straight away
+    playAssign();
     return true;
   }
 
@@ -619,7 +688,7 @@ export class Engine {
   _pulseTarget() {
     let p = this._pulses.find((q) => !q.obj.visible);
     if (!p) {
-      p = { obj: makeWireframe(SELECT_GREEN, 0.04), t0: 0 };
+      p = { obj: makeWireframe(SELECT_GREEN, SELECT_WIRE_RADIUS), t0: 0 };
       this.worldRoot.add(p.obj);
       this._pulses.push(p);
     }
@@ -649,8 +718,8 @@ export class Engine {
         if (b) this.world.renderedPosition(b, now, hl.position);
       });
     };
-    place(this.selectHLs, this.selected.flatMap((c) => this._bodyOf(c)), SELECT_GREEN, 0.05, 1.1);
-    place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], '#9be8a8', 0.03, 1.08);
+    place(this.selectHLs, this.selected.flatMap((c) => this._bodyOf(c)), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
+    place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], '#9be8a8', SELECT_WIRE_RADIUS * 0.8, 1.04);
     for (const p of this._pulses) {
       if (!p.obj.visible) continue;
       const k = (now - p.t0) / (this.world.stepSeconds * 1000);
@@ -694,7 +763,8 @@ export class Engine {
 
   /** Options → Speed: sets the turns per minute, and with it the turn and animation length. */
   setSpeed(turnsPerMinute) {
-    const v = Math.round(THREE.MathUtils.clamp(Number(turnsPerMinute) || SPEED.default, SPEED.min, SPEED.max));
+    const raw = THREE.MathUtils.clamp(Number(turnsPerMinute) || SPEED.default, SPEED.min, SPEED.max);
+    const v = Math.round(raw / SPEED.step) * SPEED.step; // snap to the slider's steps
     this.turnSeconds = 60 / v;
     this.world.stepSeconds = STEP_FRACTION * this.turnSeconds;
     if (v !== this.state.speed) this.setState({ speed: v });
@@ -719,14 +789,17 @@ export class Engine {
     this.world.turn = turn; // moves this turn are stamped with it (Water settling)
     const moved = stepGroups(this.world); // detached groups fall toward the origin first…
     for (const w of stepWater(this.world, moved)) moved.add(w); // …then Water flows…
+    for (const f of stepFog(this.world, moved)) moved.add(f); // …Fog bundles settle down, whole…
+    for (const n of stepNimbusDrift(this.world, moved)) moved.add(n); // …Nimbus clouds drift west…
     stepCrawlies(this.world, moved); // …then Crawlies (a Crawly that just fell with its group waits)…
     stepSquirmies(this.world, moved); // …and Squirmies crawl as chains, head first…
     stepSight(this.world); // …and every Crawly clears the Fog it can see (it shrinks away, then goes)…
     stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
     stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss…
-    if (this.state.rain) stepRain(this.world, turn); // …and every 10th turn a raindrop appears 1 m out (Options → Rain)…
+    if (this.state.rain) stepRain(this.world, turn); // …a raindrop appears far out now and then (Options → Rain)…
+    stepFogForm(this.world, turn); // …and so does a wisp of Fog…
     stepNimbus(this.world, turn); // …and every 3rd turn each Nimbus may rain one Water below it
-    updateBlockGroups(this.world); // finally, bucket non-creature blocks into same-type groups
+    updateBlockBundles(this.world); // finally, bucket non-creature blocks into same-type BlockBundles
     this._syncCount(); // rain, Nimbus and growth add blocks: keep the HUD's count (and diameter) current
     if (this.targetHL.visible) this._pulseTarget(); // Select tool: a turn tick on the pointed-at target
   }
@@ -1108,14 +1181,32 @@ export class Engine {
 
   _pollGamepads() {
     const rgp = this.hands.right?.source?.gamepad;
-    if (rgp) this._touchStickTools(rgp);
+    if (rgp) {
+      this._touchStickTools(rgp);
+      const playing = this.state.screen === 'playing' && !this.state.paused;
+      const a = !!rgp.buttons[4]?.pressed; // A: eat
+      if (a && !this._rightAWas && playing) this.selectedEat();
+      this._rightAWas = a;
+      const b = !!rgp.buttons[5]?.pressed; // B: excrete
+      if (b && !this._rightBWas && playing) this.selectedExcrete();
+      this._rightBWas = b;
+    }
     // The Quest Browser uses the left Menu (≡) button as "Back", so the menu is opened
     // with the Menu button on the left HUD; the Y button is a shortcut for it.
+    // Left Y: with a creature selected (while playing), puts it in Wander; otherwise it opens
+    // the menu. Left X puts a selected creature back in Wait.
     const lgp = this.hands.left?.source?.gamepad;
     if (lgp) {
-      const pressed = !!lgp.buttons[5]?.pressed;
-      if (pressed && !this._leftMenuWas) this.toggleMenu();
-      this._leftMenuWas = pressed;
+      const playing = this.state.screen === 'playing' && !this.state.paused;
+      const y = !!lgp.buttons[5]?.pressed;
+      if (y && !this._leftMenuWas) {
+        if (playing && this.selected.length) this.selectedBehavior(BEHAVIOR.WANDER);
+        else this.toggleMenu();
+      }
+      this._leftMenuWas = y;
+      const x = !!lgp.buttons[4]?.pressed;
+      if (x && !this._leftXWas && playing) this.selectedBehavior(BEHAVIOR.WAIT);
+      this._leftXWas = x;
     }
   }
 
@@ -1350,6 +1441,10 @@ export class Engine {
     if (s.screen !== 'playing') return;
     if (!s.gamepadAim) this.setState({ gamepadAim: true });
     if (edge(9)) return this.toggleMenu(); // Start
+    if (edge(0)) this.selectedEat(); // A: a selected creature eats what is in front of it
+    if (edge(1)) this.selectedExcrete(); // B: … or excretes what is in its tail's slot
+    if (edge(3)) this.selectedBehavior(BEHAVIOR.WANDER); // Y: selected creatures wander
+    if (edge(2)) this.selectedBehavior(BEHAVIOR.WAIT); // X: … or wait again
     if (edge(4)) this.cycleTool(-1); // LB
     if (edge(5)) this.cycleTool(1); // RB
     if (edge(7)) {
@@ -1382,7 +1477,7 @@ export class Engine {
     // D-pad left / right adjusts a focused slider (Options → Speed)
     const slider = items[idx]?.slider;
     if (slider && (edge(14) || edge(15))) {
-      this._setSlider(items[idx].id, slider.value + (edge(15) ? 6 : -6));
+      this._setSlider(items[idx].id, slider.value + (edge(15) ? 1 : -1) * slider.step); // one notch
       playTick();
       return;
     }

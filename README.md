@@ -46,7 +46,7 @@ The same table (with button icons) is under **Options → Controls** in the game
 **Menu:** the game opens straight into a freshly generated scene, with a countdown (T -3, -2, -1 with a
 "ready" beep each, then a higher "go" beep at 0); tools work from 0. The menu
 (titled "Grid Game") has Resume, New, Load, Save, Options (sound, background: passthrough or solid in XR,
-materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, speed (12–120 turns per minute, default 60), rain on/off, debug on/off, Controls).
+materials: procedural or solid, outlines on/off, ambient occlusion on/off, XR on/off, speed (12–240 turns per minute in steps of 12, default 60), rain on/off, debug on/off, Controls).
 
 **Debug** (Options) adds a panel under the HUDs with the selected (or pointed-at) block's
 properties, a Crawly's behavior among them, and the recent console log. In XR it is a
@@ -64,15 +64,28 @@ Water (blue), Crawly (magenta), and Delete.
 **Select** has two phases. *Select*: click a Crawly to select it (green wireframe).
 *Target*: point at a surface a Crawly can walk on (Stone, Dirt, Moss) and the empty cell
 beside it gets a green indicator, with a shrinking copy every turn; click it and the Crawly
-switches to the **Walk** behavior, heading there by the shortest path one step per turn,
-then goes back to **Wander**. Clicking another Crawly while targeting selects that one
-instead; clicking anything else (or empty space), or switching tools, clears the selection.
+switches to the **Walk** behavior, heading there by the shortest path one step per turn. It
+stays selected, so you can send it on again; if it arrives while still selected it waits
+there, otherwise it goes back to **Wander**. Clicking another creature while targeting selects
+that one instead; clicking anything else (or empty space), or switching tools, clears the
+selection.
 
 **Squirmy** (pink creature): touching Squirmy blocks form one chain; the first placed is
 the head (with eyes), the last the tail. On Wander, each turn the head steps to an empty
 cell beside a solid block that touches no other Squirmy block, and each segment follows
 into the cell the one ahead of it left. The Select tool can select a Squirmy (the whole
 body lights up); it waits while selected, and can be sent to a spot like a Crawly.
+
+**Eating and inventories:** every block has one inventory slot. When something consumes
+a block (a Squirmy eating a Berry, Dirt or a tree drinking Water) the block shrinks toward the
+eater, a sound plays, and its type goes into a slot: Wood and creatures pass it to the last
+empty slot of their BlockBundle (a tree, or a Squirmy's chain), other blocks keep it in their
+own. Crawlies eat Berries; Squirmies eat Berries and Dirt. With a creature selected, press A
+(gamepad or Touch controller) to make it eat the block in front of it; if it can't, the
+"ineffective" sound plays. Press B to make it excrete: the item in its tail's slot becomes a
+block in an empty cell behind the tail (it grows in from the tail), and the other items move
+along toward the tail. A selected creature waits; press Y to set it wandering (on Touch
+controllers, left Y: it opens the menu when nothing is selected) and X to make it wait again.
 
 **Trapped:** a Crawly walled in on all 14 sides by non-creature blocks switches to the
 Trapped behavior and does nothing. A turn with an empty neighbouring cell frees it (back to
@@ -83,7 +96,11 @@ while you play, and pauses while the menu is open; New and Load reset it to 00:0
 Every second is a turn: first, blocks are split into connected groups, and every group
 that doesn't contain the origin block shifts one step toward the origin as a whole (in the
 lattice direction closest to the line from its centre to the origin), so detached chunks
-fall onto the main build; then Water flows toward the origin; then each Crawly may crawl (a
+fall onto the main build (Fog and Nimbus count as empty space here: they never fall, and a
+falling chunk blows any in its way aside with a breeze, then falls on through); then Water flows toward the origin; Fog comes down as
+whole bundles of connected Fog (never block by block, so a blanket stays draped as fog of war),
+held up by anything in its way; new Fog forms far out now and then, like rain; each Nimbus cloud (connected Nimbus blocks) drifts one step west, clockwise
+around the vertical axis seen from above, if nothing is in its way; then each Crawly may crawl (a
 ½-second slide; every move animates over half a turn) into an empty neighbouring cell that borders Stone, Dirt or Moss.
 Every turn, each tree (connected group of Wood) that touches Water drinks the Water block
 closest to the origin and grows one Wood into a cell next to the tree that touches
@@ -123,6 +140,7 @@ downloading / opening a .json file instead.
 | File | Purpose |
 |---|---|
 | `src/game/lattice.js` | BCC lattice maths: 14 neighbour offsets, face → neighbour lookup |
+| `src/game/blocks.js` | Block types and their properties (colour, shader style, opacity; creatures' diet, sight radius, behaviors, eye size) |
 | `src/game/geometry.js` | Truncated octahedron mesh (with outlined faces) and edges |
 | `src/game/world.js` | Block storage, instanced rendering, New-scene generator, JSON |
 | `src/game/engine.js` | Three.js scene, camera, input, raycasting, XR controllers |

@@ -6,8 +6,7 @@
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
-import { BLOCK, isCreature } from './tools.js';
-import { CRAWLY_BEHAVIOR, CRAWLY_SIGHT_RADIUS, DEFAULT_CRAWLY_BEHAVIOR } from './crawly.js';
+import { BEHAVIOR, BLOCK, CREATURE_DIET, blockProps, isCreature } from './blocks.js';
 
 /** Block types (ids) a Crawly is willing to crawl next to: Stone, Dirt, Moss. */
 export const CRAWLY_HABITAT = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS]);
@@ -50,21 +49,22 @@ export function connectedGroups(world, include = () => true, linked = () => true
 }
 
 /**
- * End-of-turn bookkeeping: buckets every non-creature block into groups of connected
- * blocks of the same type (like trees are connected Wood). Stored on the world for later
- * rules to use:
- *   world.blockGroups — array of { type, blocks }
- *   world.groupOf     — Map block -> its { type, blocks } group
- * Creatures (see CREATURE_TYPES) are left out. Returns world.blockGroups.
+ * End-of-turn bookkeeping: buckets every non-creature block into BlockBundles, groups of
+ * connected blocks of the same type (like trees are connected Wood). Stored on the world for
+ * later rules to use:
+ *   world.blockBundles  — array of { type, blocks }
+ *   world.bundleByBlock — Map block -> its { type, blocks } bundle
+ * Creatures (see CREATURE_TYPES) are left out (World.bundleOf covers them). Returns
+ * world.blockBundles.
  */
-export function updateBlockGroups(world) {
-  const groups = connectedGroups(world, (b) => !isCreature(b.type), (a, b) => a.type === b.type)
+export function updateBlockBundles(world) {
+  const bundles = connectedGroups(world, (b) => !isCreature(b.type), (a, b) => a.type === b.type)
     .map((blocks) => ({ type: blocks[0].type, blocks }));
-  const groupOf = new Map();
-  for (const g of groups) for (const b of g.blocks) groupOf.set(b, g);
-  world.blockGroups = groups;
-  world.groupOf = groupOf;
-  return groups;
+  const bundleByBlock = new Map();
+  for (const g of bundles) for (const b of g.blocks) bundleByBlock.set(b, g);
+  world.blockBundles = bundles;
+  world.bundleByBlock = bundleByBlock;
+  return bundles;
 }
 
 /** The lattice direction (one of the 14) pointing most nearly along (x, y, z); ties at random. */
@@ -92,9 +92,12 @@ function closestDir(x, y, z) {
  * order against the current layout, so a group whose path is blocked (by a group that moved
  * earlier this turn) waits. Returns the set of moved blocks.
  */
+/** Clouds: falling treats them as empty space (they don't fall, don't join groups, get blown aside). */
+export const CLOUD_TYPES = new Set([BLOCK.FOG, BLOCK.NIMBUS]);
+
 export function stepGroups(world) {
   const moved = new Set();
-  const groups = connectedGroups(world);
+  const groups = connectedGroups(world, (b) => !CLOUD_TYPES.has(b.type));
   let anchor = null;
   for (const g of groups) {
     const better = !anchor || g.length > anchor.length ||
@@ -113,11 +116,16 @@ export function stepGroups(world) {
     if (!cx && !cy && !cz) continue; // centred on the origin: no direction to fall
     const [dx, dy, dz] = closestDir(-cx, -cy, -cz);
     const members = new Set(group);
-    // every target cell must be empty or vacated by this group (another group may have moved in)
-    const blocked = group.some((b) => {
+    // every target cell must be empty or vacated by this group (another group may have moved
+    // in). Fog / Nimbus in the way is blown aside; it keeps its cell while it shrinks away, so
+    // the group falls on through next turn.
+    let blocked = false;
+    for (const b of group) {
       const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
-      return n && !members.has(n);
-    });
+      if (!n || members.has(n)) continue;
+      blocked = true;
+      if (CLOUD_TYPES.has(n.type)) world.blow(group, n, 'breeze');
+    }
     if (blocked) continue;
     // leading blocks first, so each block's target cell is already free when it moves
     group.sort((a, b) => (b.x * dx + b.y * dy + b.z * dz) - (a.x * dx + a.y * dy + a.z * dz));
@@ -150,10 +158,33 @@ function nearestCell(x, y, z) {
  */
 export function stepRain(world, turn) {
   if (turn % RAIN_EVERY !== 0) return null;
+  return spawnOnSphere(world, BLOCK.WATER, RAIN_RADIUS_CM);
+}
+
+/** Fog forms far out: one Fog block every FOG_EVERY turns, FOG_RADIUS_CM from the origin. */
+export const FOG_EVERY = 1;
+export const FOG_RADIUS_CM = 50;
+
+/**
+ * Fog forming, on turns that are a multiple of FOG_EVERY: like rain, but a Fog block, placed
+ * at a uniformly random point on the sphere of radius FOG_RADIUS_CM. It then falls in as a
+ * Fog bundle (stepFog) and settles onto whatever it meets, joining any Fog there. Returns the
+ * new Fog block, or null.
+ */
+export function stepFogForm(world, turn) {
+  if (turn % FOG_EVERY !== 0) return null;
+  return spawnOnSphere(world, BLOCK.FOG, FOG_RADIUS_CM);
+}
+
+/**
+ * Puts a block of `type` in the lattice cell nearest a uniformly random point on the sphere of
+ * radius `radiusCm` around the origin (skipped if that cell is taken). Returns it, or null.
+ */
+function spawnOnSphere(world, type, radiusCm) {
   // uniform direction: z uniform in [-1, 1], angle uniform around the z axis
   const z = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - z * z);
-  const c = nearestCell(r * Math.cos(a) * RAIN_RADIUS_CM, r * Math.sin(a) * RAIN_RADIUS_CM, z * RAIN_RADIUS_CM);
-  return world.add(c.x, c.y, c.z, BLOCK.WATER) ? world.get(c.x, c.y, c.z) : null;
+  const c = nearestCell(r * Math.cos(a) * radiusCm, r * Math.sin(a) * radiusCm, z * radiusCm);
+  return world.add(c.x, c.y, c.z, type) ? world.get(c.x, c.y, c.z) : null;
 }
 
 /** Water can only be absorbed (by trees or Dirt) once it has stayed still this many turns. */
@@ -191,7 +222,7 @@ export function stepDirt(world, turn) {
     }
     if (!waters.length || Math.random() >= DIRT_ABSORB_CHANCE) continue;
     const w = closestToOrigin(waters);
-    world.vanish(w, d, { toward: true }); // the Water shrinks into the Dirt, then goes
+    if (!world.consume(d, w, 'waterDrip')) continue; // the Water shrinks into the Dirt (its slot)
     if (world.setType(d, BLOCK.MOSS)) changed++;
   }
   return changed;
@@ -253,8 +284,8 @@ export function stepSquirmies(world, skip = new Set()) {
     const own = new Set(sq.segments);
     const ok = (x, y, z, steps) => squirmyCellOk(world, head, own, x, y, z, steps === 1);
     let to = null;
-    const behavior = head.behavior ?? DEFAULT_CRAWLY_BEHAVIOR;
-    if (behavior === CRAWLY_BEHAVIOR.WANDER) {
+    const behavior = head.behavior ?? blockProps(head.type).defaultBehavior;
+    if (behavior === BEHAVIOR.WANDER) {
       const cells = [];
       for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
         const x = head.x + dx, y = head.y + dy, z = head.z + dz;
@@ -268,13 +299,9 @@ export function stepSquirmies(world, skip = new Set()) {
         }
       }
       if (cells.length) to = cells[Math.floor(Math.random() * cells.length)];
-    } else if (behavior === CRAWLY_BEHAVIOR.WALK) {
+    } else if (behavior === BEHAVIOR.WALK) {
       const t = head.walkTarget;
-      const stop = () => {
-        head.behavior = CRAWLY_BEHAVIOR.WANDER;
-        delete head.walkTarget;
-        delete head.walkStuck;
-      };
+      const stop = () => endWalk(head);
       if (!t || (head.x === t.x && head.y === t.y && head.z === t.z)) stop();
       else {
         to = firstStepToward(world, head, t, ok);
@@ -306,11 +333,8 @@ export function stepSquirmies(world, skip = new Set()) {
 }
 
 /**
- * A Squirmy that sees a Berry (within its head's sightRadius) eats the nearest one: the
- * Berry drifts 1 cm toward the head while shrinking away, then is removed (World.vanish),
- * event 'squirmyAte' fires (sound), and the Squirmy grows one block at its tail, "worm"
- * style: in an empty cell next to the tail that touches no other block of the Squirmy
- * (falling back to the segment before, and so on). One Berry per turn.
+ * A Squirmy that sees a Berry (within its head's sightRadius) eats the nearest one (see
+ * creatureEat). One Berry per turn.
  */
 function squirmyEat(world, head, segments) {
   let berry = null, best = Infinity;
@@ -322,11 +346,51 @@ function squirmyEat(world, head, segments) {
       best = d;
     }
   }
-  if (!berry || !world.vanish(berry, head, { toward: true })) return false;
-  world.emit('squirmyAte', { squirmy: head, berry });
-  const cell = world._wormCell(segments);
-  if (cell) world.add(...cell, BLOCK.SQUIRMY); // the newest block becomes the tail
+  return !!berry && creatureEat(world, head, berry);
+}
+
+/** Sound played when each creature type eats. */
+const EAT_SOUND = { [BLOCK.CRAWLY]: 'crawlyEat', [BLOCK.SQUIRMY]: 'squirmyEat' };
+
+/**
+ * Creature `c` (a Crawly, or a Squirmy's head) eats block `food`, if its type is in the
+ * creature's diet (CREATURE_DIET) and its bundle has a free inventory slot (World.consume:
+ * the food shrinks toward `c`, the eat sound plays, the item goes into a slot). A Squirmy
+ * that eats a Berry then grows one block at its tail, "worm" style: in an empty cell next to
+ * the tail that touches no other block of the Squirmy (falling back to the segment before,
+ * and so on). Returns whether it ate.
+ */
+export function creatureEat(world, c, food) {
+  if (!food || !CREATURE_DIET[c.type]?.includes(food.type)) return false;
+  const wasBerry = food.type === BLOCK.BERRY;
+  if (!world.consume(c, food, EAT_SOUND[c.type])) return false;
+  if (c.type === BLOCK.SQUIRMY && wasBerry) {
+    const cell = world._wormCell(world.bundleOf(c));
+    if (cell) world.add(...cell, BLOCK.SQUIRMY); // the newest block becomes the tail
+  }
   return true;
+}
+
+/**
+ * Creature `c` (a Crawly, or a Squirmy's head) eats the block in front of it, or, if it
+ * can't eat that one, any other edible block next to it (tried in random order).
+ * Returns whether it ate.
+ */
+export function creatureEatNearby(world, c) {
+  const front = blockInFront(world, c);
+  if (front && creatureEat(world, c, front)) return true;
+  for (const [dx, dy, dz] of shuffle([...NEIGHBOR_DIRS])) {
+    const n = world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz));
+    if (n && n !== front && creatureEat(world, c, n)) return true;
+  }
+  return false;
+}
+
+/** The block right in front of creature `c` (the cell in its `front` direction), if any. */
+export function blockInFront(world, c) {
+  if (!c.front) return null;
+  const [dx, dy, dz] = c.front;
+  return world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz)) ?? null;
 }
 
 /** Lattice offsets within `radius` blocks (sphere of radius * 2 cm), cached per radius. */
@@ -345,7 +409,7 @@ function offsetsWithin(radius) {
 
 /**
  * Creature sight: every Fog block within a Crawly's or a Squirmy head's `sightRadius` (in blocks, see
- * CRAWLY_SIGHT_RADIUS, SQUIRMY_SIGHT_RADIUS) is cleared: it shrinks to nothing while drifting 1 cm away
+ * each creature type's sightRadius in blocks.js) is cleared: it shrinks to nothing while drifting 1 cm away
  * from the creature (World.vanish), then is deleted. Sight isn't blocked by other blocks. Returns the
  * number of Fog blocks that started clearing.
  */
@@ -354,12 +418,48 @@ export function stepSight(world) {
   // Crawlies, and each Squirmy's head (its eyes)
   const seers = [...world.crawlies, ...world.squirmies.map((sq) => sq.segments[0])];
   for (const c of seers) {
-    for (const [dx, dy, dz] of offsetsWithin(c.sightRadius ?? CRAWLY_SIGHT_RADIUS)) {
+    for (const [dx, dy, dz] of offsetsWithin(c.sightRadius ?? blockProps(c.type).sightRadius ?? 0)) {
       const n = world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz));
-      if (n?.type === BLOCK.FOG && world.vanish(n, c)) cleared++; // shrinks away from the Crawly, then goes
+      if (n?.type === BLOCK.FOG && world.blow(world.bundleOf(c), n, 'breeze')) cleared++; // blown away from the creature
     }
   }
   return cleared;
+}
+
+/**
+ * Nimbus drift: each Nimbus BlockBundle (connected Nimbus blocks) shifts one step west every
+ * turn, if nothing is in the way (every cell ahead is empty or its own). West is taken
+ * relative to the world: "north" is world up (+y) and "down" is toward the origin, so west =
+ * north × down, i.e. clockwise around the vertical axis seen from above, like the orbiting
+ * light. The step is the lattice direction closest to that, from the bundle's centre. A
+ * bundle sitting on the vertical axis has no west and stays put. Returns the set of moved
+ * blocks.
+ */
+export function stepNimbusDrift(world, skip = new Set()) {
+  const moved = new Set();
+  for (const bundle of shuffle(connectedGroups(world, (b) => b.type === BLOCK.NIMBUS && !b.vanishing))) {
+    if (bundle.some((b) => skip.has(b))) continue;
+    let cx = 0, cz = 0;
+    for (const b of bundle) {
+      cx += b.x;
+      cz += b.z;
+    }
+    if (!cx && !cz) continue; // on the vertical axis: no west
+    // west = up × (toward the origin) = (0, 1, 0) × (-cx, -cy, -cz) = (-cz, 0, cx)
+    const [dx, dy, dz] = closestDir(-cz, 0, cx);
+    const members = new Set(bundle);
+    const blocked = bundle.some((b) => {
+      const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
+      return n && !members.has(n);
+    });
+    if (blocked) continue;
+    // leading blocks first, so each block's target cell is already free when it moves
+    bundle.sort((a, b) => (b.x * dx + b.y * dy + b.z * dz) - (a.x * dx + a.y * dy + a.z * dz));
+    for (const b of bundle) {
+      if (world.move(b, { x: b.x + dx, y: b.y + dy, z: b.z + dz })) moved.add(b);
+    }
+  }
+  return moved;
 }
 
 /** A Nimbus may rain every NIMBUS_RAIN_EVERY turns, with NIMBUS_RAIN_CHANCE. */
@@ -439,13 +539,11 @@ export function stepWood(world, turn) {
     const c = [...cells.values()][Math.floor(Math.random() * cells.size)];
     var fruitRand = Math.random();
     const fruit = tree.length >= BERRY_MIN_TREE_SIZE && fruitRand < BERRY_CHANCE;
-    if (cellKey(c.x, c.y, c.z) === drinkKey) {
-      world.remove(drink.x, drink.y, drink.z); // growing right where the Water was: swap it at once
-    } else {
-      // the Water shrinks into the Wood block of the tree that is drinking it, then goes
-      const feeder = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === drink.x && w.y + dy === drink.y && w.z + dz === drink.z));
-      world.vanish(drink, feeder ?? tree[0], { toward: true });
-    }
+    // the Water shrinks into the Wood block drinking it and goes into the tree's inventory
+    // (growing right where the Water was: it is taken at once, so the cell is free)
+    const feeder = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === drink.x && w.y + dy === drink.y && w.z + dz === drink.z));
+    const instant = cellKey(c.x, c.y, c.z) === drinkKey;
+    if (!world.consume(feeder ?? tree[0], drink, 'waterDrip', { instant })) continue; // tree's inventory is full
     if (world.add(c.x, c.y, c.z, fruit ? BLOCK.BERRY : BLOCK.WOOD)) {
       grown++;
       if (fruit) world.emit('berryGrow', world.get(c.x, c.y, c.z));
@@ -455,16 +553,59 @@ export function stepWood(world, turn) {
 }
 
 /**
- * Water flows toward the origin. Water blocks act one at a time, nearest the origin first
- * (ties in random order), each seeing the moves already made this turn, so a front of
- * water advances together. A Water block moves into whichever empty adjacent cell is
- * closest to the origin (ties broken at random), but only if that cell is closer to the
- * origin than the block itself. Blocks in `skip` (already moved this turn) sit still.
- * Returns the set of Water blocks that moved.
+ * Water flows toward the origin (see stepFlow).
  */
 export function stepWater(world, skip = new Set()) {
+  return stepFlow(world, BLOCK.WATER, skip);
+}
+
+/**
+ * Fog falls as whole Fog bundles (connected Fog blocks), never block by block, so a blanket
+ * of Fog stays draped over the land (as fog of war) instead of trickling down into valleys.
+ * Each bundle shifts one step toward the origin, in the lattice direction closest to the
+ * line from its centre to the origin, but only if every cell ahead is empty (or its own):
+ * anything in the way, even a single block, holds the whole bundle up. Falling groups of
+ * other blocks treat Fog as empty space (and blow it aside); this is how Fog itself comes
+ * down. Returns the set of moved blocks.
+ */
+export function stepFog(world, skip = new Set()) {
+  const moved = new Set();
+  for (const bundle of shuffle(connectedGroups(world, (b) => b.type === BLOCK.FOG && !b.vanishing))) {
+    if (bundle.some((b) => skip.has(b))) continue;
+    let cx = 0, cy = 0, cz = 0;
+    for (const b of bundle) {
+      cx += b.x;
+      cy += b.y;
+      cz += b.z;
+    }
+    if (!cx && !cy && !cz) continue; // centred on the origin: no direction to fall
+    const [dx, dy, dz] = closestDir(-cx, -cy, -cz);
+    const members = new Set(bundle);
+    const blocked = bundle.some((b) => {
+      const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
+      return n && !members.has(n);
+    });
+    if (blocked) continue;
+    // leading blocks first, so each block's target cell is already free when it moves
+    bundle.sort((a, b) => (b.x * dx + b.y * dy + b.z * dz) - (a.x * dx + a.y * dy + a.z * dz));
+    for (const b of bundle) {
+      if (world.move(b, { x: b.x + dx, y: b.y + dy, z: b.z + dz })) moved.add(b);
+    }
+  }
+  return moved;
+}
+
+/**
+ * Blocks of `type` flow toward the origin, each on its own. They act one at a time, nearest
+ * the origin first (ties in random order), each seeing the moves already made this turn, so
+ * a front advances together. A block moves into whichever empty adjacent cell is closest to
+ * the origin (ties broken at random), but only if that cell is closer to the origin than the
+ * block itself. Blocks in `skip` (already moved this turn) and blocks shrinking away
+ * (vanishing) sit still. Returns the set of blocks that moved.
+ */
+function stepFlow(world, type, skip) {
   const dist2 = (p) => p.x * p.x + p.y * p.y + p.z * p.z;
-  const waters = shuffle([...world.blocks.values()].filter((b) => b.type === BLOCK.WATER && !skip.has(b)));
+  const waters = shuffle([...world.blocks.values()].filter((b) => b.type === type && !skip.has(b) && !b.vanishing));
   waters.sort((a, b) => dist2(a) - dist2(b)); // stable, so equal distances keep the shuffled order
   const moved = new Set();
   for (const w of waters) {
@@ -554,11 +695,7 @@ function firstStepToward(world, c, t, ok = (x, y, z) => isWalkable(world, x, y, 
 function walk(world, c) {
   const t = c.walkTarget;
   const arrived = () => t && c.x === t.x && c.y === t.y && c.z === t.z;
-  const stop = () => {
-    c.behavior = CRAWLY_BEHAVIOR.WANDER;
-    delete c.walkTarget;
-    delete c.walkStuck;
-  };
+  const stop = () => endWalk(c);
   if (!t || arrived()) {
     stop();
     return false;
@@ -576,6 +713,22 @@ function walk(world, c) {
     world.emit('crawlyArrived', c);
   }
   return moved;
+}
+
+/**
+ * A walk is over (arrived, or gave up): the creature goes back to Wander, or, while it is
+ * still selected (the Select tool keeps a creature selected after sending it), it waits
+ * there, and wanders once deselected.
+ */
+function endWalk(c) {
+  delete c.walkTarget;
+  delete c.walkStuck;
+  if (c.isSelected) {
+    c.behavior = BEHAVIOR.WAIT;
+    c.heldBehavior = BEHAVIOR.WANDER;
+  } else {
+    c.behavior = BEHAVIOR.WANDER;
+  }
 }
 
 /** A Crawly trapped for this many turns in a row dies. */
@@ -605,10 +758,10 @@ function isWalledIn(world, c) {
  * free to act this turn.
  */
 function checkTrapped(world, c) {
-  if (c.behavior === CRAWLY_BEHAVIOR.TRAPPED) {
+  if (c.behavior === BEHAVIOR.TRAPPED) {
     const hasGap = !isWalledIn(world, c); // an empty (or Fog) neighbouring cell frees it
     if (hasGap) {
-      c.behavior = CRAWLY_BEHAVIOR.WANDER;
+      c.behavior = BEHAVIOR.WANDER;
       delete c.trappedTurns;
       world.emit('crawlyFreed', c);
       return true;
@@ -622,7 +775,7 @@ function checkTrapped(world, c) {
     return false;
   }
   if (isWalledIn(world, c)) {
-    c.behavior = CRAWLY_BEHAVIOR.TRAPPED;
+    c.behavior = BEHAVIOR.TRAPPED;
     c.trappedTurns = 1; // this turn counts
     delete c.walkTarget;
     delete c.walkStuck;
@@ -633,7 +786,7 @@ function checkTrapped(world, c) {
 }
 
 /**
- * Each Crawly takes its turn according to its `behavior` (see CRAWLY_BEHAVIOR):
+ * Each Crawly takes its turn according to its `behavior` (see BEHAVIOR):
  * Wander = random steps along its habitat, Wait = stays put, Walk = heads for its
  * `walkTarget` along the shortest path, Trapped = nothing (see checkTrapped, which runs
  * first for every Crawly). Crawlies act one at a time in random order, so two Crawlies
@@ -647,13 +800,13 @@ export function stepCrawlies(world, skip = new Set()) {
     // being trapped is checked for every Crawly, even one that fell with its group this turn
     if (!checkTrapped(world, c)) continue; // trapped (or just died): no action this turn
     if (skip.has(c)) continue;
-    switch (c.behavior ?? DEFAULT_CRAWLY_BEHAVIOR) {
-      case CRAWLY_BEHAVIOR.WANDER:
+    switch (c.behavior ?? blockProps(c.type).defaultBehavior) {
+      case BEHAVIOR.WANDER:
         if (wander(world, c)) moved++;
         break;
-      case CRAWLY_BEHAVIOR.WAIT:
+      case BEHAVIOR.WAIT:
         break; // stays where it is
-      case CRAWLY_BEHAVIOR.WALK:
+      case BEHAVIOR.WALK:
         if (walk(world, c)) moved++;
         break;
     }

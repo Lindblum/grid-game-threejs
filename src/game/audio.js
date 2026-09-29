@@ -1,12 +1,18 @@
 // Sound effects: small synthesized ones (no files), plus recorded samples from /sfx.
 // The samples are imported with ?url so Vite bundles them (sfx/ is outside public/).
 import berryGrowUrl from '../../sfx/berry-grow.wav?url';
-import crawlySelectedUrl from '../../sfx/crawly-selected.wav?url';
-import crawlySentUrl from '../../sfx/crawly-sent.wav?url';
+import waitUrl from '../../sfx/wait.wav?url';
+import assignUrl from '../../sfx/assign.wav?url';
 import crawlyDoneUrl from '../../sfx/crawly-done.wav?url';
 import crawlyTrappedUrl from '../../sfx/crawly-trapped.wav?url';
 import crawlyDeathUrl from '../../sfx/crawly-death.wav?url';
 import squirmyEatUrl from '../../sfx/squirmy-eat.wav?url';
+import crawlyEatUrl from '../../sfx/crawly-eat.wav?url';
+import waterDripUrl from '../../sfx/water-drip.wav?url';
+import ineffectiveUrl from '../../sfx/ineffective.wav?url';
+import breezeUrl from '../../sfx/breeze.wav?url';
+// Not in sfx/ yet: resolved at run time, so the build doesn't fail; silent until the file exists.
+const excreteUrl = new URL('../../sfx/excrete.wav', import.meta.url).href;
 
 let ctx = null;
 let muted = false;
@@ -36,12 +42,17 @@ export function unlockAudio() {
 // ---------------------------------------------------------------- samples (/sfx)
 const SAMPLE_URLS = {
   berryGrow: berryGrowUrl,
-  crawlySelected: crawlySelectedUrl,
-  crawlySent: crawlySentUrl,
+  wait: waitUrl,
+  assign: assignUrl,
   crawlyDone: crawlyDoneUrl,
   crawlyTrapped: crawlyTrappedUrl,
   crawlyDeath: crawlyDeathUrl,
   squirmyEat: squirmyEatUrl,
+  crawlyEat: crawlyEatUrl,
+  waterDrip: waterDripUrl,
+  ineffective: ineffectiveUrl,
+  breeze: breezeUrl,
+  excrete: excreteUrl,
 };
 const samples = new Map(); // name -> Promise<AudioBuffer | null>
 
@@ -79,18 +90,29 @@ function playSample(name, gain = 0.8) {
 
 /** A tree grew a Berry. */
 export const playBerryGrow = () => playSample('berryGrow');
-/** A Crawly was selected with the Select tool. */
-export const playCrawlySelected = () => playSample('crawlySelected');
-/** A selected Crawly was sent to a target. */
-export const playCrawlySent = () => playSample('crawlySent');
+/** A creature went into Wait (selected with the Select tool, or X). */
+export const playWait = () => playSample('wait');
+/** A creature was given something to do: Wander (Y), or sent to a target. */
+export const playAssign = () => playSample('assign');
 /** A walking Crawly reached its target (back to Wander). */
 export const playCrawlyDone = () => playSample('crawlyDone');
 /** A Crawly got walled in (Trapped). */
 export const playCrawlyTrapped = () => playSample('crawlyTrapped');
 /** A Crawly died. */
 export const playCrawlyDeath = () => playSample('crawlyDeath');
-/** A Squirmy ate a Berry. */
-export const playSquirmyEat = () => playSample('squirmyEat');
+
+const lastPlayed = new Map();
+/**
+ * Plays a sample by name (a key of SAMPLE_URLS). The same sound isn't restarted within
+ * `minGapMs`, so a turn where many blocks do the same thing doesn't pile up copies.
+ */
+export function playSfx(name, minGapMs = 90) {
+  if (!name || !SAMPLE_URLS[name]) return;
+  const now = performance.now();
+  if (now - (lastPlayed.get(name) ?? -Infinity) < minGapMs) return;
+  lastPlayed.set(name, now);
+  playSample(name);
+}
 
 function tone(c, { type = 'sine', f0, f1, t0, dur, gain = 0.2 }) {
   const o = c.createOscillator();

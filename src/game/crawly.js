@@ -1,29 +1,11 @@
 // Crawlies (BLOCK.CRAWLY): orientation (floor + front) and their two eyes.
 import * as THREE from 'three';
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
-import { BLOCK } from './tools.js';
-
-/** What a Crawly does on its turn (stored on the block as `behavior`, saved with it). */
-export const CRAWLY_BEHAVIOR = Object.freeze({
-  WANDER: 'wander', // random steps along Stone / Dirt / Moss (the default)
-  WAIT: 'wait', // stays where it is
-  WALK: 'walk', // heads for `walkTarget` (set with the Select tool) by the shortest path
-  TRAPPED: 'trapped', // walled in on all sides: does nothing; freed by a gap, dies if it lasts too long
-});
-export const DEFAULT_CRAWLY_BEHAVIOR = CRAWLY_BEHAVIOR.WANDER;
-/**
- * How far a Crawly sees, in blocks (1 block = 2 cm, the spacing of square-face neighbours),
- * stored per Crawly as `sightRadius`. Every turn, Fog within this distance is cleared.
- */
-export const CRAWLY_SIGHT_RADIUS = 3;
-/** A Squirmy sees (and clears Fog) this many blocks around its head. */
-export const SQUIRMY_SIGHT_RADIUS = 1;
-export const isCrawlyBehavior = (v) => Object.values(CRAWLY_BEHAVIOR).includes(v);
+import { BLOCK, blockProps } from './blocks.js';
+// Behaviors, sight radius and eye size are per creature type: see BLOCK_TYPES in blocks.js.
 
 /** Block types a Crawly can use as its floor: Stone, Dirt. */
-export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT]);
-/** Eye size relative to a block. */
-export const EYE_SCALE = 0.25;
+export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.CRYSTAL, BLOCK.WOOD, BLOCK.BERRY]);
 /**
  * Eye centres in the Crawly's own frame, cm: x = right, y = up (away from the floor),
  * z = front. The frame turns; the eyes themselves never rotate.
@@ -106,7 +88,7 @@ function frameQuaternion(c, out) {
 export class CrawlyEyes {
   constructor(parent) {
     this.parent = parent;
-    this.geometry = new THREE.SphereGeometry(1, 20, 14); // radius 1 = a block's inradius, scaled by EYE_SCALE
+    this.geometry = new THREE.SphereGeometry(1, 20, 14); // radius 1 = a block's inradius, scaled by the creature's eyeScale
     this.material = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.12, metalness: 0.0 });
     this.state = new Map(); // crawly block -> { q, from, to, t0, dur }
     this.mesh = null;
@@ -159,7 +141,7 @@ export class CrawlyEyes {
       this._allocate(cap);
     }
     let i = 0;
-    const scale = _v.set(EYE_SCALE, EYE_SCALE, EYE_SCALE);
+    const scale = _v;
     const pos = new THREE.Vector3();
     const p = new THREE.Vector3();
     for (const [c, s] of this.state) {
@@ -169,6 +151,7 @@ export class CrawlyEyes {
         if (t >= 1) s.dur = 0;
       }
       positionOf(c, pos);
+      scale.setScalar(blockProps(c.type).eyeScale ?? 0.25);
       for (const off of EYE_OFFSETS) {
         p.copy(off).applyQuaternion(s.q).add(pos); // revolve the offset, not the eye
         this.mesh.setMatrixAt(i++, _m.compose(p, _noRot, scale));

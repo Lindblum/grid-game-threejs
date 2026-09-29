@@ -23,6 +23,24 @@ export const CONTROLS = [
     xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right' },
   },
   {
+    action: 'Eat (selected creature)',
+    mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+    pad: { g: ['pad:A'], t: 'A: the selected creature eats the block in front of it' },
+    xr: { g: ['xr:A'], t: 'A: the selected creature eats the block in front of it' },
+  },
+  {
+    action: 'Excrete (selected creature)',
+    mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+    pad: { g: ['pad:B'], t: 'B: the selected creature excretes the item in its tail slot' },
+    xr: { g: ['xr:B'], t: 'B: the selected creature excretes the item in its tail slot' },
+  },
+  {
+    action: 'Wander / Wait (selected creature)',
+    mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+    pad: { g: ['pad:Y', 'sep:/', 'pad:X'], t: 'Y: Wander, X: Wait' },
+    xr: { g: ['xr:Y', 'sep:/', 'xr:X'], t: 'Left Y: Wander (opens the menu when nothing is selected), left X: Wait' },
+  },
+  {
     action: 'Menu',
     mk: { g: ['key:Esc', 'sep:/', 'hud:menu'], t: 'Esc or Enter, or click the ≡ button' },
     pad: { g: ['pad:start'], t: 'Start / Menu button' },

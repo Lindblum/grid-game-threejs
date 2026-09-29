@@ -1,60 +1,25 @@
-/**
- * Block type ids, by game name. Always refer to block types through these constants.
- * The id strings are the blocks' original colour names; they are what save files store,
- * so they must never change (older saves would stop loading).
- */
-export const BLOCK = Object.freeze({
-  STONE: 'gray',
-  DIRT: 'brown',
-  BERRY: 'red',
-  WOOD: 'orange',
-  CRYSTAL: 'yellow',
-  MOSS: 'green',
-  WATER: 'blue',
-  CRAWLY: 'magenta',
-  FOG: 'fog', // newer types use plain ids
-  NIMBUS: 'nimbus',
-  SQUIRMY: 'squirmy',
-});
+// The tool bar. Block types and their properties live in blocks.js (re-exported here for
+// the modules that already import them from this file).
+import { BLOCK, blockProps } from './blocks.js';
 
-/**
- * Creatures: living, self-moving block types (they walk, and have eyes / behaviors). Every
- * other type is terrain or material, and those are what form same-type block groups.
- * Add new creature types here as they arrive.
- */
-export const CREATURE_TYPES = new Set([BLOCK.CRAWLY, BLOCK.SQUIRMY]);
-export const isCreature = (type) => CREATURE_TYPES.has(type);
-
-export const BLOCK_COLORS = {
-  [BLOCK.BERRY]: '#e53935',
-  [BLOCK.WOOD]: '#b8804a', // warm tan
-  [BLOCK.CRYSTAL]: '#e03cd2', // magenta
-  [BLOCK.MOSS]: '#43a047',
-  [BLOCK.FOG]: '#d3d7dd', // light gray
-  [BLOCK.NIMBUS]: '#5b616b', // dark gray
-  [BLOCK.WATER]: '#1e88e5',
-  [BLOCK.CRAWLY]: '#d63ad6',
-  [BLOCK.SQUIRMY]: '#f07898', // pink
-  [BLOCK.DIRT]: '#8b5a2b',
-  [BLOCK.STONE]: '#9aa0a6',
-};
+export { BLOCK, BLOCK_COLORS, CREATURE_TYPES, CREATURE_DIET, isCreature } from './blocks.js';
 
 /** Ids of the tools that don't place a block. */
 export const TOOL = Object.freeze({ SELECT: 'select', DELETE: 'delete' });
 
 export const TOOLS = [
   { id: TOOL.SELECT, label: 'Select', block: null },
-  { id: BLOCK.STONE, label: 'Stone', block: BLOCK.STONE },
-  { id: BLOCK.DIRT, label: 'Dirt', block: BLOCK.DIRT },
-  { id: BLOCK.BERRY, label: 'Berry', block: BLOCK.BERRY },
-  { id: BLOCK.WOOD, label: 'Wood', block: BLOCK.WOOD },
-  { id: BLOCK.CRYSTAL, label: 'Crystal', block: BLOCK.CRYSTAL },
-  { id: BLOCK.MOSS, label: 'Moss', block: BLOCK.MOSS },
-  { id: BLOCK.WATER, label: 'Water', block: BLOCK.WATER },
-  { id: BLOCK.CRAWLY, label: 'Crawly', block: BLOCK.CRAWLY },
-  { id: BLOCK.SQUIRMY, label: 'Squirmy', block: BLOCK.SQUIRMY },
-  { id: BLOCK.FOG, label: 'Fog', block: BLOCK.FOG },
-  { id: BLOCK.NIMBUS, label: 'Nimbus', block: BLOCK.NIMBUS },
+  { id: BLOCK.STONE, label: blockProps(BLOCK.STONE).name, block: BLOCK.STONE },
+  { id: BLOCK.DIRT, label: blockProps(BLOCK.DIRT).name, block: BLOCK.DIRT },
+  { id: BLOCK.BERRY, label: blockProps(BLOCK.BERRY).name, block: BLOCK.BERRY },
+  { id: BLOCK.WOOD, label: blockProps(BLOCK.WOOD).name, block: BLOCK.WOOD },
+  { id: BLOCK.CRYSTAL, label: blockProps(BLOCK.CRYSTAL).name, block: BLOCK.CRYSTAL },
+  { id: BLOCK.MOSS, label: blockProps(BLOCK.MOSS).name, block: BLOCK.MOSS },
+  { id: BLOCK.WATER, label: blockProps(BLOCK.WATER).name, block: BLOCK.WATER },
+  { id: BLOCK.CRAWLY, label: blockProps(BLOCK.CRAWLY).name, block: BLOCK.CRAWLY },
+  { id: BLOCK.SQUIRMY, label: blockProps(BLOCK.SQUIRMY).name, block: BLOCK.SQUIRMY },
+  { id: BLOCK.FOG, label: blockProps(BLOCK.FOG).name, block: BLOCK.FOG },
+  { id: BLOCK.NIMBUS, label: blockProps(BLOCK.NIMBUS).name, block: BLOCK.NIMBUS },
   { id: TOOL.DELETE, label: 'Delete', block: null },
 ];
 

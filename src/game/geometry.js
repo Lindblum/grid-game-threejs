@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BLOCK_STYLE, BLOCK_TYPES } from './blocks.js';
 import { PERLIN_PERIOD, VORONOI_BORDER_MAX, VORONOI_PERIOD, createNoiseTexture } from './noiseTexture.js';
 
 /**
@@ -139,13 +140,16 @@ export function createEdgesGeometry() {
 
 /** Face outlines are drawn at this fraction of the face colour (block shader + place highlight). */
 export const EDGE_SHADE = 0.725;
+/** Width of those face outlines, in cm (each face's dark band along its edges). */
+export const EDGE_WIDTH_CM = 0.045;
 /** Ambient occlusion: a corner with all 3 sharing neighbours filled is darkened by this much. */
 export const AO_STRENGTH = 0.45;
 
-/** Values for the per-instance `blockStyle.x` attribute (surface shader to use). */
-export const BLOCK_STYLE = { plain: 0, dirt: 1, stone: 2, water: 3, moss: 4, berry: 5, crawly: 6, wood: 7, crystal: 8, fog: 9, nimbus: 10, squirmy: 11 };
+export { BLOCK_STYLE }; // defined in blocks.js, with the rest of the block properties
+/** See-through block types (opacity below 1): their styles are drawn by the translucent pass. */
+const TRANSLUCENT = BLOCK_TYPES.filter((t) => t.opacity < 1);
 /** Styles drawn by the translucent pass (the rest are opaque). */
-export const TRANSLUCENT_STYLES = [BLOCK_STYLE.water, BLOCK_STYLE.crystal, BLOCK_STYLE.fog, BLOCK_STYLE.nimbus];
+export const TRANSLUCENT_STYLES = TRANSLUCENT.map((t) => t.style);
 
 // Noise lookups from the pre-baked 3D texture (see noiseTexture.js): one texture fetch
 // each instead of evaluating Perlin (8 gradient hashes) or Voronoi (27 cells) per pixel.
@@ -361,8 +365,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         #if defined(SOLID_MATERIALS)
           // Options → Materials: Solid — flat instance colour only
           #ifdef TRANSLUCENT_PASS
-          // Water 55 %, Crystal 90 % opaque and glossy, Fog / Nimbus 80 % opaque and matte
-          diffuseColor.a = vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)} ? 0.8 : vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.9 : 0.55;
+          // each see-through type at its opacity (blocks.js); Crystal glossy, Fog / Nimbus matte
+          ${TRANSLUCENT.map((t) => `if (abs(vStyle - ${t.style.toFixed(1)}) < 0.5) diffuseColor.a = ${t.opacity.toFixed(3)};`).join('\n          ')}
           surfaceRough = vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)} ? 1.0 : vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.04 : 0.08;
           #endif
         #elif defined(TRANSLUCENT_PASS)
@@ -580,7 +584,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass) {
         }
         #endif
         float fw = max(fwidth(vEdgeDist), 1e-4);
-        float edgeW = 0.045;
+        float edgeW = ${EDGE_WIDTH_CM.toFixed(4)};
         float edgeMix = smoothstep(edgeW - fw, edgeW + fw, vEdgeDist);
         // (clouds skip both: hard outlines and dark corners make them look like tiles)
         diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, max(max(edgeMix, 1.0 - uOutlines), noOutline));

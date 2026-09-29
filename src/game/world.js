@@ -1,25 +1,10 @@
 import * as THREE from 'three';
-import { BLOCK, BLOCK_COLORS, RANDOM_BLOCKS } from './tools.js';
+import { RANDOM_BLOCKS } from './tools.js';
+import { BLOCK, BLOCK_COLORS, blockProps, canBehave, isCreature, isTranslucent } from './blocks.js';
 import { NEIGHBOR_DIRS, cellKey, isValidCell } from './lattice.js';
-import { BLOCK_STYLE, FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
-import { CRAWLY_SIGHT_RADIUS, SQUIRMY_SIGHT_RADIUS, CrawlyEyes, DEFAULT_CRAWLY_BEHAVIOR, isCrawlyBehavior, orientCrawly } from './crawly.js';
+import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
+import { CrawlyEyes, orientCrawly } from './crawly.js';
 
-/** Block types drawn with a procedural surface shader instead of flat colour. */
-const STYLE_BY_TYPE = {
-  [BLOCK.FOG]: BLOCK_STYLE.fog,
-  [BLOCK.NIMBUS]: BLOCK_STYLE.nimbus,
-  [BLOCK.DIRT]: BLOCK_STYLE.dirt,
-  [BLOCK.STONE]: BLOCK_STYLE.stone,
-  [BLOCK.WATER]: BLOCK_STYLE.water,
-  [BLOCK.MOSS]: BLOCK_STYLE.moss,
-  [BLOCK.BERRY]: BLOCK_STYLE.berry,
-  [BLOCK.CRAWLY]: BLOCK_STYLE.crawly,
-  [BLOCK.SQUIRMY]: BLOCK_STYLE.squirmy,
-  [BLOCK.WOOD]: BLOCK_STYLE.wood,
-  [BLOCK.CRYSTAL]: BLOCK_STYLE.crystal,
-};
-/** See-through block types: drawn by the translucent pass, and they don't cast ambient occlusion. */
-const TRANSLUCENT_TYPES = new Set([BLOCK.WATER, BLOCK.CRYSTAL, BLOCK.FOG, BLOCK.NIMBUS]);
 /**
  * Per-turn animations (block slides, eye turns, vanishing) last this fraction of a turn.
  * The length in seconds is world.stepSeconds, which follows Options → Speed.
@@ -87,6 +72,7 @@ export class World {
     this.keysByIndex = [];
     this.anims = new Map(); // key -> { from, to, t0, dur } for sliding blocks
     this.vanishing = new Map(); // block -> { from, dir, t0, dur }: shrinking away, removed at the end
+    this.appearing = new Map(); // block -> { from, t0, dur }: growing in from `from` (see appear)
     this.crawlies = new Set(); // Crawly blocks (also carry .floor and .front, see crawly.js)
     // Squirmies: touching Squirmy blocks form one creature, a chain ordered by placement
     // (`born`): the first placed is the head (it has the eyes and the behavior), the last the tail
@@ -98,9 +84,11 @@ export class World {
     this.stepSeconds = STEP_FRACTION; // length of per-turn animations (s); the engine sets it from the turn length
     this.turn = 0; // current game turn, set by the engine; stamped on blocks as movedTurn
     this.listeners = new Map(); // event name -> Set of handlers (see on / emit)
-    // same-type groups of non-creature blocks, rebuilt at the end of every turn (sim.js updateBlockGroups)
-    this.blockGroups = []; // [{ type, blocks }]
-    this.groupOf = new Map(); // block -> its group
+    // BlockBundles: same-type groups of connected non-creature blocks (trees are Wood bundles),
+    // rebuilt at the end of every turn (sim.js updateBlockBundles). For creatures, and for an
+    // up-to-the-moment bundle of any block, see bundleOf().
+    this.blockBundles = []; // [{ type, blocks }]
+    this.bundleByBlock = new Map(); // block -> its bundle
     this.capacity = 0;
     this.mesh = null;
     this._allocate(1024);
@@ -113,7 +101,9 @@ export class World {
    *   'crawlyTrapped' (crawly)  — a Crawly got walled in (Trapped behavior)
    *   'crawlyFreed' (crawly)    — a Trapped Crawly found a gap (back to Wander)
    *   'crawlyDied' ({ crawly, x, y, z }) — a Crawly died (its block is already removed)
-   *   'squirmyAte' ({ squirmy, berry }) — a Squirmy (its head) started eating a Berry
+   *   'blockConsumed' ({ by, block, sound, slot }) — `by` consumed `block` (see consume)
+   *   'blockExcreted' ({ by, block, sound }) — a bundle's tail `by` excreted `block` (see excrete)
+   *   'blockBlown' ({ by, block, sound }) — `block` was blown away from `by` (see blow)
    * `on` returns a function that removes the handler.
    */
   on(name, fn) {
@@ -197,7 +187,7 @@ export class World {
   _refreshTranslucentAround(x, y, z) {
     const style = this.geometry.getAttribute('blockStyle');
     const update = (b) => {
-      if (!b || !TRANSLUCENT_TYPES.has(b.type)) return;
+      if (!b || !isTranslucent(b.type)) return;
       // a vanishing block is on its way out: it shows all its faces, and its neighbours
       // show the faces they shared with it
       let mask = 0;
@@ -225,12 +215,89 @@ export class World {
       let mask = 0;
       FACE_DIRS.forEach(([dx, dy, dz], i) => {
         const n = this.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
-        if (n && !TRANSLUCENT_TYPES.has(n.type)) mask |= 1 << i;
+        if (n && !isTranslucent(n.type)) mask |= 1 << i;
       });
       style.setW(b.index, mask);
     };
     update(this.blocks.get(cellKey(x, y, z)));
     for (const [dx, dy, dz] of FACE_DIRS) update(this.blocks.get(cellKey(x + dx, y + dy, z + dz)));
+  }
+
+  /**
+   * A block's BlockBundle, right now: a Squirmy's whole chain (head .. tail), a Crawly on its
+   * own, or else every block of the same type connected to it, nearest first (so a tree is
+   * its connected Wood, listed outward from `b`).
+   */
+  bundleOf(b) {
+    if (b.type === BLOCK.SQUIRMY) return [...(this.squirmyOf.get(b)?.segments ?? [b])];
+    if (isCreature(b.type)) return [b];
+    const seen = new Set([b]);
+    const list = [b];
+    for (let i = 0; i < list.length; i++) {
+      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        const n = this.blocks.get(cellKey(list[i].x + dx, list[i].y + dy, list[i].z + dz));
+        if (n && n.type === b.type && !seen.has(n)) {
+          seen.add(n);
+          list.push(n);
+        }
+      }
+    }
+    return list;
+  }
+
+  /**
+   * The inventory slot an item consumed by block `a` would go into, or null if none is free.
+   * Every block has one slot (`b.inventory`: a block type, or empty). Wood and creatures
+   * pass items along their bundle, into its last empty slot (a Squirmy's toward the tail, a
+   * tree's furthest from the drinking block); other blocks keep them in their own slot.
+   */
+  freeSlotFor(a) {
+    if (a.type === BLOCK.WOOD || isCreature(a.type)) {
+      const bundle = this.bundleOf(a);
+      for (let i = bundle.length - 1; i >= 0; i--) if (!bundle[i].inventory) return bundle[i];
+      return null;
+    }
+    return a.inventory ? null : a;
+  }
+
+  /**
+   * Block `a` consumes block `b`: `b` shrinks away as it drifts toward `a` (vanish), the
+   * sound `sound` plays ('blockConsumed' event; the engine plays it), and `b`'s type goes
+   * into an inventory slot (freeSlotFor). With `instant`, `b` is removed at once instead of
+   * animating (when something is about to take its cell). Returns false (and does nothing)
+   * if there is no free slot, or `b` is gone or already vanishing.
+   */
+  consume(a, b, sound, { instant = false } = {}) {
+    if (!a || !b || b.vanishing || this.blocks.get(cellKey(b.x, b.y, b.z)) !== b) return false;
+    const slot = this.freeSlotFor(a);
+    if (!slot) return false;
+    slot.inventory = b.type;
+    if (instant) this.remove(b.x, b.y, b.z);
+    else this.vanish(b, a, { toward: true });
+    this.emit('blockConsumed', { by: a, block: b, sound, slot });
+    return true;
+  }
+
+  /**
+   * BlockBundle `bundle` (e.g. bundleOf(creature), or a falling group) blows block `b` away:
+   * `b` shrinks to nothing while drifting away from the bundle's block nearest to it
+   * (vanish), then is dropped from the board; the sound `sound` plays ('blockBlown' event; the
+   * engine plays it). Like consume, but nothing is kept. Returns false if `b` is gone or
+   * already vanishing.
+   */
+  blow(bundle, b, sound) {
+    if (!b || b.vanishing || this.blocks.get(cellKey(b.x, b.y, b.z)) !== b || !bundle.length) return false;
+    let from = bundle[0], best = Infinity;
+    for (const a of bundle) {
+      const d = (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
+      if (d < best) {
+        best = d;
+        from = a;
+      }
+    }
+    if (!this.vanish(b, from)) return false;
+    this.emit('blockBlown', { by: from, block: b, sound });
+    return true;
   }
 
   /** Where block `b` is drawn right now (mid-slide while it is moving), in cm. */
@@ -329,22 +396,22 @@ export class World {
     _m.makeTranslation(x, y, z);
     this.mesh.setMatrixAt(index, _m);
     this.mesh.setColorAt(index, _c.set(BLOCK_COLORS[type]));
-    this.geometry.getAttribute('blockStyle').setXYZW(index, STYLE_BY_TYPE[type] ?? BLOCK_STYLE.plain, Math.random() * 40, 0, 0);
-    if (TRANSLUCENT_TYPES.has(type)) this._refreshTranslucentAround(x, y, z);
+    this.geometry.getAttribute('blockStyle').setXYZW(index, blockProps(type).style, Math.random() * 40, 0, 0);
+    if (isTranslucent(type)) this._refreshTranslucentAround(x, y, z);
     this._refreshAOAround(x, y, z);
     this.mesh.count = this.blocks.size;
     this._dirty();
     if (type === BLOCK.CRAWLY) {
-      b.behavior = DEFAULT_CRAWLY_BEHAVIOR;
-      b.sightRadius = CRAWLY_SIGHT_RADIUS;
+      b.behavior = blockProps(b.type).defaultBehavior;
+      b.sightRadius = blockProps(b.type).sightRadius;
       this.crawlies.add(b);
       orientCrawly(this, b);
       this.eyes.track(b, 0);
     }
     if (type === BLOCK.SQUIRMY) {
       b.born = this._born++;
-      b.behavior = DEFAULT_CRAWLY_BEHAVIOR; // Wander (the head's behavior drives the whole Squirmy)
-      b.sightRadius = SQUIRMY_SIGHT_RADIUS; // used while this block is the head
+      b.behavior = blockProps(b.type).defaultBehavior; // Wander (the head's behavior drives the whole Squirmy)
+      b.sightRadius = blockProps(b.type).sightRadius; // used while this block is the head
       this.squirmyBlocks.add(b);
       this.refreshSquirmies();
     }
@@ -380,7 +447,7 @@ export class World {
       this.refreshSquirmies();
     }
     this.mesh.count = this.blocks.size;
-    if (TRANSLUCENT_TYPES.has(b.type)) this._refreshTranslucentAround(x, y, z);
+    if (isTranslucent(b.type)) this._refreshTranslucentAround(x, y, z);
     this._refreshAOAround(x, y, z);
     this._dirty();
     this._reorientAround(x, y, z);
@@ -398,7 +465,7 @@ export class World {
     b.type = type;
     this.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[type]));
     const style = this.geometry.getAttribute('blockStyle');
-    style.setX(b.index, STYLE_BY_TYPE[type] ?? BLOCK_STYLE.plain);
+    style.setX(b.index, blockProps(type).style);
     style.setZ(b.index, 0);
     if (old === BLOCK.SQUIRMY) {
       this.squirmyBlocks.delete(b);
@@ -407,8 +474,8 @@ export class World {
       this.refreshSquirmies();
     } else if (type === BLOCK.SQUIRMY) {
       b.born = this._born++;
-      b.behavior = DEFAULT_CRAWLY_BEHAVIOR;
-      b.sightRadius = SQUIRMY_SIGHT_RADIUS;
+      b.behavior = blockProps(b.type).defaultBehavior;
+      b.sightRadius = blockProps(b.type).sightRadius;
       this.squirmyBlocks.add(b);
       this.refreshSquirmies();
     }
@@ -416,13 +483,13 @@ export class World {
       this.crawlies.delete(b);
       this.eyes.untrack(b);
     } else if (type === BLOCK.CRAWLY) {
-      b.behavior = DEFAULT_CRAWLY_BEHAVIOR;
-      b.sightRadius = CRAWLY_SIGHT_RADIUS;
+      b.behavior = blockProps(b.type).defaultBehavior;
+      b.sightRadius = blockProps(b.type).sightRadius;
       this.crawlies.add(b);
       orientCrawly(this, b);
       this.eyes.track(b, 0);
     }
-    if (TRANSLUCENT_TYPES.has(old) || TRANSLUCENT_TYPES.has(type)) {
+    if (isTranslucent(old) || isTranslucent(type)) {
       this._refreshTranslucentAround(b.x, b.y, b.z);
       this._refreshAOAround(b.x, b.y, b.z); // see-through blocks don't occlude, others do
     }
@@ -457,7 +524,7 @@ export class World {
     }
     this._reorientAround(fromPos.x, fromPos.y, fromPos.z);
     this._reorientAround(to.x, to.y, to.z);
-    if (TRANSLUCENT_TYPES.has(b.type)) {
+    if (isTranslucent(b.type)) {
       this._refreshTranslucentAround(fromPos.x, fromPos.y, fromPos.z);
       this._refreshTranslucentAround(to.x, to.y, to.z);
     }
@@ -472,7 +539,7 @@ export class World {
     this.materials.uniforms.uTime.value = now / 1000;
     const p = new THREE.Vector3();
     this.eyes.update(now, (c, out) => this.renderedPosition(c, now, out));
-    if (!this.anims.size && !this.vanishing.size) return;
+    if (!this.anims.size && !this.vanishing.size && !this.appearing.size) return;
     for (const [k, a] of this.anims) {
       const b = this.blocks.get(k);
       if (!b) {
@@ -484,6 +551,7 @@ export class World {
       if (now - a.t0 >= a.dur) this.anims.delete(k);
     }
     this._updateVanishing(now);
+    this._updateAppearing(now);
     this._dirty();
   }
 
@@ -500,10 +568,82 @@ export class World {
     const dir = new THREE.Vector3(b.x - other.x, b.y - other.y, b.z - other.z);
     if (dir.lengthSq() < 1e-9) dir.set(0, 1, 0);
     dir.normalize().multiplyScalar(toward ? -distanceCm : distanceCm);
-    if (TRANSLUCENT_TYPES.has(b.type)) this._refreshTranslucentAround(b.x, b.y, b.z);
+    if (isTranslucent(b.type)) this._refreshTranslucentAround(b.x, b.y, b.z);
     this.anims.delete(cellKey(b.x, b.y, b.z)); // the vanish animation takes over its matrix
     this.vanishing.set(b, { from: new THREE.Vector3(b.x, b.y, b.z), dir, t0: performance.now(), dur: durationS * 1000 });
     return true;
+  }
+
+  /**
+   * Plays an "arriving" animation on block `b` (already in the world, in its cell): over
+   * `durationS` it moves from point `from` (cm) into its cell while growing from nothing to
+   * full size. The reverse of vanish.
+   */
+  appear(b, from, { durationS = this.stepSeconds } = {}) {
+    this.anims.delete(cellKey(b.x, b.y, b.z));
+    this.appearing.set(b, { from: new THREE.Vector3(from.x, from.y, from.z), t0: performance.now(), dur: durationS * 1000 });
+    this._updateAppearing(performance.now()); // start at size 0, not full size for a frame
+  }
+
+  _updateAppearing(now) {
+    const pos = new THREE.Vector3(), scale = new THREE.Vector3(), noRot = new THREE.Quaternion();
+    for (const [b, a] of this.appearing) {
+      if (this.blocks.get(cellKey(b.x, b.y, b.z)) !== b || this.anims.has(cellKey(b.x, b.y, b.z))) {
+        this.appearing.delete(b); // removed, or moved on (a slide takes over its matrix)
+        continue;
+      }
+      const t = Math.min(1, (now - a.t0) / a.dur);
+      const e = t * t * (3 - 2 * t); // smoothstep ease in/out
+      pos.set(b.x, b.y, b.z).sub(a.from).multiplyScalar(e).add(a.from);
+      scale.setScalar(Math.max(e, 1e-4));
+      this.mesh.setMatrixAt(b.index, _m.compose(pos, noRot, scale));
+      if (t >= 1) this.appearing.delete(b);
+    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /**
+   * BlockBundle `bundle` (ordered head .. tail, e.g. World.bundleOf) excretes the item in its
+   * tail's inventory slot: a block of that type is created in an empty cell next to the tail,
+   * preferably directly behind it (continuing the line from the segment before the tail, or,
+   * for a one-block creature, opposite its front), the slot is emptied, the remaining items
+   * move along the queue toward the tail (packed at the tail end, order kept), and the new
+   * block grows in from the tail to its cell (appear) while the sound `sound` plays
+   * ('blockExcreted' event; the engine plays it). Returns the new block, or null if the tail's
+   * slot is empty or it has no empty neighbouring cell.
+   */
+  excrete(bundle, sound) {
+    const tail = bundle[bundle.length - 1];
+    if (!tail?.inventory) return null;
+    // "behind": away from the segment before the tail, or opposite a lone creature's front
+    const prev = bundle[bundle.length - 2];
+    const behind = prev
+      ? new THREE.Vector3(tail.x - prev.x, tail.y - prev.y, tail.z - prev.z)
+      : tail.front ? new THREE.Vector3(...tail.front).negate() : new THREE.Vector3();
+    let cell = null, best = -Infinity;
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const x = tail.x + dx, y = tail.y + dy, z = tail.z + dz;
+      if (this.blocks.has(cellKey(x, y, z))) continue;
+      const score = behind.lengthSq() ? behind.dot(new THREE.Vector3(dx, dy, dz).normalize()) : Math.random();
+      if (score > best) {
+        best = score;
+        cell = { x, y, z };
+      }
+    }
+    if (!cell) return null;
+    const type = tail.inventory;
+    tail.inventory = null;
+    // the rest of the items move along the queue toward the tail
+    const items = bundle.map((b) => b.inventory).filter(Boolean);
+    bundle.forEach((b, i) => (b.inventory = items[i - (bundle.length - items.length)] ?? null));
+    if (!this.add(cell.x, cell.y, cell.z, type)) {
+      tail.inventory = type; // couldn't place it after all: undo (the queue keeps its new order)
+      return null;
+    }
+    const made = this.get(cell.x, cell.y, cell.z);
+    this.appear(made, tail);
+    this.emit('blockExcreted', { by: tail, block: made, sound });
+    return made;
   }
 
   _updateVanishing(now) {
@@ -536,6 +676,7 @@ export class World {
     this.eyes.clear();
     this.anims.clear();
     this.vanishing.clear();
+    this.appearing.clear();
     this.blocks.clear();
     this.keysByIndex.length = 0;
     this.mesh.count = 0;
@@ -712,18 +853,25 @@ export class World {
       version: 1,
       units: 'cm',
       savedAt: new Date().toISOString(),
-      blocks: [...this.blocks.values()].filter((b) => !b.vanishing).map(({ x, y, z, type, front, behavior, heldBehavior, walkTarget, trappedTurns, born }) =>
-        type === BLOCK.SQUIRMY
-          ? { x, y, z, type, born, behavior: heldBehavior && behavior === 'wait' ? heldBehavior : behavior, ...(front && { front }) }
-          : (type === BLOCK.CRAWLY
-            ? {
-              // a selected Crawly is only waiting because it is selected: save what it will resume
-              x, y, z, type, ...(front && { front }), behavior: heldBehavior && behavior === 'wait' ? heldBehavior : behavior,
-              ...(walkTarget && { walkTarget: { ...walkTarget } }),
-              ...(trappedTurns && { trappedTurns }),
-            }
-            : { x, y, z, type })),
+      blocks: [...this.blocks.values()]
+        .filter((b) => !b.vanishing)
+        .map((b) => ({ ...this._saveBlock(b), ...(b.inventory && { inventory: b.inventory }) })),
     };
+  }
+
+  /** One block's saved fields (creatures also save facing, behavior, and so on). */
+  _saveBlock({ x, y, z, type, front, behavior, heldBehavior, walkTarget, trappedTurns, born }) {
+    // a selected creature is only waiting because it is selected: save what it will resume
+    const saved = heldBehavior && behavior === 'wait' ? heldBehavior : behavior;
+    if (type === BLOCK.SQUIRMY) return { x, y, z, type, born, behavior: saved, ...(front && { front }) };
+    if (type === BLOCK.CRAWLY) {
+      return {
+        x, y, z, type, ...(front && { front }), behavior: saved,
+        ...(walkTarget && { walkTarget: { ...walkTarget } }),
+        ...(trappedTurns && { trappedTurns }),
+      };
+    }
+    return { x, y, z, type };
   }
 
   /** Clears the scene and loads blocks. Returns { loaded, skipped }. */
@@ -742,17 +890,18 @@ export class World {
         if (type === BLOCK.CRAWLY && dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) {
           this.get(x, y, z).front = dir;
         }
-        if (type === BLOCK.CRAWLY && isCrawlyBehavior(b.behavior)) this.get(x, y, z).behavior = b.behavior;
+        if (type === BLOCK.CRAWLY && canBehave(type, b.behavior)) this.get(x, y, z).behavior = b.behavior;
         const wt = b.walkTarget;
         if (type === BLOCK.CRAWLY && wt && isValidCell(Number(wt.x), Number(wt.y), Number(wt.z))) {
           this.get(x, y, z).walkTarget = { x: Number(wt.x), y: Number(wt.y), z: Number(wt.z) };
         }
         if (type === BLOCK.CRAWLY && Number(b.trappedTurns) > 0) this.get(x, y, z).trappedTurns = Number(b.trappedTurns);
+        if (BLOCK_COLORS[b.inventory]) this.get(x, y, z).inventory = b.inventory;
         if (type === BLOCK.SQUIRMY) {
           // keep the saved order (head .. tail), behavior and facing
           const s = this.get(x, y, z);
           if (Number.isFinite(Number(b.born))) s.born = Number(b.born);
-          if (isCrawlyBehavior(b.behavior)) s.behavior = b.behavior;
+          if (canBehave(type, b.behavior)) s.behavior = b.behavior;
           if (dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) s.front = dir;
         }
       } else skipped++;

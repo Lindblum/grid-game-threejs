@@ -17,6 +17,9 @@ export function displayName(fileName) {
 
 export const GAME_TITLE = 'Grid Game';
 
+/** Options → Speed: turns per minute, in steps of 12. A turn lasts 60 / speed seconds. */
+export const SPEED = Object.freeze({ min: 12, max: 240, step: 12, default: 60 });
+
 /** Options → Background: passthrough (see-through in XR) or a solid colour. */
 function background(state) {
   const on = state.passthrough;
@@ -64,7 +67,7 @@ export function menuModel(state) {
           id: 'speed',
           label: `Speed: ${state.speed} turns/min`,
           icon: 'speed',
-          slider: { min: 12, max: 120, step: 1, value: state.speed }, // drawn as a slider, not a button
+          slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
         },
         { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff' },
         { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug' },
