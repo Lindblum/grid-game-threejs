@@ -130,8 +130,8 @@ for (const t of BLOCK_TYPES) {
  *   name   display name (debug panel)
  *   diet   extra block types a creature can eat while it has the buff
  *   priorityDiet  extra foods it goes for on its own when it sees one (see priorityDietOf)
- *   color  the block is drawn in this colour while it has the buff (a creature's shell turns
- *          it, metallic)
+ *   color  while it has the buff, glowing ripples in this colour pulse over a creature's
+ *          shell (it keeps its own colour underneath)
  *   fly    it can stand in / move through any empty cell (no floor needed), and doesn't fall
  */
 export const BUFF_TYPES = Object.freeze({

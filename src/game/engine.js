@@ -1674,7 +1674,7 @@ export class Engine {
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
       const playing = this.state.screen === 'playing';
-      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel());
+      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel(), { procedural: this.state.proceduralMaterials, smooth: this.state.smoothRendering });
       this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime), Engine.formatDiameter(this.state.blockCount));
       this.rightHud.mesh.visible = playing;
       this.leftHud.mesh.visible = playing;

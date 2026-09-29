@@ -94,7 +94,7 @@ empty slot of their BlockBundle (a tree, or a Squirmy's chain), other blocks kee
 own. Crawlies eat Berries; Squirmies eat Berries, Dirt and Water. Blocks can carry buffs, limited
 by turns (counted down every turn) and/or charges (one used each time the creature eats one of
 the buff's priority foods); with neither, a buff is permanent, and it wears off when either runs
-out. A Crawly that eats a Berry becomes a gold **Rockbiter** with 5 charges: able to eat Stone
+out. A Crawly that eats a Berry becomes a **Rockbiter** (pulsing gold ripples glow over its shell) with 5 charges: able to eat Stone
 and Crystal too, it goes after any Crystal it sees, and each Crystal it eats uses a charge.
 **Flight** (a buff) makes any empty cell a floor to it, and it doesn't fall. A creature left to itself (not given
 a behavior by the player: selecting it, sending it, or Y / X) with a free slot goes for any

@@ -412,13 +412,13 @@ export class World {
   }
 
   /**
-   * A block's colour: a buff's colour while it has one (e.g. Rockbiter's gold), otherwise its
-   * type's. The shader's tint flag (blockStyle.z, unused by opaque blocks otherwise) turns a
-   * creature's shell to that colour.
+   * A block's look with its buffs: it keeps its type's colour; while it has a buff with a
+   * colour (e.g. Rockbiter's gold), the shader's tint flag (blockStyle.z, unused by opaque
+   * blocks otherwise) adds pulsing glowing ripples in that colour over a creature's shell.
    */
   _refreshLook(b) {
     const tint = b.buffs?.map((x) => BUFF_TYPES[x.type]).find((x) => x?.color);
-    this.mesh.setColorAt(b.index, _c.set(tint?.color ?? BLOCK_COLORS[b.type]));
+    this.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[b.type]));
     if (!isTranslucent(b.type)) this.geometry.getAttribute('blockStyle').setZ(b.index, tint ? 1 : 0);
     this._dirty();
     this._changed();

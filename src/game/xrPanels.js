@@ -112,8 +112,9 @@ export class RightHudPanel extends CanvasPanel {
     this._last = '';
   }
 
-  draw(toolIndex, message, label = TOOLS[toolIndex].label) {
-    const sig = `${toolIndex}|${message || ''}|${label}`;
+  /** `style`: the icons' look ({ procedural, smooth }, see drawToolIcon). */
+  draw(toolIndex, message, label = TOOLS[toolIndex].label, style = {}) {
+    const sig = `${toolIndex}|${message || ''}|${label}|${!!style.procedural}|${!!style.smooth}`;
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
@@ -135,7 +136,7 @@ export class RightHudPanel extends CanvasPanel {
       roundRect(ctx, x, SLOT_Y, SLOT, SLOT, 16);
       ctx.fillStyle = i === toolIndex ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
       ctx.fill();
-      drawToolIcon(ctx, t, x + SLOT / 2, SLOT_Y + SLOT / 2, SLOT * 0.78);
+      drawToolIcon(ctx, t, x + SLOT / 2, SLOT_Y + SLOT / 2, SLOT * 0.78, style);
       if (i === toolIndex) {
         roundRect(ctx, x - 3, SLOT_Y - 3, SLOT + 6, SLOT + 6, 18);
         ctx.strokeStyle = '#ffffff';

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { truncatedOctahedronFaces } from './geometry.js';
 import { BLOCK, BLOCK_COLORS, TOOL } from './tools.js';
+import { renderedBlockIcon } from './iconRenderer.js';
 
 const FACES = truncatedOctahedronFaces();
 const ROT = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(0.42, -0.62, 0, 'XYZ'));
@@ -37,6 +38,8 @@ export function drawBlockIcon(ctx, cx, cy, size, color, { alpha = 1, stroke = 'r
   }
   ctx.restore();
 }
+
+
 
 /**
  * Crawly icon: the block with an iridescent beetle shell (each face a different hue from
@@ -162,7 +165,20 @@ export function drawSelectIcon(ctx, cx, cy, size) {
 /** Colour of the Select tool's wireframes (selected Crawly, target cell). */
 export const SELECT_GREEN = '#3ddc5a';
 
-export function drawToolIcon(ctx, tool, cx, cy, size) {
+/**
+ * Draws tool `tool`'s icon. Blocks and creatures are rendered by the engine (iconRenderer.js)
+ * the way they look in game, in `style` ({ procedural, smooth }: Options → Materials:
+ * Procedural, Options → Rendering: Smooth); the drawn icons below are the fallback when that
+ * isn't possible, and Void (never drawn in game) keeps its wireframe.
+ */
+export function drawToolIcon(ctx, tool, cx, cy, size, style = {}) {
+  if (tool.block && tool.block !== BLOCK.VOID) {
+    const icon = renderedBlockIcon(tool.block, style);
+    if (icon) {
+      ctx.drawImage(icon, cx - size / 2, cy - size / 2, size, size);
+      return;
+    }
+  }
   if (tool.block === BLOCK.CRAWLY) drawCrawlyIcon(ctx, cx, cy, size);
   else if (tool.block === BLOCK.BUZZY) drawBuzzyIcon(ctx, cx, cy, size);
   else if (tool.block === BLOCK.SQUIRMY) drawSquirmyIcon(ctx, cx, cy, size);
@@ -173,13 +189,13 @@ export function drawToolIcon(ctx, tool, cx, cy, size) {
 }
 
 const cache = new Map();
-/** PNG data URL of a tool icon (for the DOM HUD). */
-export function toolIconURL(tool, size = 96) {
-  const k = `${tool.id}:${size}`;
+/** PNG data URL of a tool icon (for the DOM HUD), in `style` (see drawToolIcon). */
+export function toolIconURL(tool, size = 96, style = {}) {
+  const k = `${tool.id}:${size}:${style.procedural ? 'p' : 's'}${style.smooth ? 'r' : 'b'}`;
   if (!cache.has(k)) {
     const cv = document.createElement('canvas');
     cv.width = cv.height = size;
-    drawToolIcon(cv.getContext('2d'), tool, size / 2, size / 2, size * 0.9);
+    drawToolIcon(cv.getContext('2d'), tool, size / 2, size / 2, size * 0.9, style);
     cache.set(k, cv.toDataURL());
   }
   return cache.get(k);

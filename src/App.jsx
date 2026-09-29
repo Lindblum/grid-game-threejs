@@ -141,7 +141,7 @@ function Hud({ engine, s }) {
               title={`${t.label} (${(i + 1) % 10})`}
               onClick={blurThen(() => engine.selectTool(i))}
             >
-              <img src={toolIconURL(t)} alt={t.label} draggable={false} />
+              <img src={toolIconURL(t, 96, { procedural: s.proceduralMaterials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
             </button>
           ))}
         </div>

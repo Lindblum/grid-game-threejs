@@ -526,8 +526,32 @@ export function stepNimbus(world, turn) {
 export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY, BLOCK.CRYSTAL]);
 /** A tree (connected Wood group) needs at least this many Wood blocks to grow Berries. */
 export const BERRY_MIN_TREE_SIZE = 5;
-/** Chance that a big-enough tree grows a Berry instead of Wood when watered. */
+/** Chance that a big-enough tree with no Berries yet grows a Berry instead of Wood when watered. */
 export const BERRY_CHANCE = 0.4;
+/**
+ * A tree carries about one Berry per this many Wood blocks: the Berry chance falls off
+ * linearly as the Berries already on it approach that, and is 0 once it has that many.
+ */
+export const WOOD_PER_BERRY = 4;
+
+/**
+ * Chance that watered tree `tree` (its Wood blocks) grows a Berry: BERRY_CHANCE, scaled by
+ * how much room it has left for Berries (Berry blocks touching its Wood, against one per
+ * WOOD_PER_BERRY Wood), so a big tree with few Berries grows them readily and one loaded
+ * with them rarely does. 0 below BERRY_MIN_TREE_SIZE.
+ */
+export function berryChance(world, tree) {
+  if (tree.length < BERRY_MIN_TREE_SIZE) return 0;
+  const berries = new Set();
+  for (const w of tree) {
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const n = world.blocks.get(cellKey(w.x + dx, w.y + dy, w.z + dz));
+      if (n?.type === BLOCK.BERRY && !n.vanishing) berries.add(n);
+    }
+  }
+  const room = 1 - berries.size / (tree.length / WOOD_PER_BERRY);
+  return BERRY_CHANCE * Math.max(0, room);
+}
 
 /**
  * Tree growth, every turn. Wood blocks are bucketed into connected Wood groups (trees).
@@ -536,7 +560,8 @@ export const BERRY_CHANCE = 0.4;
  * origin, ties at random — and grows one block into
  * a random cell next to the tree that is empty (or is the drunk Water's cell) and touches
  * exactly one Wood and no other Solid block. The new block is Wood, or, for a tree of at
- * least BERRY_MIN_TREE_SIZE Wood, a Berry with BERRY_CHANCE. A tree with no such cell
+ * least BERRY_MIN_TREE_SIZE Wood, a Berry with berryChance (BERRY_CHANCE, lower the more
+ * Berries the tree already has for its size). A tree with no such cell
  * leaves its Water alone. Returns the number of blocks grown.
  */
 export function stepWood(world, turn) {
@@ -575,8 +600,8 @@ export function stepWood(world, turn) {
     }
     if (!cells.size) continue;
     const c = [...cells.values()][Math.floor(Math.random() * cells.size)];
-    var fruitRand = Math.random();
-    const fruit = tree.length >= BERRY_MIN_TREE_SIZE && fruitRand < BERRY_CHANCE;
+    // Berry or Wood: less likely the more Berries the tree already carries for its size
+    const fruit = Math.random() < berryChance(world, tree);
     // the Water shrinks into the Wood block drinking it and goes into the tree's inventory
     // (growing right where the Water was: it is taken at once, so the cell is free)
     const feeder = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === drink.x && w.y + dy === drink.y && w.z + dz === drink.z));

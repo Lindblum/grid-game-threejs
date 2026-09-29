@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BLOCK_STYLE, BLOCK_TYPES } from './blocks.js';
+import { BLOCK_STYLE, BLOCK_TYPES, BUFF_TYPES } from './blocks.js';
 import { PERLIN_PERIOD, VORONOI_BORDER_MAX, VORONOI_PERIOD, createNoiseTexture } from './noiseTexture.js';
 
 /**
@@ -403,6 +403,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         ${NOISE_GLSL}
         ${WATER_GLSL}
         ${BUMP_GLSL}
+        #define BUFF_GLOW vec3(${new THREE.Color(Object.values(BUFF_TYPES).find((b) => b.color).color).toArray().map((v) => v.toFixed(3)).join(', ')})
         #ifdef MERGED_BODY
         #define BODY_DIR normalize(vLocalNormal)
         #else
@@ -771,15 +772,18 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float rim = 1.0 - ndv;
           vec3 pearl = shellBase * 1.1 + (irid * 0.35 + 0.1) * rim + vec3(0.55, 0.6, 0.58) * pow(rim, 2.5);
           shell = mix(shell, pearl, isPearl);
-          // a buff's colour (e.g. Rockbiter gold) takes over the whole shell: bright, warm gold
-          // with a slow shimmer across the angle, glossy, and glowing a little yellow
-          float tint = clamp(vTint, 0.0, 1.0);
-          vec3 gold = shellBase * (1.25 + 0.2 * cos(6.2831853 * ph * 0.5));
-          shell = mix(shell, gold, tint);
           diffuseColor.rgb *= shell; // keeps the soft shading and face outlines
-          metalnessFactor = mix(mix(0.35, 0.15, isPearl), 0.5, tint); // tints highlights with the shell colour (pearl: softer)
-          roughnessFactor = mix(roughnessFactor, 0.12, tint); // polished gold
-          crystalGlow += vec3(1.0, 0.75, 0.2) * 0.3 * tint; // yellow emissive light
+          metalnessFactor = mix(0.35, 0.15, isPearl); // tints highlights with the shell colour (pearl: softer)
+          // a buff with a colour (e.g. Rockbiter gold) leaves the shell as it is and adds a layer
+          // of glowing ripples in that colour: bands that travel up over the body, warped by
+          // noise, sharpened into thin crests, the whole glow pulsing brighter and dimmer
+          float tint = clamp(vTint, 0.0, 1.0);
+          if (tint > 0.0) {
+            float wave = vLocalPos.y * 4.5 + perlin3(vNoisePos * 1.4 + vec3(0.0, uTime * 0.3, 0.0)) * 2.2;
+            float crest = pow(0.5 + 0.5 * sin(wave - uTime * 5.0), 6.0);
+            float pulse = 0.55 + 0.45 * sin(uTime * 3.2);
+            crystalGlow += BUFF_GLOW * (0.12 + 1.1 * crest) * pulse * tint;
+          }
         }
         #endif
         #ifdef TRANSLUCENT_PASS
