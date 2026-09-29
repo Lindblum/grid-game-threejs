@@ -93,14 +93,14 @@ function Hud({ engine, s }) {
       </div>
       <div className="panel hud hud-right">
         <div className="hud-label">
-          {TOOLS[s.toolIndex].label}
+          {engine.toolLabel(s)}
         </div>
         <div className="slots">
           {TOOLS.map((t, i) => (
             <button
               key={t.id}
               className={`slot${i === s.toolIndex ? ' selected' : ''}`}
-              title={`${t.label} (${i + 1})`}
+              title={`${t.label} (${(i + 1) % 10})`}
               onClick={blurThen(() => engine.selectTool(i))}
             >
               <img src={toolIconURL(t)} alt={t.label} draggable={false} />
@@ -139,10 +139,27 @@ function MenuScreen({ engine, s }) {
     }
   };
 
+  const renderItem = (it) => (
+    <button
+      key={it.id}
+      className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}
+      disabled={it.disabled}
+      onClick={blurThen(() => engine.menuAction(it.id))}
+    >
+      {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
+      <span className="label">{it.label}</span>
+      {it.sub && <span className="sub">{it.sub}</span>}
+    </button>
+  );
+  // a leading Back button goes at the very top, above the Controls table / save-name row
+  const back = model.items[0]?.id === 'back' ? model.items[0] : null;
+  const rest = (back ? model.items.slice(1) : model.items).filter((it) => !(s.menu === 'save' && it.id === 'savenew'));
+
   return (
     <div className={`screen-center${s.screen === 'playing' ? ' dim' : ''}`}>
       <div className={`panel menu-panel${s.menu === 'controls' ? ' controls-panel' : ''}`}>
         <h2>{model.title}</h2>
+        {back && <div className="menu-items menu-back">{renderItem(back)}</div>}
         {model.table && <ControlsTable />}
         {s.menu === 'save' && !s.savesError && (
           <div className="save-row">
@@ -161,22 +178,7 @@ function MenuScreen({ engine, s }) {
             </button>
           </div>
         )}
-        <div className="menu-items">
-          {model.items
-            .filter((it) => !(s.menu === 'save' && it.id === 'savenew'))
-            .map((it) => (
-              <button
-                key={it.id}
-                className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}
-                disabled={it.disabled}
-                onClick={blurThen(() => engine.menuAction(it.id))}
-              >
-                {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
-                <span className="label">{it.label}</span>
-                {it.sub && <span className="sub">{it.sub}</span>}
-              </button>
-            ))}
-        </div>
+        {rest.length > 0 && <div className="menu-items">{rest.map(renderItem)}</div>}
         {s.savesError && (s.menu === 'load' || s.menu === 'save') && (
           <div className="fallback">
             <p>The saves folder is only reachable when running with <code>npm run dev</code>. You can still use a file on this computer:</p>

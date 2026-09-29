@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-import { World } from './world.js';
-import { stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepWood } from './sim.js';
-import { BLOCK_COLORS, TOOLS } from './tools.js';
+import { STEP_SECONDS, World } from './world.js';
+import { CRAWLY_HABITAT, isWalkable, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepWood, updateBlockGroups } from './sim.js';
+import { BLOCK, BLOCK_COLORS, TOOL, TOOLS } from './tools.js';
+import { CRAWLY_BEHAVIOR } from './crawly.js';
+import { SELECT_GREEN } from './icons.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
 import { EDGE_SHADE, truncatedOctahedronFaces } from './geometry.js';
-import { playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted } from './audio.js';
+import {
+  playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
+  playBerryGrow, playCrawlySelected, playCrawlySent, playCrawlyDone, playCrawlyTrapped, playCrawlyDeath,
+} from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel } from './xrPanels.js';
 import { menuModel, displayName, PAGE_SIZE } from './menu.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
@@ -84,6 +89,7 @@ export class Engine {
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
+      selectPhase: 'select', // Select tool: 'select' (pick a Crawly) or 'target' (pick where it walks)
     };
     this._toastId = 0;
     this.mouse = null;
@@ -95,6 +101,8 @@ export class Engine {
     this._hudHover = null;
     this._xrFrames = 0;
     this._grab = null;
+    this.selected = []; // Select tool: the selected Crawlies (currently at most one)
+    this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
 
     this._initRenderer();
     this._initScene();
@@ -159,8 +167,8 @@ export class Engine {
     controls.update();
     this.controls = controls;
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x445066, 0.25));
-    const fill = new THREE.DirectionalLight(0xbfd4ff, 1);
+    scene.add(new THREE.HemisphereLight(0xffff80, 0x404080, 0.25));
+    const fill = new THREE.DirectionalLight(0xffff80, 1);
     fill.position.set(-1, -0.4, -0.6);
     scene.add(fill);
 
@@ -171,6 +179,14 @@ export class Engine {
     scene.add(root);
     this.worldRoot = root;
     this.world = new World(root);
+    // sounds for things the simulation does on its own
+    this.world.on('berryGrow', () => playBerryGrow());
+    this.world.on('crawlyArrived', () => playCrawlyDone());
+    this.world.on('crawlyTrapped', () => playCrawlyTrapped());
+    this.world.on('crawlyDied', () => {
+      playCrawlyDeath();
+      this._syncCount(); // its block is gone
+    });
 
     // Revolving light: 1 m above the origin, 1 m radius, clockwise seen from above, 1 min per turn.
     // It lives in worldRoot (cm units), so it follows the build when it is moved in XR.
@@ -187,6 +203,13 @@ export class Engine {
     this.deleteHL = makeWireframe('#ff2b2b', 0.045);
     this.deleteHL.scale.setScalar(1.05);
     root.add(this.placeHL, this.deleteHL);
+    // Select tool: green wireframes around selected Crawlies, a lighter one around a Crawly
+    // you could select, and the target-cell indicator (plus its per-turn shrinking copies)
+    this.selectHLs = [];
+    this.hoverHL = makeWireframe('#9be8a8', 0.03);
+    this.hoverHL.scale.setScalar(1.08);
+    this.targetHL = makeWireframe(SELECT_GREEN, 0.04);
+    root.add(this.hoverHL, this.targetHL);
 
     // Small origin marker so an empty world still has a reference point.
     const originDot = new THREE.Mesh(
@@ -346,8 +369,9 @@ export class Engine {
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
       this.cycleTool(-1);
-    } else if (/^[1-9]$/.test(e.key) && Number(e.key) <= TOOLS.length) {
-      this.selectTool(Number(e.key) - 1);
+    } else if (/^[0-9]$/.test(e.key)) {
+      const i = e.key === '0' ? 9 : Number(e.key) - 1; // 1–9 = tools 1–9, 0 = tool 10
+      if (i < TOOLS.length) this.selectTool(i);
     }
   }
 
@@ -388,6 +412,7 @@ export class Engine {
 
   selectTool(i) {
     if (i === this.state.toolIndex) return;
+    if (TOOLS[this.state.toolIndex].id === TOOL.SELECT) this._setSelected([]); // leaving Select drops the selection
     this.setState({ toolIndex: i });
     this._hudMessage = null;
     playTick();
@@ -396,12 +421,13 @@ export class Engine {
   useTool() {
     const tool = TOOLS[this.state.toolIndex];
     const t = this.target;
+    if (tool.id === TOOL.SELECT) return this._useSelect(t);
     if (!t) return false;
     let ok = false;
     if (tool.block && t.place && t.placeFree) {
       ok = this.world.add(t.place[0], t.place[1], t.place[2], tool.block);
       if (ok) playPlace();
-    } else if (!tool.block && t.block) {
+    } else if (tool.id === TOOL.DELETE && t.block) {
       ok = this.world.remove(t.block.x, t.block.y, t.block.z);
       if (ok) playDelete();
     }
@@ -410,6 +436,95 @@ export class Engine {
       this._pulse(0.35, 25);
     }
     return ok;
+  }
+
+  // ---------------------------------------------------------------- Select tool
+  // Two phases: 'select' (click a Crawly to select it) and 'target' (click an empty cell on
+  // a surface the Crawly can walk on: it Walks there, the selection clears, back to 'select').
+  // Clicking anything else in 'target' (or empty space) just clears the selection.
+
+  /** HUD label for the current tool (the Select tool shows its phase). */
+  toolLabel(s = this.state) {
+    const tool = TOOLS[s.toolIndex];
+    if (tool.id !== TOOL.SELECT) return tool.label;
+    return s.selectPhase === 'target' ? 'Select: pick a target' : 'Select: pick a Crawly';
+  }
+
+  _setSelected(list) {
+    this.selected = list;
+    const phase = list.length ? 'target' : 'select';
+    if (this.state.selectPhase !== phase) this.setState({ selectPhase: phase });
+  }
+
+  /** A cell a selected Crawly can be sent to: empty, next to the pointed-at walking surface. */
+  _isSelectTarget(t) {
+    if (!t?.block || !t.place || !t.placeFree || !CRAWLY_HABITAT.has(t.block.type)) return false;
+    return this.selected.some((c) => isWalkable(this.world, ...t.place, c));
+  }
+
+  _useSelect(t) {
+    // clicking a Crawly selects it (in either phase: in 'target' it swaps the selection)
+    if (t?.block?.type === BLOCK.CRAWLY) {
+      if (this.selected.length === 1 && this.selected[0] === t.block) return false;
+      this._setSelected([t.block]);
+      playCrawlySelected();
+      return true;
+    }
+    if (!this.selected.length) return false;
+    if (!this._isSelectTarget(t)) {
+      // clicked something that is neither a Crawly nor a valid target (or empty space):
+      // drop the selection and go back to the Select phase
+      this._setSelected([]);
+      playTick();
+      return false;
+    }
+    const [x, y, z] = t.place;
+    for (const c of this.selected) {
+      c.behavior = CRAWLY_BEHAVIOR.WALK;
+      c.walkTarget = { x, y, z };
+      delete c.walkStuck;
+    }
+    this._setSelected([]);
+    playCrawlySent();
+    return true;
+  }
+
+  /** Starts a copy of the target wireframe that shrinks to nothing over one step animation. */
+  _pulseTarget() {
+    let p = this._pulses.find((q) => !q.obj.visible);
+    if (!p) {
+      p = { obj: makeWireframe(SELECT_GREEN, 0.04), t0: 0 };
+      this.worldRoot.add(p.obj);
+      this._pulses.push(p);
+    }
+    p.obj.position.copy(this.targetHL.position);
+    p.obj.scale.setScalar(1);
+    p.obj.visible = true;
+    p.t0 = performance.now();
+  }
+
+  /** Per frame: selection wireframes follow their (possibly sliding) Crawlies; pulses shrink. */
+  _updateSelectionVisuals(now) {
+    // a selected Crawly that was deleted, or changed type, drops out of the selection
+    const alive = this.selected.filter((c) => this.world.crawlies.has(c));
+    if (alive.length !== this.selected.length) this._setSelected(alive);
+    while (this.selectHLs.length < this.selected.length) {
+      const hl = makeWireframe(SELECT_GREEN, 0.05);
+      hl.scale.setScalar(1.1);
+      this.worldRoot.add(hl);
+      this.selectHLs.push(hl);
+    }
+    this.selectHLs.forEach((hl, i) => {
+      const c = this.selected[i];
+      hl.visible = !!c;
+      if (c) this.world.renderedPosition(c, now, hl.position);
+    });
+    for (const p of this._pulses) {
+      if (!p.obj.visible) continue;
+      const k = (now - p.t0) / (STEP_SECONDS * 1000);
+      if (k >= 1) p.obj.visible = false;
+      else p.obj.scale.setScalar(1 - k);
+    }
   }
 
   /** Formats seconds as HH:mm:ss. */
@@ -445,6 +560,8 @@ export class Engine {
     stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
     stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss…
     stepRain(this.world, turn); // …and every 10th turn a raindrop appears 1 m out
+    updateBlockGroups(this.world); // finally, bucket non-creature blocks into same-type groups
+    if (this.targetHL.visible) this._pulseTarget(); // Select tool: a turn tick on the pointed-at target
   }
 
   newScene() {
@@ -603,6 +720,8 @@ export class Engine {
     this.menuPanel.mesh.visible = false;
     this.rayDot.visible = false;
     this._grab = null;
+    this.selected = []; // Select tool: the selected Crawlies (currently at most one)
+    this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
     if (this._savedView) {
       this.camera.position.copy(this._savedView.pos);
       this.camera.quaternion.identity();
@@ -625,6 +744,8 @@ export class Engine {
     const r = this.worldRoot;
     if (!held.length) {
       this._grab = null;
+      this.selected = []; // Select tool: the selected Crawlies (currently at most one)
+      this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
       return;
     }
     const base = { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x };
@@ -677,6 +798,8 @@ export class Engine {
   _resetPlayerView() {
     if (this.renderer.xr.isPresenting) {
       this._grab = null;
+      this.selected = []; // Select tool: the selected Crawlies (currently at most one)
+      this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
       this.worldRoot.quaternion.identity();
       this.worldRoot.scale.setScalar(CM);
       this._placeWorldInFront();
@@ -792,6 +915,8 @@ export class Engine {
   _updateTarget() {
     this.placeHL.visible = false;
     this.deleteHL.visible = false;
+    this.hoverHL.visible = false;
+    this.targetHL.visible = false;
     this.world.setDithered(null);
     this.target = null;
     const s = this.state;
@@ -891,9 +1016,17 @@ export class Engine {
     const t = this.target;
     const tool = TOOLS[this.state.toolIndex];
     // Delete target: see-through (dithered) so you can tell what's behind it
-    this.world.setDithered(t && !tool.block ? t.block : null);
+    this.world.setDithered(t && tool.id === TOOL.DELETE ? t.block : null);
     if (!t) return;
-    if (tool.block) {
+    if (tool.id === TOOL.SELECT) {
+      if (t.block?.type === BLOCK.CRAWLY && !this.selected.includes(t.block)) {
+        this.hoverHL.position.set(t.block.x, t.block.y, t.block.z); // a Crawly you could select
+        this.hoverHL.visible = true;
+      } else if (this.selected.length && this._isSelectTarget(t)) {
+        this.targetHL.position.set(...t.place);
+        this.targetHL.visible = true;
+      }
+    } else if (tool.block) {
       if (t.place && t.placeFree) {
         this.placeHL.position.set(...t.place);
         // same colour as the outlines of the block that would be placed
@@ -1011,6 +1144,7 @@ export class Engine {
     this._updateOrbitLight(now);
     this._advanceClock(dt);
     this.world.updateAnimations();
+    this._updateSelectionVisuals(now);
     const xr = this.renderer.xr.isPresenting;
     if (!xr) {
       this._pollBrowserGamepad(dt);
@@ -1027,7 +1161,7 @@ export class Engine {
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
       const playing = this.state.screen === 'playing';
-      this.rightHud.draw(this.state.toolIndex, msg);
+      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel());
       this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime));
       this.rightHud.mesh.visible = playing;
       this.leftHud.mesh.visible = playing;

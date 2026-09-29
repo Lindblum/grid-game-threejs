@@ -7,7 +7,8 @@ import { BLOCK } from './tools.js';
 export const CRAWLY_BEHAVIOR = Object.freeze({
   WANDER: 'wander', // random steps along Stone / Dirt / Moss (the default)
   WAIT: 'wait', // stays where it is
-  WALK: 'walk', // not defined yet: stays where it is for now
+  WALK: 'walk', // heads for `walkTarget` (set with the Select tool) by the shortest path
+  TRAPPED: 'trapped', // walled in on all sides: does nothing; freed by a gap, dies if it lasts too long
 });
 export const DEFAULT_CRAWLY_BEHAVIOR = CRAWLY_BEHAVIOR.WANDER;
 export const isCrawlyBehavior = (v) => Object.values(CRAWLY_BEHAVIOR).includes(v);
@@ -63,18 +64,28 @@ export function orientCrawly(world, c, moveDir = null) {
   }
 }
 
-/** Rotation taking the Crawly frame (right, up, front) to world axes. */
+/**
+ * Rotation taking the Crawly frame (right, up, forward) to world axes. Up points straight
+ * away from the floor, and forward is the front direction flattened into the floor's plane,
+ * so the eyes always sit level with (parallel to) the floor surface, even after a diagonal
+ * step. With no floor, up is world up.
+ */
 function frameQuaternion(c, out) {
-  _f.set(...c.front).normalize();
-  if (c.floor) _up.set(...c.floor).negate();
+  if (c.floor) _up.set(...c.floor).negate().normalize();
   else _up.set(0, 1, 0);
-  _up.addScaledVector(_f, -_up.dot(_f)); // make up perpendicular to front
-  if (_up.lengthSq() < 1e-6) {
-    // front points straight at/away from the floor: pick any perpendicular up
-    _up.set(0, 1, 0).addScaledVector(_f, -_f.y);
-    if (_up.lengthSq() < 1e-6) _up.set(1, 0, 0).addScaledVector(_f, -_f.x);
+  _f.set(...c.front).normalize();
+  _f.addScaledVector(_up, -_f.dot(_up)); // flatten front into the floor plane
+  if (_f.lengthSq() < 1e-6) {
+    // front points straight at / away from the floor: keep the last level forward, or any
+    if (c.eyeForward) {
+      _f.set(...c.eyeForward);
+      _f.addScaledVector(_up, -_f.dot(_up));
+    }
+    if (_f.lengthSq() < 1e-6) _f.set(1, 0, 0).addScaledVector(_up, -_up.x);
+    if (_f.lengthSq() < 1e-6) _f.set(0, 0, 1).addScaledVector(_up, -_up.z);
   }
-  _up.normalize();
+  _f.normalize();
+  c.eyeForward = _f.toArray();
   _right.crossVectors(_up, _f);
   return out.setFromRotationMatrix(_basis.makeBasis(_right, _up, _f));
 }
@@ -104,7 +115,7 @@ export class CrawlyEyes {
     mesh.count = 0;
     mesh.frustumCulled = false;
     mesh.name = 'crawly-eyes';
-    mesh.raycast = () => {};
+    mesh.raycast = () => { };
     this.parent.add(mesh);
     this.mesh = mesh;
   }

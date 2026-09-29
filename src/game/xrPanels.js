@@ -106,14 +106,14 @@ export class RightHudPanel extends CanvasPanel {
     this._last = '';
   }
 
-  draw(toolIndex, message) {
-    const sig = `${toolIndex}|${message || ''}`;
+  draw(toolIndex, message, label = TOOLS[toolIndex].label) {
+    const sig = `${toolIndex}|${message || ''}|${label}`;
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
     hudBackground(ctx, W, H);
-    hudLabel(ctx, message || TOOLS[toolIndex].label, W / 2, message ? '#ffd166' : '#e8ecf2');
+    hudLabel(ctx, message || label, W / 2, message ? '#ffd166' : '#e8ecf2');
 
     const total = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP;
     const x0 = (W - total) / 2;
@@ -179,9 +179,11 @@ export class MenuPanel extends CanvasPanel {
 
     this.rects = [];
     let y = 150;
-    if (model.table) y = this._drawControlsTable(ctx, W, 128, TABLE_HEAD, TABLE_ROW) + 16;
     const bx = 70, bw = W - 140, bh = 70, gap = 12;
-    for (const it of model.items) {
+    // a leading Back button goes at the very top, above the Controls table
+    const lead = model.items[0]?.id === 'back' ? 1 : 0;
+    model.items.forEach((it, i) => {
+      if (i === lead && model.table) y = this._drawControlsTable(ctx, W, y - 22, TABLE_HEAD, TABLE_ROW) + 16;
       const hover = it.id === hoverId && !it.disabled;
       roundRect(ctx, bx, y, bw, bh, 22);
       ctx.fillStyle = it.disabled
@@ -218,7 +220,8 @@ export class MenuPanel extends CanvasPanel {
       ctx.textAlign = 'center';
       if (!it.disabled) this.rects.push({ id: it.id, x: bx, y: y + offY, w: bw, h: bh });
       y += bh + gap;
-    }
+    });
+    if (model.table && lead >= model.items.length) this._drawControlsTable(ctx, W, y - 22, TABLE_HEAD, TABLE_ROW);
     ctx.restore();
     this.texture.needsUpdate = true;
   }

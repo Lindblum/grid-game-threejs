@@ -143,7 +143,9 @@ export const EDGE_SHADE = 0.725;
 export const AO_STRENGTH = 0.45;
 
 /** Values for the per-instance `blockStyle.x` attribute (surface shader to use). */
-export const BLOCK_STYLE = { plain: 0, dirt: 1, stone: 2, water: 3, moss: 4, berry: 5, crawly: 6, wood: 7 };
+export const BLOCK_STYLE = { plain: 0, dirt: 1, stone: 2, water: 3, moss: 4, berry: 5, crawly: 6, wood: 7, crystal: 8 };
+/** Styles drawn by the translucent pass (the rest are opaque). */
+export const TRANSLUCENT_STYLES = [BLOCK_STYLE.water, BLOCK_STYLE.crystal];
 
 // Noise lookups from the pre-baked 3D texture (see noiseTexture.js): one texture fetch
 // each instead of evaluating Perlin (8 gradient hashes) or Voronoi (27 cells) per pixel.
@@ -161,8 +163,16 @@ float perlinFbm(vec3 p) {
 // 3D Voronoi: x = distance to the border between the two nearest cells,
 // y = random value in [0, 1) for the nearest cell; one cell per unit of p
 vec2 voronoi3(vec3 p) {
-  vec2 v = texture(uNoiseTex, p * ${(1 / VORONOI_PERIOD).toFixed(6)}).gb;
-  return vec2(v.x * ${VORONOI_BORDER_MAX.toFixed(4)}, v.y);
+  vec4 t = texture(uNoiseTex, p * ${(1 / VORONOI_PERIOD).toFixed(6)});
+  float border = t.g + t.a / 255.0; // 16-bit border distance: high byte in G, low byte in A
+  return vec2(border * ${VORONOI_BORDER_MAX.toFixed(4)}, t.b);
+}
+// Box-filtered coverage of a line of half-width w around a Voronoi border, for a pixel whose
+// footprint spans ±pw in border-distance units: smooth edges up close, and a line thinner
+// than a pixel fades out instead of flickering.
+float lineCoverage(float d, float w, float pw) {
+  pw = max(pw, 1e-4);
+  return max(0.0, min(d + pw, w) - max(d - pw, -w)) / (2.0 * pw);
 }
 // arithmetic hash (no sin), three values in [0, 1) — Dave Hoskins' hash33
 vec3 cellHash(vec3 p) {
@@ -199,8 +209,9 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
 `;
 
 /**
- * The two block materials: `opaque` (every style except water) and `water`
- * (translucent, drawn by a second InstancedMesh that shares the same instance buffers).
+ * The two block materials: `opaque` (every style except the translucent ones) and
+ * `translucent` (Water and Crystal, drawn by a second InstancedMesh that shares the same
+ * instance buffers).
  * Each material's vertex shader collapses the instances that belong to the other pass.
  * Both have per-instance colour and soft face outlines.
  * `uniforms.uDitherIndex.value` = instance index to draw 50 % see-through with a
@@ -209,14 +220,16 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * Instances whose `blockStyle.x` is BLOCK_STYLE.dirt (Perlin noise), BLOCK_STYLE.stone
  * (Perlin-warped Voronoi slabs), BLOCK_STYLE.water (wavy, animated, translucent) or
  * BLOCK_STYLE.moss (Voronoi cushions over soil), BLOCK_STYLE.berry (2D strawberry
- * seed pattern in each face's plane) or BLOCK_STYLE.crawly (2D iridescent beetle shell), BLOCK_STYLE.wood (3D growth rings)
+ * seed pattern in each face's plane), BLOCK_STYLE.crawly (2D iridescent beetle shell), BLOCK_STYLE.wood
+ * (3D growth rings) or BLOCK_STYLE.crystal (faceted, glowing, translucent magenta gem)
  * get a procedural surface tinted by the instance colour; `blockStyle.y` seeds the pattern.
- * `blockStyle.z` = bit mask of faces (bit i = FACE_DIRS[i]) that touch another water
- * block; the water pass skips those faces so touching water looks like one body.
- * `blockStyle.w` = bit mask of neighbours (bit i = FACE_DIRS[i]) holding a non-Water block,
+ * `blockStyle.z` = bit mask of faces (bit i = FACE_DIRS[i]) that touch another block of the
+ * same translucent type; the translucent pass skips those faces so touching Water (or
+ * Crystal) looks like one body.
+ * `blockStyle.w` = bit mask of neighbours (bit i = FACE_DIRS[i]) holding an opaque block,
  * for ambient occlusion (`uniforms.uAO.value` 1 = on, 0 = off).
  * `setProcedural(false)` switches both materials to plain instance colours (plus outlines
- * and water translucency): the procedural code is compiled out, for slower GPUs.
+ * and Water / Crystal translucency): the procedural code is compiled out, for slower GPUs.
  */
 export function createBlockMaterials() {
   const uniforms = {
@@ -228,21 +241,21 @@ export function createBlockMaterials() {
   };
   const options = { procedural: true };
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
-  const water = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false });
+  const translucent = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false });
   patchBlockShader(opaque, uniforms, options, false);
-  patchBlockShader(water, uniforms, options, true);
+  patchBlockShader(translucent, uniforms, options, true);
   const setProcedural = (on) => {
     if (options.procedural === on) return;
     options.procedural = on;
-    opaque.needsUpdate = water.needsUpdate = true; // recompile with / without SOLID_MATERIALS
+    opaque.needsUpdate = translucent.needsUpdate = true; // recompile with / without SOLID_MATERIALS
   };
-  return { opaque, water, uniforms, setProcedural };
+  return { opaque, translucent, uniforms, setProcedural };
 }
 
-function patchBlockShader(mat, uniforms, options, waterPass) {
+function patchBlockShader(mat, uniforms, options, translucentPass) {
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
-    if (waterPass) shader.defines = { ...shader.defines, WATER_PASS: '' };
+    if (translucentPass) shader.defines = { ...shader.defines, TRANSLUCENT_PASS: '' };
     if (!options.procedural) shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -260,7 +273,8 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         varying vec3 vNoisePos;
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
-        varying float vSeed;`
+        varying float vSeed;
+        varying mat3 vLocalToView;`
       )
       .replace(
         '#include <begin_vertex>',
@@ -274,6 +288,11 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         vLocalNormal = normal; // block-local face normal (instances are only translated)
         vLocalPos = position;  // block-local position without the seed offset
         vSeed = blockStyle.y;
+        // block-local directions -> view space (instances are only translated; drop the cm scale)
+        {
+          mat3 m = mat3(modelViewMatrix);
+          vLocalToView = mat3(normalize(m[0]), normalize(m[1]), normalize(m[2]));
+        }
         // ambient occlusion: fraction of the 3 cells sharing this corner that are filled
         // (blockStyle.w = neighbour mask, bit i = FACE_DIRS[i]); face centres stay 0
         {
@@ -289,13 +308,13 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         '#include <project_vertex>',
         `#include <project_vertex>
         // skip instances drawn by the other pass: push every vertex past the far plane
-        bool isWater = abs(blockStyle.x - ${BLOCK_STYLE.water.toFixed(1)}) < 0.5;
-        #ifdef WATER_PASS
-        if (!isWater) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        // also skip faces shared with another water block (no inner walls, less overdraw)
+        bool isTranslucent = ${TRANSLUCENT_STYLES.map((s) => `abs(blockStyle.x - ${s.toFixed(1)}) < 0.5`).join(' || ')};
+        #ifdef TRANSLUCENT_PASS
+        if (!isTranslucent) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        // also skip faces shared with a block of the same translucent type (no inner walls, less overdraw)
         if (((int(blockStyle.z + 0.5) >> int(faceIndex + 0.5)) & 1) == 1) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #else
-        if (isWater) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        if (isTranslucent) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #endif`
       );
     shader.fragmentShader = shader.fragmentShader
@@ -309,6 +328,7 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
         varying float vSeed;
+        varying mat3 vLocalToView;
         uniform float uTime;
         uniform float uOutlines;
         uniform float uAO;
@@ -332,14 +352,41 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
         float isShell = 0.0;      // Crawly shell: its view-dependent colour is applied once the normal is known
         float shellPhase = 0.0;
         vec3 shellBase = vec3(0.0);
+        vec3 crystalGlow = vec3(0.0); // Crystal: faint inner glow, added as emission
+        vec3 facetTilt = vec3(0.0);   // Crystal: per-facet normal tilt (block-local), applied with the normal
         #if defined(SOLID_MATERIALS)
           // Options → Materials: Solid — flat instance colour only
-          #ifdef WATER_PASS
-          diffuseColor.a = 0.55;
-          surfaceRough = 0.08;
+          #ifdef TRANSLUCENT_PASS
+          diffuseColor.a = vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.8 : 0.55;
+          surfaceRough = vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)} ? 0.04 : 0.08;
           #endif
-        #elif defined(WATER_PASS)
-        {
+        #elif defined(TRANSLUCENT_PASS)
+        if (vStyle > ${(BLOCK_STYLE.crystal - 0.5).toFixed(1)}) {
+          // Crystal (magenta gem): Voronoi cells are internal facets. Each facet tilts the
+          // normal its own way so highlights break up into glints; the colour runs from a pale
+          // pink tint to a deep violet shade of the instance colour per facet, with a faint
+          // cloudiness and bright lines where facets meet, plus a little inner glow. All tints
+          // derive from the instance colour, so recolouring the block recolours the gem.
+          vec2 vor = voronoi3(vNoisePos * 1.4);
+          // Tilt each facet's normal its own way. Applied directly to the normal (see the
+          // normal section), not as a bump, so facet borders are clean edges rather than
+          // derivative spikes. The tilt is a smooth function of the cell value: the texture
+          // blends that value across a border, which then reads as a narrow bevel, not noise.
+          vec3 tilt = 0.35 * vec3(sin(vor.y * 19.0), sin(vor.y * 31.0 + 1.3), sin(vor.y * 43.0 + 2.1));
+          vec3 fn = normalize(vLocalNormal);
+          facetTilt = tilt - dot(tilt, fn) * fn; // keep the tilt within the face plane
+          float cloud = perlinFbm(vNoisePos * 2.0);
+          vec3 base = diffuseColor.rgb;
+          vec3 pale = mix(base, vec3(1.0), 0.28) * 1.1;     // lighter, slightly whitened tint
+          vec3 deep = base * vec3(0.62, 0.45, 0.8);         // deeper, cooler (violet-leaning) shade
+          vec3 col = mix(pale, deep, clamp(vor.y * 0.75 + cloud * 0.45, 0.0, 1.0));
+          float epw = length(fwidth(vNoisePos)) * 0.6 * 1.4; // pixel footprint in border-distance units
+          col += (base * 0.25 + 0.06) * lineCoverage(vor.x, 0.02, epw); // bright facet edges, antialiased
+          diffuseColor.rgb = col;
+          diffuseColor.a = mix(0.68, 0.84, vor.y);
+          surfaceRough = 0.04;
+          crystalGlow = col * 0.12;
+        } else {
           bumpH = waterHeight(vNoisePos, uTime);
           bumpStrength = 0.08;
           vec3 base = diffuseColor.rgb;
@@ -364,11 +411,16 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
           surfaceRough = 1.0;
         } else if (vStyle > 1.5 && vStyle < 2.5) {
           vec3 p = vNoisePos;
+          // pixel footprint in cm: smooth (it comes from the interpolated position, not from
+          // the texture), so the antialiasing below doesn't step from texel to texel
+          float px = length(fwidth(p)) * 0.6;
           // Perlin domain warp so the Voronoi slab borders wander like real fractures
           vec3 warp = vec3(perlin3(p * 2.3), perlin3(p * 2.3 + 5.2), perlin3(p * 2.3 + 9.7));
-          // second, higher-frequency warp octave adds small zig-zags along each fracture
+          // second, higher-frequency warp octave adds small zig-zags along each fracture; it
+          // fades out once its ~1 mm wiggles get close to pixel size, where they'd only alias
           vec3 jag = vec3(perlin3(p * 9.0 + 3.1), perlin3(p * 9.0 + 7.4), perlin3(p * 9.0 + 12.6));
-          vec2 vor = voronoi3(p * 1.7 + warp * 0.5 + jag * 0.12);
+          float jagAmt = 0.12 * (1.0 - smoothstep(0.02, 0.06, px));
+          vec2 vor = voronoi3(p * 1.7 + warp * 0.5 + jag * jagAmt);
           float cellShade = vor.y;                           // per-slab brightness
           float mottle = perlinFbm(p * 4.0);                 // mineral mottling inside slabs
           float speck = perlin3(p * 28.0);                   // fine grain
@@ -376,10 +428,12 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
           vec3 col = base * (0.78 + 0.34 * cellShade);
           col *= vec3(1.0 + 0.04 * (cellShade - 0.5), 1.0, 1.0 - 0.04 * (cellShade - 0.5)); // slight warm/cool shift
           col *= 1.0 + 0.3 * mottle + 0.12 * speck;
-          // dark cracks along the cell borders, antialiased by screen-space width
-          float cfw = max(fwidth(vor.x), 1e-4);
-          float crack = 1.0 - smoothstep(0.025 - cfw, 0.025 + cfw, vor.x);
-          float groove = 1.0 - smoothstep(0.0, 0.09, vor.x); // soft shading beside the crack
+          // dark cracks along the cell borders: box-filtered over the pixel footprint (border
+          // distance changes about 1.7x as fast as position), so edges stay smooth and cracks
+          // thinner than a pixel fade instead of breaking up
+          float pw = px * 1.7;
+          float crack = lineCoverage(vor.x, 0.025, pw);
+          float groove = 1.0 - smoothstep(0.0, 0.09 + pw, vor.x); // soft shading beside the crack
           col *= mix(1.0, 0.9, groove);
           col = mix(col, base * 0.6, crack);
           diffuseColor.rgb = max(col, 0.0);
@@ -492,6 +546,8 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
                          / max(length(dFdx(vNoisePos)) + length(dFdy(vNoisePos)), 1e-6);
           normal = heightBump(-vViewPosition, normal, bumpH, bumpStrength * cmToView);
         }
+        // Crystal facets: tilt the normal directly (block-local tilt -> view space)
+        if (dot(facetTilt, facetTilt) > 0.0) normal = normalize(normal + vLocalToView * facetTilt);
         if (isShell > 0.5) {
           // thin-film-like iridescence: the hue cycles as the viewing angle changes,
           // biased toward beetle greens, blues and violets plus the instance colour
@@ -504,15 +560,20 @@ function patchBlockShader(mat, uniforms, options, waterPass) {
           metalnessFactor = 0.35;    // tints highlights with the shell colour
         }
         #endif
-        #ifdef WATER_PASS
+        #ifdef TRANSLUCENT_PASS
         {
           // Fresnel: grazing angles reflect more and look less see-through
           float fres = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 3.0);
           diffuseColor.a = mix(diffuseColor.a, 0.9, fres);
         }
         #endif`
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        totalEmissiveRadiance += crystalGlow; // Crystal's inner glow (zero for everything else)`
       );
   };
   mat.customProgramCacheKey = () =>
-    `${waterPass ? 'grid-block-water' : 'grid-block-opaque'}-${options.procedural ? 'procedural' : 'solid'}`;
+    `${translucentPass ? 'grid-block-translucent' : 'grid-block-opaque'}-${options.procedural ? 'procedural' : 'solid'}`;
 }

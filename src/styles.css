@@ -76,6 +76,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .menu-panel { width: min(470px, 100%); padding: 24px; }
 .menu-panel h2 { margin: 0 0 16px; text-align: center; font-size: 28px; }
 .menu-items { display: flex; flex-direction: column; gap: 9px; }
+.menu-items.menu-back { margin-bottom: 12px; } /* Back sits at the top, above the rest of the panel */
 .menu-btn { display: flex; align-items: center; gap: 12px; text-align: left; font-size: 17px; }
 .menu-btn .menu-icon { width: 26px; height: 26px; flex: none; }
 .save-new-btn { display: flex; align-items: center; gap: 8px; white-space: nowrap; }

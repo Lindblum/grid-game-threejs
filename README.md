@@ -36,7 +36,7 @@ offer VR with a solid background). The grid origin appears
 |---|---|---|---|
 | Use tool (place / delete) | Left click | RT | Right trigger |
 | Aim | Mouse pointer | Crosshair at screen centre | Point the right controller |
-| Change tool | ← / → (or 1–9) | LB / RB | Right thumbstick left/right |
+| Change tool | ← / → (or 1–9, 0) | LB / RB | Right thumbstick left/right |
 | Menu | Esc or Enter, or ≡ on the Left HUD | Start | Point at ≡ on the Left HUD + trigger (or Y) |
 | Orbit / zoom / pan | Right-drag / wheel / middle-drag | Right stick / left stick ↑↓ / D-pad | Hold both grips: turn your hands to rotate, spread / pinch to scale (Tilt Brush style). Hold one grip to drag the build |
 | Menu select / back | Click / Esc | D-pad + A / B | Point + right trigger |
@@ -52,8 +52,19 @@ In XR each is docked above its own controller, tilted to face up toward you
 (position and tilt are `HUD_DOCK` in `src/game/xrPanels.js`); in the browser they sit in the
 bottom-left and bottom-right corners.
 
-Tools: Stone (gray), Dirt (brown), Berry (red), Wood (orange), Yellow, Moss (green), Water (blue),
-Crawly (magenta), and Delete.
+Tools: Select, Stone (gray), Dirt (brown), Berry (red), Wood (orange), Crystal (yellow), Moss (green),
+Water (blue), Crawly (magenta), and Delete.
+
+**Select** has two phases. *Select*: click a Crawly to select it (green wireframe).
+*Target*: point at a surface a Crawly can walk on (Stone, Dirt, Moss) and the empty cell
+beside it gets a green indicator, with a shrinking copy every turn; click it and the Crawly
+switches to the **Walk** behavior, heading there by the shortest path one step per turn,
+then goes back to **Wander**. Clicking another Crawly while targeting selects that one
+instead; clicking anything else (or empty space), or switching tools, clears the selection.
+
+**Trapped:** a Crawly walled in on all 14 sides by non-creature blocks switches to the
+Trapped behavior and does nothing. A turn with an empty neighbouring cell frees it (back to
+Wander); after 30 trapped turns it dies and its block is removed.
 
 **Turns:** the game clock (shown on the Left HUD as HH:mm:ss) counts up once per second
 while you play, and pauses while the menu is open; New and Load reset it to 00:00:00.

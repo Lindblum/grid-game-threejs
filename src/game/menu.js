@@ -27,11 +27,17 @@ function background(state) {
   };
 }
 
-/** Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent? }] } for the current menu screen. */
+const BACK = { id: 'back', label: 'Back', icon: 'back' };
+
+/**
+ * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent? }] } for the current
+ * menu screen. Every submenu lists Back first; renderers draw it at the very top of the panel
+ * (above the Controls table / save-name row).
+ */
 export function menuModel(state) {
   const { menu, saves, savesError, page } = state;
   if (menu === 'controls') {
-    return { title: 'Controls', table: true, items: [{ id: 'back', label: 'Back', icon: 'back' }] };
+    return { title: 'Controls', table: true, items: [BACK] };
   }
   if (menu === 'options') {
     const xr = state.inXR
@@ -42,6 +48,7 @@ export function menuModel(state) {
     return {
       title: 'Options',
       items: [
+        BACK,
         { id: 'sound', label: `Sound: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff' },
         background(state),
         {
@@ -53,7 +60,6 @@ export function menuModel(state) {
         { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff' },
         xr,
         { id: 'controls', label: 'Controls', icon: 'controls' },
-        { id: 'back', label: 'Back', icon: 'back' },
       ],
     };
   }
@@ -70,7 +76,7 @@ export function menuModel(state) {
     };
   }
 
-  const items = [];
+  const items = [BACK];
   if (menu === 'save') items.push({ id: 'savenew', label: 'New save file', icon: 'savenew', accent: true });
 
   if (savesError) {
@@ -95,6 +101,5 @@ export function menuModel(state) {
       items.push({ id: 'next', label: 'Next', icon: 'next', disabled: p >= pages - 1 });
     }
   }
-  items.push({ id: 'back', label: 'Back', icon: 'back' });
   return { title: menu === 'save' ? 'Save' : 'Load', items };
 }

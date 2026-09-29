@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { BLOCK, BLOCK_COLORS, RANDOM_BLOCKS } from './tools.js';
 import { NEIGHBOR_DIRS, cellKey, isValidCell } from './lattice.js';
 import { BLOCK_STYLE, FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
-import { CrawlyEyes, orientCrawly } from './crawly.js';
+import { CrawlyEyes, DEFAULT_CRAWLY_BEHAVIOR, isCrawlyBehavior, orientCrawly } from './crawly.js';
 
 /** Block types drawn with a procedural surface shader instead of flat colour. */
 const STYLE_BY_TYPE = {
@@ -13,17 +13,22 @@ const STYLE_BY_TYPE = {
   [BLOCK.BERRY]: BLOCK_STYLE.berry,
   [BLOCK.CRAWLY]: BLOCK_STYLE.crawly,
   [BLOCK.WOOD]: BLOCK_STYLE.wood,
+  [BLOCK.CRYSTAL]: BLOCK_STYLE.crystal,
 };
+/** See-through block types: drawn by the translucent pass, and they don't cast ambient occlusion. */
+const TRANSLUCENT_TYPES = new Set([BLOCK.WATER, BLOCK.CRYSTAL]);
 /** Length of every per-turn animation (block slides, eye turns): half a turn, in seconds. */
 export const STEP_SECONDS = 0.75;
 
 /** Blocks added by "New" after the gray origin block, in order. */
 export const NEW_SCENE_RECIPE = [
-  [BLOCK.STONE, 400],
-  [BLOCK.DIRT, 300],
-  [BLOCK.MOSS, 200],
+  [BLOCK.STONE, 200],
+  [BLOCK.CRYSTAL, 30],
+  [BLOCK.STONE, 300],
+  [BLOCK.DIRT, 400],
   [BLOCK.WOOD, 20],
-  [BLOCK.WATER, 30],
+  [BLOCK.MOSS, 200],
+  [BLOCK.WATER, 50],
   [BLOCK.CRAWLY, 10]
 ];
 /** Larger = flatter distribution; smaller = tighter clump around the origin (cm). */
@@ -34,7 +39,8 @@ const _c = new THREE.Color();
 
 /**
  * Stores the blocks and renders them with one InstancedMesh (used for raycasting), plus
- * a translucent water mesh that shares its instance buffers and draws only water blocks.
+ * a translucent mesh that shares its instance buffers and draws only the see-through
+ * blocks (Water, Crystal).
  * Coordinates are integer cm on the BCC lattice; the parent group scales cm -> m.
  */
 export class World {
@@ -42,16 +48,39 @@ export class World {
     this.parent = parent;
     this.geometry = createBlockGeometry();
     this.materials = createBlockMaterials();
-    this.waterMesh = null;
+    this.translucentMesh = null;
     this.blocks = new Map(); // key -> { x, y, z, type, index }
     this.keysByIndex = [];
     this.anims = new Map(); // key -> { from, to, t0, dur } for sliding blocks
     this.crawlies = new Set(); // Crawly blocks (also carry .floor and .front, see crawly.js)
     this.eyes = new CrawlyEyes(parent);
     this.turn = 0; // current game turn, set by the engine; stamped on blocks as movedTurn
+    this.listeners = new Map(); // event name -> Set of handlers (see on / emit)
+    // same-type groups of non-creature blocks, rebuilt at the end of every turn (sim.js updateBlockGroups)
+    this.blockGroups = []; // [{ type, blocks }]
+    this.groupOf = new Map(); // block -> its group
     this.capacity = 0;
     this.mesh = null;
     this._allocate(1024);
+  }
+
+  /**
+   * Game events raised by the simulation, for things outside it (sounds, effects):
+   *   'berryGrow' (berry block) — a tree grew a Berry
+   *   'crawlyArrived' (crawly)  — a walking Crawly reached its target
+   *   'crawlyTrapped' (crawly)  — a Crawly got walled in (Trapped behavior)
+   *   'crawlyFreed' (crawly)    — a Trapped Crawly found a gap (back to Wander)
+   *   'crawlyDied' ({ crawly, x, y, z }) — a Crawly died (its block is already removed)
+   * `on` returns a function that removes the handler.
+   */
+  on(name, fn) {
+    if (!this.listeners.has(name)) this.listeners.set(name, new Set());
+    this.listeners.get(name).add(fn);
+    return () => this.listeners.get(name)?.delete(fn);
+  }
+
+  emit(name, data) {
+    for (const fn of this.listeners.get(name) ?? []) fn(data);
   }
 
   /** Re-derives a Crawly's floor/front; revolves its eyes if either changed. */
@@ -79,16 +108,17 @@ export class World {
   }
 
   /**
-   * Recomputes the water face mask (blockStyle.z) of the Water block at (x, y, z), if any,
-   * and of every Water block next to it: bit i set = face i touches another Water block.
+   * Recomputes the face mask (blockStyle.z) of the translucent block (Water, Crystal) at
+   * (x, y, z), if any, and of every translucent block next to it: bit i set = face i touches
+   * a block of the same type, so that shared face is skipped (touching blocks look like one).
    */
-  _refreshWaterAround(x, y, z) {
+  _refreshTranslucentAround(x, y, z) {
     const style = this.geometry.getAttribute('blockStyle');
     const update = (b) => {
-      if (!b || b.type !== BLOCK.WATER) return;
+      if (!b || !TRANSLUCENT_TYPES.has(b.type)) return;
       let mask = 0;
       FACE_DIRS.forEach(([dx, dy, dz], i) => {
-        if (this.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz))?.type === BLOCK.WATER) mask |= 1 << i;
+        if (this.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz))?.type === b.type) mask |= 1 << i;
       });
       style.setZ(b.index, mask);
     };
@@ -99,7 +129,7 @@ export class World {
   /**
    * Recomputes the ambient-occlusion neighbour mask (blockStyle.w) of the block at
    * (x, y, z), if any, and of every block next to it: bit i set = the neighbour across
-   * face i holds a block that occludes (anything but Water, which is see-through).
+   * face i holds a block that occludes (anything but see-through Water and Crystal).
    */
   _refreshAOAround(x, y, z) {
     const style = this.geometry.getAttribute('blockStyle');
@@ -108,7 +138,7 @@ export class World {
       let mask = 0;
       FACE_DIRS.forEach(([dx, dy, dz], i) => {
         const n = this.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
-        if (n && n.type !== BLOCK.WATER) mask |= 1 << i;
+        if (n && !TRANSLUCENT_TYPES.has(n.type)) mask |= 1 << i;
       });
       style.setW(b.index, mask);
     };
@@ -133,7 +163,7 @@ export class World {
     mesh.name = 'blocks';
     // make sure the colour buffer exists
     mesh.setColorAt(0, _c.set('#ffffff'));
-    // per-instance (style, seed, water face mask, AO neighbour mask) for the block shader; lives on the shared geometry
+    // per-instance (style, seed, translucent face mask, AO neighbour mask) for the block shader; lives on the shared geometry
     const oldStyle = this.geometry.getAttribute('blockStyle');
     const style = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
     style.setUsage(THREE.DynamicDrawUsage);
@@ -150,21 +180,21 @@ export class World {
       this.parent.remove(old);
       old.dispose();
     }
-    if (this.waterMesh) {
-      this.parent.remove(this.waterMesh);
-      this.waterMesh.dispose();
+    if (this.translucentMesh) {
+      this.parent.remove(this.translucentMesh);
+      this.translucentMesh.dispose();
     }
-    // same instances, translucent water material; raycasts go through `mesh` only
-    const water = new THREE.InstancedMesh(this.geometry, this.materials.water, capacity);
-    water.instanceMatrix = mesh.instanceMatrix;
-    water.instanceColor = mesh.instanceColor;
-    water.frustumCulled = false;
-    water.name = 'water-blocks';
-    water.raycast = () => { };
+    // same instances, translucent material (Water, Crystal); raycasts go through `mesh` only
+    const translucent = new THREE.InstancedMesh(this.geometry, this.materials.translucent, capacity);
+    translucent.instanceMatrix = mesh.instanceMatrix;
+    translucent.instanceColor = mesh.instanceColor;
+    translucent.frustumCulled = false;
+    translucent.name = 'translucent-blocks';
+    translucent.raycast = () => { };
     this.parent.add(mesh);
-    this.parent.add(water);
+    this.parent.add(translucent);
     this.mesh = mesh;
-    this.waterMesh = water;
+    this.translucentMesh = translucent;
     this.capacity = capacity;
     this._dirty();
   }
@@ -173,7 +203,7 @@ export class World {
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     this.geometry.getAttribute('blockStyle').needsUpdate = true;
-    this.waterMesh.count = this.mesh.count;
+    this.translucentMesh.count = this.mesh.count;
     this.mesh.boundingSphere = null;
     this.mesh.boundingBox = null;
   }
@@ -213,11 +243,12 @@ export class World {
     this.mesh.setMatrixAt(index, _m);
     this.mesh.setColorAt(index, _c.set(BLOCK_COLORS[type]));
     this.geometry.getAttribute('blockStyle').setXYZW(index, STYLE_BY_TYPE[type] ?? BLOCK_STYLE.plain, Math.random() * 40, 0, 0);
-    if (type === BLOCK.WATER) this._refreshWaterAround(x, y, z);
+    if (TRANSLUCENT_TYPES.has(type)) this._refreshTranslucentAround(x, y, z);
     this._refreshAOAround(x, y, z);
     this.mesh.count = this.blocks.size;
     this._dirty();
     if (type === BLOCK.CRAWLY) {
+      b.behavior = DEFAULT_CRAWLY_BEHAVIOR;
       this.crawlies.add(b);
       orientCrawly(this, b);
       this.eyes.track(b, 0);
@@ -250,7 +281,7 @@ export class World {
     this.crawlies.delete(b);
     this.eyes.untrack(b);
     this.mesh.count = this.blocks.size;
-    if (b.type === BLOCK.WATER) this._refreshWaterAround(x, y, z);
+    if (TRANSLUCENT_TYPES.has(b.type)) this._refreshTranslucentAround(x, y, z);
     this._refreshAOAround(x, y, z);
     this._dirty();
     this._reorientAround(x, y, z);
@@ -259,7 +290,8 @@ export class World {
 
   /**
    * Changes a block's type in place (same cell, index and pattern seed), updating its
-   * colour, shader style, Crawly tracking, water face masks and neighbouring Crawly floors.
+   * colour, shader style, Crawly tracking, translucent face masks, ambient occlusion and
+   * neighbouring Crawly floors.
    */
   setType(b, type) {
     if (!BLOCK_COLORS[type] || b.type === type || this.blocks.get(cellKey(b.x, b.y, b.z)) !== b) return false;
@@ -273,13 +305,14 @@ export class World {
       this.crawlies.delete(b);
       this.eyes.untrack(b);
     } else if (type === BLOCK.CRAWLY) {
+      b.behavior = DEFAULT_CRAWLY_BEHAVIOR;
       this.crawlies.add(b);
       orientCrawly(this, b);
       this.eyes.track(b, 0);
     }
-    if (old === BLOCK.WATER || type === BLOCK.WATER) {
-      this._refreshWaterAround(b.x, b.y, b.z);
-      this._refreshAOAround(b.x, b.y, b.z); // Water doesn't occlude, other blocks do
+    if (TRANSLUCENT_TYPES.has(old) || TRANSLUCENT_TYPES.has(type)) {
+      this._refreshTranslucentAround(b.x, b.y, b.z);
+      this._refreshAOAround(b.x, b.y, b.z); // see-through blocks don't occlude, others do
     }
     this._dirty();
     this._reorientAround(b.x, b.y, b.z);
@@ -312,9 +345,9 @@ export class World {
     }
     this._reorientAround(fromPos.x, fromPos.y, fromPos.z);
     this._reorientAround(to.x, to.y, to.z);
-    if (b.type === BLOCK.WATER) {
-      this._refreshWaterAround(fromPos.x, fromPos.y, fromPos.z);
-      this._refreshWaterAround(to.x, to.y, to.z);
+    if (TRANSLUCENT_TYPES.has(b.type)) {
+      this._refreshTranslucentAround(fromPos.x, fromPos.y, fromPos.z);
+      this._refreshTranslucentAround(to.x, to.y, to.z);
     }
     this._refreshAOAround(fromPos.x, fromPos.y, fromPos.z);
     this._refreshAOAround(to.x, to.y, to.z);
@@ -399,8 +432,14 @@ export class World {
       version: 1,
       units: 'cm',
       savedAt: new Date().toISOString(),
-      blocks: [...this.blocks.values()].map(({ x, y, z, type, front }) =>
-        (type === BLOCK.CRAWLY && front ? { x, y, z, type, front } : { x, y, z, type })),
+      blocks: [...this.blocks.values()].map(({ x, y, z, type, front, behavior, walkTarget, trappedTurns }) =>
+      (type === BLOCK.CRAWLY
+        ? {
+          x, y, z, type, ...(front && { front }), behavior,
+          ...(walkTarget && { walkTarget: { ...walkTarget } }),
+          ...(trappedTurns && { trappedTurns }),
+        }
+        : { x, y, z, type })),
     };
   }
 
@@ -415,11 +454,17 @@ export class World {
       const type = b.type ?? b.color;
       if (this.add(x, y, z, type)) {
         loaded++;
-        // restore which way a Crawly was facing (its floor is re-derived below)
+        // restore which way a Crawly was facing (its floor is re-derived below) and its behavior
         const dir = Array.isArray(b.front) && b.front.map(Number);
         if (type === BLOCK.CRAWLY && dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) {
           this.get(x, y, z).front = dir;
         }
+        if (type === BLOCK.CRAWLY && isCrawlyBehavior(b.behavior)) this.get(x, y, z).behavior = b.behavior;
+        const wt = b.walkTarget;
+        if (type === BLOCK.CRAWLY && wt && isValidCell(Number(wt.x), Number(wt.y), Number(wt.z))) {
+          this.get(x, y, z).walkTarget = { x: Number(wt.x), y: Number(wt.y), z: Number(wt.z) };
+        }
+        if (type === BLOCK.CRAWLY && Number(b.trappedTurns) > 0) this.get(x, y, z).trappedTurns = Number(b.trappedTurns);
       } else skipped++;
     }
     this._settleCrawlies();

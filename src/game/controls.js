@@ -18,7 +18,7 @@ export const CONTROLS = [
   },
   {
     action: 'Change tool',
-    mk: { g: ['key:←', 'key:→', 'sep:/', 'key:1–9'], t: 'Left / Right arrows, or 1–9' },
+    mk: { g: ['key:←', 'key:→', 'sep:/', 'key:0–9'], t: 'Left / Right arrows, or 1–9 and 0' },
     pad: { g: ['pad:LB', 'pad:RB'], t: 'Bumpers (LB / RB)' },
     xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right' },
   },

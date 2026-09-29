@@ -3,9 +3,10 @@
 // 2) Water flows toward the origin, 3) Crawlies move, 4) trees (Wood groups) drink Water
 // and grow Wood or Berries, 5) Dirt absorbs Water and becomes Moss (both only take Water
 // that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
-// from the origin.
+// from the origin, 7) non-creature blocks are bucketed into same-type groups.
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
-import { BLOCK } from './tools.js';
+import { BLOCK, isCreature } from './tools.js';
+import { CRAWLY_BEHAVIOR, DEFAULT_CRAWLY_BEHAVIOR } from './crawly.js';
 import { STEP_SECONDS } from './world.js'; // every move animates over half a turn
 
 /** Block types (ids) a Crawly is willing to crawl next to: Stone, Dirt, Moss. */
@@ -23,9 +24,10 @@ function shuffle(a) {
 
 /**
  * Splits blocks into connected groups (blocks touching through any of the 14 faces).
- * Only blocks passing `include` are grouped, and only through each other.
+ * Only blocks passing `include` are grouped, and a block only joins through a neighbour
+ * `b` it is `linked(b, n)` to (e.g. same type); by default any two included blocks link.
  */
-export function connectedGroups(world, include = () => true) {
+export function connectedGroups(world, include = () => true, linked = () => true) {
   const seen = new Set();
   const groups = [];
   for (const start of world.blocks.values()) {
@@ -36,7 +38,7 @@ export function connectedGroups(world, include = () => true) {
       const b = group[i];
       for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
         const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
-        if (n && !seen.has(n) && include(n)) {
+        if (n && !seen.has(n) && include(n) && linked(b, n)) {
           seen.add(n);
           group.push(n);
         }
@@ -44,6 +46,24 @@ export function connectedGroups(world, include = () => true) {
     }
     groups.push(group);
   }
+  return groups;
+}
+
+/**
+ * End-of-turn bookkeeping: buckets every non-creature block into groups of connected
+ * blocks of the same type (like trees are connected Wood). Stored on the world for later
+ * rules to use:
+ *   world.blockGroups — array of { type, blocks }
+ *   world.groupOf     — Map block -> its { type, blocks } group
+ * Creatures (see CREATURE_TYPES) are left out. Returns world.blockGroups.
+ */
+export function updateBlockGroups(world) {
+  const groups = connectedGroups(world, (b) => !isCreature(b.type), (a, b) => a.type === b.type)
+    .map((blocks) => ({ type: blocks[0].type, blocks }));
+  const groupOf = new Map();
+  for (const g of groups) for (const b of g.blocks) groupOf.set(b, g);
+  world.blockGroups = groups;
+  world.groupOf = groupOf;
   return groups;
 }
 
@@ -100,7 +120,7 @@ export function stepGroups(world) {
 
 /** Rain: one Water drop every RAIN_EVERY turns, RAIN_RADIUS_CM from the origin (1 m). */
 export const RAIN_EVERY = 5;
-export const RAIN_RADIUS_CM = 100;
+export const RAIN_RADIUS_CM = 50;
 
 /** The lattice cell (all-even or all-odd coordinates) whose centre is nearest (x, y, z). */
 function nearestCell(x, y, z) {
@@ -223,7 +243,10 @@ export function stepWood(world, turn) {
     var fruitRand = Math.random();
     const fruit = tree.length >= BERRY_MIN_TREE_SIZE && fruitRand < BERRY_CHANCE;
     world.remove(drink.x, drink.y, drink.z);
-    if (world.add(c.x, c.y, c.z, fruit ? BLOCK.BERRY : BLOCK.WOOD)) grown++;
+    if (world.add(c.x, c.y, c.z, fruit ? BLOCK.BERRY : BLOCK.WOOD)) {
+      grown++;
+      if (fruit) world.emit('berryGrow', world.get(c.x, c.y, c.z));
+    }
   }
   return grown;
 }
@@ -260,29 +283,169 @@ export function stepWater(world, skip = new Set()) {
 }
 
 /**
- * Every Crawly may move to an empty adjacent cell (any of its 14 neighbours) that borders
- * at least one Stone, Dirt or Moss block. Crawlies act one at a time in random order, so two
- * Crawlies never end up in the same cell. Crawlies in `skip` (already moved this turn) sit still.
+ * True when a Crawly (`self`) could stand in cell (x, y, z): the cell is empty (or holds
+ * `self`) and touches at least one block of its habitat (Stone, Dirt, Moss).
+ */
+export function isWalkable(world, x, y, z, self = null) {
+  const here = world.blocks.get(cellKey(x, y, z));
+  if (here && here !== self) return false;
+  return NEIGHBOR_DIRS.some(([ex, ey, ez]) => {
+    const n = world.blocks.get(cellKey(x + ex, y + ey, z + ez));
+    return n && n !== self && CRAWLY_HABITAT.has(n.type);
+  });
+}
+
+/**
+ * Wander: with CRAWLY_MOVE_CHANCE the Crawly steps to a random walkable adjacent cell
+ * (any of its 14 neighbours). Returns whether it moved.
+ */
+function wander(world, c) {
+  if (Math.random() >= CRAWLY_MOVE_CHANCE) return false;
+  const options = [];
+  for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+    const x = c.x + dx, y = c.y + dy, z = c.z + dz;
+    if (isWalkable(world, x, y, z, c)) options.push({ x, y, z });
+  }
+  if (!options.length) return false;
+  const to = options[Math.floor(Math.random() * options.length)];
+  return world.move(c, to, STEP_SECONDS);
+}
+
+/** Most cells one Walk path search may visit (keeps a turn cheap in big builds). */
+const WALK_SEARCH_LIMIT = 5000;
+/** A walking Crawly that finds no path this many turns in a row gives up and Wanders. */
+export const WALK_GIVE_UP_TURNS = 5;
+
+/**
+ * First step of a shortest path (fewest steps, through walkable cells) from Crawly `c`
+ * to cell `t`, found by breadth-first search; null if there is none.
+ */
+function firstStepToward(world, c, t) {
+  if (!isWalkable(world, t.x, t.y, t.z, c)) return null;
+  const goal = cellKey(t.x, t.y, t.z);
+  const firstStep = new Map([[cellKey(c.x, c.y, c.z), null]]); // visited cell -> first step on its path
+  const queue = [{ x: c.x, y: c.y, z: c.z }];
+  for (let i = 0; i < queue.length && firstStep.size < WALK_SEARCH_LIMIT; i++) {
+    const p = queue[i];
+    const via = firstStep.get(cellKey(p.x, p.y, p.z));
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const q = { x: p.x + dx, y: p.y + dy, z: p.z + dz };
+      const k = cellKey(q.x, q.y, q.z);
+      if (firstStep.has(k) || !isWalkable(world, q.x, q.y, q.z, c)) continue;
+      const first = via ?? q; // cells next to the start are their own first step
+      if (k === goal) return first;
+      firstStep.set(k, first);
+      queue.push(q);
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk: take the next step of the shortest path to `c.walkTarget`. On arrival the Crawly
+ * goes back to Wander. If no path exists (blocked, or the target stopped being walkable)
+ * it waits, and gives up (back to Wander) after WALK_GIVE_UP_TURNS such turns in a row.
+ * Returns whether it moved.
+ */
+function walk(world, c) {
+  const t = c.walkTarget;
+  const arrived = () => t && c.x === t.x && c.y === t.y && c.z === t.z;
+  const stop = () => {
+    c.behavior = CRAWLY_BEHAVIOR.WANDER;
+    delete c.walkTarget;
+    delete c.walkStuck;
+  };
+  if (!t || arrived()) {
+    stop();
+    return false;
+  }
+  const next = firstStepToward(world, c, t);
+  if (!next) {
+    c.walkStuck = (c.walkStuck || 0) + 1;
+    if (c.walkStuck >= WALK_GIVE_UP_TURNS) stop();
+    return false;
+  }
+  c.walkStuck = 0;
+  const moved = world.move(c, next, STEP_SECONDS);
+  if (arrived()) {
+    stop();
+    world.emit('crawlyArrived', c);
+  }
+  return moved;
+}
+
+/** A Crawly trapped for this many turns in a row dies. */
+export const CRAWLY_TRAPPED_DEATH_TURNS = 15;
+
+/** Every neighbouring cell holds a non-creature block (another creature isn't a wall: it can move away). */
+function isWalledIn(world, c) {
+  return NEIGHBOR_DIRS.every(([dx, dy, dz]) => {
+    const n = world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz));
+    return n && !isCreature(n.type);
+  });
+}
+
+/**
+ * Trapped bookkeeping, at the start of a Crawly's turn. A Crawly walled in by non-creature
+ * blocks switches to Trapped (dropping any walk target; event 'crawlyTrapped'). A Trapped
+ * Crawly that has an empty neighbouring cell goes back to Wander ('crawlyFreed'); otherwise
+ * it counts the turn, and on the CRAWLY_TRAPPED_DEATH_TURNS-th trapped turn it dies: its
+ * block is removed ('crawlyDied', with its last position). Returns true when the Crawly is
+ * free to act this turn.
+ */
+function checkTrapped(world, c) {
+  if (c.behavior === CRAWLY_BEHAVIOR.TRAPPED) {
+    const hasGap = NEIGHBOR_DIRS.some(([dx, dy, dz]) => !world.blocks.has(cellKey(c.x + dx, c.y + dy, c.z + dz)));
+    if (hasGap) {
+      c.behavior = CRAWLY_BEHAVIOR.WANDER;
+      delete c.trappedTurns;
+      world.emit('crawlyFreed', c);
+      return true;
+    }
+    c.trappedTurns = (c.trappedTurns || 0) + 1;
+    if (c.trappedTurns >= CRAWLY_TRAPPED_DEATH_TURNS) {
+      const at = { x: c.x, y: c.y, z: c.z };
+      world.remove(c.x, c.y, c.z);
+      world.emit('crawlyDied', { crawly: c, ...at });
+    }
+    return false;
+  }
+  if (isWalledIn(world, c)) {
+    c.behavior = CRAWLY_BEHAVIOR.TRAPPED;
+    c.trappedTurns = 1; // this turn counts
+    delete c.walkTarget;
+    delete c.walkStuck;
+    world.emit('crawlyTrapped', c);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Each Crawly takes its turn according to its `behavior` (see CRAWLY_BEHAVIOR):
+ * Wander = random steps along its habitat, Wait = stays put, Walk = heads for its
+ * `walkTarget` along the shortest path, Trapped = nothing (see checkTrapped, which runs
+ * first for every Crawly). Crawlies act one at a time in random order, so two Crawlies
+ * never end up in the same cell. Crawlies in `skip` (already moved this turn) don't move.
  * Returns the number of Crawlies that moved.
  */
 export function stepCrawlies(world, skip = new Set()) {
-  const crawlies = shuffle([...world.blocks.values()].filter((b) => b.type === BLOCK.CRAWLY && !skip.has(b)));
+  const crawlies = shuffle([...world.blocks.values()].filter((b) => b.type === BLOCK.CRAWLY));
   let moved = 0;
   for (const c of crawlies) {
-    if (Math.random() >= CRAWLY_MOVE_CHANCE) continue;
-    const options = [];
-    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
-      const x = c.x + dx, y = c.y + dy, z = c.z + dz;
-      if (world.blocks.has(cellKey(x, y, z))) continue; // must be empty
-      const bordersHabitat = NEIGHBOR_DIRS.some(([ex, ey, ez]) => {
-        const n = world.blocks.get(cellKey(x + ex, y + ey, z + ez));
-        return n && n !== c && CRAWLY_HABITAT.has(n.type);
-      });
-      if (bordersHabitat) options.push({ x, y, z });
+    // being trapped is checked for every Crawly, even one that fell with its group this turn
+    if (!checkTrapped(world, c)) continue; // trapped (or just died): no action this turn
+    if (skip.has(c)) continue;
+    switch (c.behavior ?? DEFAULT_CRAWLY_BEHAVIOR) {
+      case CRAWLY_BEHAVIOR.WANDER:
+        if (wander(world, c)) moved++;
+        break;
+      case CRAWLY_BEHAVIOR.WAIT:
+        break; // stays where it is
+      case CRAWLY_BEHAVIOR.WALK:
+        if (walk(world, c)) moved++;
+        break;
     }
-    if (!options.length) continue;
-    const to = options[Math.floor(Math.random() * options.length)];
-    if (world.move(c, to, STEP_SECONDS)) moved++;
   }
   return moved;
 }

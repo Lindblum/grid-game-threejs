@@ -1,9 +1,10 @@
 // Pre-baked, tileable 3D noise so the block shaders sample a texture instead of
 // evaluating Perlin / Voronoi per pixel (much cheaper on mobile GPUs such as the Quest).
 //   R = Perlin noise, period PERLIN_PERIOD lattice cells per texture repeat, stored n*0.5+0.5
-//   G = Voronoi distance to the nearest cell border, period VORONOI_PERIOD cells, / VORONOI_BORDER_MAX
+//   G = Voronoi distance to the nearest cell border (period VORONOI_PERIOD cells, / VORONOI_BORDER_MAX),
+//       high byte; A = its low byte. 16-bit precision keeps thin cracks smooth, and since
+//       value = G + A / 255 is linear, texture filtering and mipmaps still combine it correctly.
 //   B = Voronoi random value of the nearest cell
-//   A = unused (1)
 // The shader side (perlin3 / voronoi3 in geometry.js) undoes these encodings.
 import * as THREE from 'three';
 
@@ -93,10 +94,13 @@ export function createNoiseTexture() {
     const tx = (x + 0.5) / N, ty = (y + 0.5) / N, tz = (z + 0.5) / N;
     const n = perlin(tx * PERLIN_PERIOD, ty * PERLIN_PERIOD, tz * PERLIN_PERIOD);
     const [border, id] = voronoi(tx * VORONOI_PERIOD, ty * VORONOI_PERIOD, tz * VORONOI_PERIOD);
+    // border as 16 bits: hi + lo / 255 (in byte units) = v * 255
+    const v = Math.max(0, Math.min(1, border / VORONOI_BORDER_MAX)) * 255;
+    const hi = Math.min(255, Math.floor(v));
     data[o++] = toByte(n * 0.5 + 0.5);
-    data[o++] = toByte(border / VORONOI_BORDER_MAX);
+    data[o++] = hi;
     data[o++] = toByte(id);
-    data[o++] = 255;
+    data[o++] = Math.round((v - hi) * 255);
   }
   const tex = new THREE.Data3DTexture(data, N, N, N);
   tex.format = THREE.RGBAFormat;
