@@ -12,9 +12,12 @@
 //   opacity         1 = solid; below 1 = see-through: drawn by the translucent pass, casts no
 //                   ambient occlusion, and this is its alpha in Solid materials mode
 //   hidden          true: never drawn (Void)
-//   shadeFlat       true: always drawn with flat faces. With Options → Rendering: Smooth, its bundles are
+//   shadeFlat       true: always drawn with flat faces. With Options → Rendering: Smooth, its clusters are
 //                   merged but keep their sharp edges and flat face normals instead of being
 //                   rounded off and smooth-shaded (Crystal: a faceted gem)
+//   sinkable        true: a cluster of it that touches no block it can walk on sinks through
+//                   Water: each turn it swaps places with the Water right beneath it (toward
+//                   the origin), if every cell beneath it is Water (sim.js stepSink)
 // Creatures also have:
 //   creature        true
 //   body            'single' (one block: Crawly, Buzzy) or 'chain' (a Squirmy's segments)
@@ -49,9 +52,9 @@ export const BEHAVIOR = Object.freeze({
 });
 
 export const BLOCK_TYPES = [
-  { key: 'STONE', id: 'gray', name: 'Stone', color: '#9aa0a6', style: 2, opacity: 1 },
-  { key: 'DIRT', id: 'brown', name: 'Dirt', color: '#8b5a2b', style: 1, opacity: 1 },
-  { key: 'BERRY', id: 'red', name: 'Berry', color: '#e53935', style: 5, opacity: 1 },
+  { key: 'STONE', id: 'gray', name: 'Stone', color: '#9aa0a6', style: 2, opacity: 1, sinkable: true },
+  { key: 'DIRT', id: 'brown', name: 'Dirt', color: '#8b5a2b', style: 1, opacity: 1, sinkable: true },
+  { key: 'BERRY', id: 'red', name: 'Berry', color: '#e53935', style: 5, opacity: 1, sinkable: true },
   { key: 'WOOD', id: 'orange', name: 'Wood', color: '#b8804a', style: 7, opacity: 1 }, // warm tan
   { key: 'CRYSTAL', id: 'yellow', name: 'Crystal', color: '#e03cd2', style: 8, opacity: 0.9, shadeFlat: true }, // magenta gem
   { key: 'MOSS', id: 'green', name: 'Moss', color: '#43a047', style: 4, opacity: 1 },
@@ -59,9 +62,10 @@ export const BLOCK_TYPES = [
   {
     key: 'CRAWLY', id: 'magenta', name: 'Crawly', color: '#d63ad6', style: 6, opacity: 1,
     creature: true,
+    sinkable: true,
     body: 'single',
     legs: true,
-    diet: ['BERRY'],
+    diet: ['BERRY','WOOD'],
     priorityDiet: ['BERRY'],
     walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY'],
     sightRadius: 2,
@@ -89,18 +93,19 @@ export const BLOCK_TYPES = [
   {
     key: 'SQUIRMY', id: 'squirmy', name: 'Squirmy', color: '#f07898', style: 11, opacity: 1, // pink
     creature: true,
+    sinkable: true,
     body: 'chain',
     diet: ['BERRY', 'DIRT', 'WATER'],
     priorityDiet: ['BERRY'],
     walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY'], // the solid ones
     sightRadius: 1, // around its head
-    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK], // the head's behavior drives the chain
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
   },
   { key: 'FOG', id: 'fog', name: 'Fog', color: '#d3d7dd', style: 9, opacity: 0.93 }, // light gray
   { key: 'NIMBUS', id: 'nimbus', name: 'Nimbus', color: '#5b616b', style: 10, opacity: 0.93 }, // dark gray
-  // world-creation helper: a placeholder that takes up cells while the NEW_SCENE_RECIPE runs
+  // world-creation helper: a placeholder that takes up cells while the NEW_SCENE_TEMPLATE runs
   // (e.g. to leave a cave or gap), then every Void is deleted (World.generateNew). Never drawn.
   { key: 'VOID', id: 'void', name: 'Void', color: '#ffffff', style: 13, opacity: 1, hidden: true },
 ];
@@ -180,8 +185,8 @@ export const isCreature = (type) => !!BLOCK_PROPS[type]?.creature;
 export const isTranslucent = (type) => blockProps(type).opacity < 1;
 /** A one-block creature (Crawly, Buzzy), as opposed to a chain like a Squirmy. */
 export const isSingleCreature = (type) => BLOCK_PROPS[type]?.body === 'single';
-/** Whether block `b` flies: its type does (Buzzy), or it has a buff that does (Flight). */
-export const canFly = (b) => !!b && (!!BLOCK_PROPS[b.type]?.fly || hasBuffFlag(b, 'fly'));
+/** Whether `block` flies: its type does (Buzzy), or it has a buff that does (Flight). */
+export const canFly = (block) => !!block && (!!BLOCK_PROPS[block.type]?.fly || hasBuffFlag(block, 'fly'));
 /** A buff's name and what's left of it, e.g. "Rockbiter (permanent, 3 charges)". */
 export const describeBuff = (x) => {
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -189,18 +194,18 @@ export const describeBuff = (x) => {
   if (x.charges != null) parts.push(plural(x.charges, 'charge'));
   return `${BUFF_TYPES[x.type]?.name ?? x.type} (${parts.join(', ')})`;
 };
-/** Whether block `b` has a buff with property `flag` set (e.g. 'fly'). */
-export const hasBuffFlag = (b, flag) => !!b?.buffs?.some((x) => BUFF_TYPES[x.type]?.[flag]);
+/** Whether `block` has a buff with property `flag` set (e.g. 'fly'). */
+export const hasBuffFlag = (block, flag) => !!block?.buffs?.some((x) => BUFF_TYPES[x.type]?.[flag]);
 /**
- * The foods creature block `c` goes for on its own when it sees one: its type's priorityDiet
+ * The foods creature block `creature` goes for on its own when it sees one: its type's priorityDiet
  * plus its buffs' (e.g. Rockbiter adds Crystal), without repeats.
  */
-export const priorityDietOf = (c) => [
-  ...new Set([...(BLOCK_PROPS[c.type]?.priorityDiet ?? []), ...(c.buffs ?? []).flatMap((b) => BUFF_TYPES[b.type]?.priorityDiet ?? [])]),
+export const priorityDietOf = (creature) => [
+  ...new Set([...(BLOCK_PROPS[creature.type]?.priorityDiet ?? []), ...(creature.buffs ?? []).flatMap((buff) => BUFF_TYPES[buff.type]?.priorityDiet ?? [])]),
 ];
-/** Whether creature block `c` can eat a block of type `foodType`: its type's diet, or one of its buffs'. */
-export const canEat = (c, foodType) =>
-  !!BLOCK_PROPS[c.type]?.diet?.includes(foodType) || !!c.buffs?.some((b) => BUFF_TYPES[b.type]?.diet?.includes(foodType));
+/** Whether creature block `creature` can eat a block of type `foodType`: its type's diet, or one of its buffs'. */
+export const canEat = (creature, foodType) =>
+  !!BLOCK_PROPS[creature.type]?.diet?.includes(foodType) || !!creature.buffs?.some((buff) => BUFF_TYPES[buff.type]?.diet?.includes(foodType));
 /** Whether a creature of type `creatureType` can walk along a block of type `blockType`. */
 export const canWalkOn = (creatureType, blockType) => !!BLOCK_PROPS[creatureType]?.walkableBlocks?.includes(blockType);
 /** Whether a creature of `type` can have behavior `behavior`. */

@@ -112,37 +112,54 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 }
 .hud-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
 
-/* Options → Debug: third HUD panel, below the other two */
-.debug-panel {
-  pointer-events: auto; display: grid; grid-template-columns: auto minmax(220px, 1fr) 2fr; gap: 14px;
-  height: min(30vh, 240px); padding: 10px 14px; font-size: 12px;
+/* Options → Debug: a dock on the left edge, from the top down to just above the HUD (its
+   bottom is set by App); Performance, Inspector and Logging stacked, each collapsible. Kept
+   narrow at the normal font size: labels, values and log lines wrap instead of widening it */
+.debug-dock {
+  position: absolute; left: 16px; top: 16px; z-index: 5; pointer-events: auto;
+  display: flex; flex-direction: column; gap: 8px; min-height: 0; max-height: none;
+  padding: 8px 10px 10px; font-size: 12px; border-radius: 14px;
 }
-.debug-props { overflow: auto; min-height: 0; }
-.debug-perf { min-width: 90px; }
-.debug-perf table { border-collapse: collapse; }
-.debug-perf th { text-align: left; color: var(--muted); font-weight: 600; padding: 2px 10px 2px 0; }
-.debug-perf td { font-family: ui-monospace, Consolas, monospace; padding: 2px 0; text-align: right; min-width: 3ch; }
-.debug-logging { display: flex; flex-direction: column; min-height: 0; }
-.debug-logging > .debug-log { flex: 1; }
-.debug-section { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
-.debug-title { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
-.debug-props table { border-collapse: collapse; width: 100%; }
-.debug-props th { text-align: left; color: var(--muted); font-weight: 600; padding: 2px 10px 2px 0; white-space: nowrap; vertical-align: top; }
-.debug-props td { font-family: ui-monospace, Consolas, monospace; padding: 2px 0; word-break: break-all; }
+.debug-section-box { display: flex; flex-direction: column; min-height: 0; flex: none; overflow: auto; }
+.debug-section-box.grow { flex: 1; overflow: hidden; }
+.debug-section-head {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 2px 0; margin: 0 0 4px;
+  background: none; border: none; color: inherit; font: inherit; cursor: pointer; text-align: left;
+}
+.debug-section-head:hover .debug-arrow, .debug-section-head:hover .debug-section { color: var(--text); }
+.debug-section { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.debug-summary { font-family: ui-monospace, Consolas, monospace; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.debug-arrow { margin-left: auto; color: var(--muted); font-size: 11px; }
+.debug-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; overflow-wrap: anywhere; }
+.debug-table { border-collapse: collapse; width: 100%; }
+.debug-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 1px 8px 1px 0; vertical-align: top; overflow-wrap: anywhere; }
+.debug-table td { font-family: ui-monospace, Consolas, monospace; padding: 1px 0; overflow-wrap: anywhere; }
 .debug-log {
-  overflow: auto; min-height: 0; font-family: ui-monospace, Consolas, monospace; line-height: 1.45;
-  background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 6px 10px;
+  flex: 1; min-height: 40px; overflow: auto; font-family: ui-monospace, Consolas, monospace; line-height: 1.4;
+  background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 4px 8px; overflow-wrap: anywhere;
 }
 .debug-log .log-time { color: var(--muted); }
 .debug-log .log-info { color: #9cc8ff; }
 .debug-log .log-warn { color: #ffd166; }
 .debug-log .log-error { color: #ff8a80; }
 .debug-log .log-empty { color: var(--muted); }
-.hud { pointer-events: auto; padding: 8px 12px 12px; }
+.hud { pointer-events: auto; padding: 8px 12px 12px; position: relative; max-width: 100%; box-sizing: border-box; overflow: hidden; }
 .hud-label {
   display: flex; justify-content: space-between; align-items: baseline;
   font-size: 14px; font-weight: 600; padding: 0 4px 8px;
 }
+/* resizing: a grip in a HUD panel's inner top corner (resizes the panel), a bar along the
+   Debug dock's right edge (sets its width); double-click resets */
+.resize-grip { position: absolute; z-index: 2; touch-action: none; }
+.resize-grip.grip-top-right, .resize-grip.grip-top-left { top: 3px; width: 14px; height: 14px; opacity: 0.45; }
+.resize-grip.grip-top-right { right: 3px; cursor: nesw-resize; border-top: 2px solid var(--muted); border-right: 2px solid var(--muted); border-top-right-radius: 6px; }
+.resize-grip.grip-top-left { left: 3px; cursor: nwse-resize; border-top: 2px solid var(--muted); border-left: 2px solid var(--muted); border-top-left-radius: 6px; }
+.resize-grip.grip-right-edge { top: 40px; bottom: 40px; right: -4px; width: 10px; cursor: ew-resize; }
+.resize-grip.grip-right-edge::after {
+  content: ''; position: absolute; top: 50%; left: 4px; width: 3px; height: 44px; margin-top: -22px;
+  border-radius: 2px; background: var(--muted); opacity: 0.45;
+}
+.resize-grip:hover, .resize-grip:hover::after { opacity: 1; }
 /* the tool bar scrolls sideways when the tools don't fit the window */
 .hud-row > .hud-right { min-width: 0; }
 .slots { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; margin-bottom: -6px; }

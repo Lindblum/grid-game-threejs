@@ -18,15 +18,19 @@ export function displayName(fileName) {
 export const GAME_TITLE = 'Grid Game';
 
 /** Options → Speed: turns per minute, in steps of 12. A turn lasts 60 / speed seconds. */
-export const SPEED = Object.freeze({ min: 12, max: 240, step: 12, default: 60 });
+export const SPEED = Object.freeze({ min: 0, max: 240, step: 12, default: 60 });
 
-/** Options → Background: passthrough (see-through in XR) or a solid colour. */
+/** Options → Background, in the order the option cycles through them (passthrough last). */
+export const BACKGROUNDS = ['solid', 'skybox', 'passthrough'];
+const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Passthrough (XR Only)' };
+const BACKGROUND_ICONS = { solid: 'bgSolid', skybox: 'bgSky', passthrough: 'bgPass' };
+
+/** Options → Background: a solid colour, the sky panorama, or passthrough (see-through in XR). */
 function background(state) {
-  const on = state.passthrough;
   return {
     id: 'background',
-    label: `Background: ${on ? 'Passthrough (XR Only)' : 'Solid'}`,
-    icon: on ? 'bgPass' : 'bgSolid',
+    label: `Background: ${BACKGROUND_LABELS[state.background] ?? 'Solid'}`,
+    icon: BACKGROUND_ICONS[state.background] ?? 'bgSolid',
   };
 }
 

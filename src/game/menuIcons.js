@@ -175,6 +175,16 @@ const DRAW = {
     line(ctx, P, [[0.14, 0.72], [0.36, 0.46], [0.54, 0.64], [0.66, 0.54], [0.86, 0.74]]);
     circle(ctx, P, 0.68, 0.36, 0.06, s);
   },
+  bgSky(ctx, P, s) {
+    // a globe: the sky panorama wrapped all around
+    circle(ctx, P, 0.5, 0.5, 0.34, s);
+    line(ctx, P, [[0.16, 0.5], [0.84, 0.5]]);
+    ctx.beginPath();
+    ctx.ellipse(...P(0.5, 0.5), 0.15 * s, 0.34 * s, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    line(ctx, P, [[0.23, 0.32], [0.77, 0.32]]);
+    line(ctx, P, [[0.23, 0.68], [0.77, 0.68]]);
+  },
   bgSolid(ctx, P, s) {
     roundedRect(ctx, P, 0.1, 0.2, 0.8, 0.6, 0.06, s);
     ctx.fillStyle = INK;

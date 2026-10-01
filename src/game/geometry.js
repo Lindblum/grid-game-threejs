@@ -84,31 +84,36 @@ function cornerNeighbours(v, verts) {
 }
 
 /**
- * Flat-shaded BufferGeometry. Each face is fanned from its centre so we can store,
+ * Flat-shaded, indexed BufferGeometry. Each face is fanned from its centre so we can store,
  * per vertex, the distance to the face's outer edge ("edgeDist") — used by the
  * block shader to draw crisp dark outlines on every face — which face it belongs to
  * ("faceIndex", see FACE_DIRS), and for corners the 3 neighbours sharing that corner
  * ("aoFaces", FACE_DIRS indices; -1 for face centres) for ambient occlusion.
+ * Within a face every vertex's data is the same wherever it's used, so each face stores its
+ * centre and corners once (5 or 7 vertices) and its triangles index them: 86 vertices
+ * instead of 216, so the vertex shader runs about 2.5x less often per block (faces can't
+ * share vertices with each other: their normals and face numbers differ).
  */
 export function createBlockGeometry() {
   const faces = truncatedOctahedronFaces();
   const allVerts = faces.flatMap((f) => f.verts);
-  const pos = [], nor = [], edge = [], face = [], ao = [];
+  const pos = [], nor = [], edge = [], face = [], ao = [], index = [];
+  const vertex = (point, edgeDist, faceNo, normal, corner) => {
+    pos.push(point.x, point.y, point.z);
+    nor.push(normal.x, normal.y, normal.z);
+    edge.push(edgeDist);
+    face.push(faceNo);
+    const cn = corner ? cornerNeighbours(point, allVerts) : [];
+    ao.push(cn[0] ?? -1, cn[1] ?? -1, cn[2] ?? -1);
+    return pos.length / 3 - 1;
+  };
   faces.forEach((f, fi) => {
-    const n = f.normal;
-    for (let i = 0; i < f.verts.length; i++) {
-      const a = f.verts[i], b = f.verts[(i + 1) % f.verts.length];
-      for (const [p, e, corner] of [[f.center, f.inradius, false], [a, 0, true], [b, 0, true]]) {
-        pos.push(p.x, p.y, p.z);
-        nor.push(n.x, n.y, n.z);
-        edge.push(e);
-        face.push(fi);
-        const cn = corner ? cornerNeighbours(p, allVerts) : [];
-        ao.push(cn[0] ?? -1, cn[1] ?? -1, cn[2] ?? -1);
-      }
-    }
+    const centre = vertex(f.center, f.inradius, fi, f.normal, false);
+    const ring = f.verts.map((corner) => vertex(corner, 0, fi, f.normal, true));
+    for (let i = 0; i < ring.length; i++) index.push(centre, ring[i], ring[(i + 1) % ring.length]); // same fan, same winding
   });
   const g = new THREE.BufferGeometry();
+  g.setIndex(index);
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   g.setAttribute('edgeDist', new THREE.Float32BufferAttribute(edge, 1));
@@ -213,13 +218,13 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
 `;
 
 /**
- * The two block materials: `opaque` (every style except the translucent ones) and
- * `translucent` (Water and Crystal, drawn by a second InstancedMesh that shares the same
- * instance buffers).
- * Each material's vertex shader collapses the instances that belong to the other pass.
- * Both have per-instance colour and soft face outlines.
- * `uniforms.uDitherIndex.value` = instance index to draw 50 % see-through with a
- * checkerboard dither (used for the block targeted by Delete); -1 = none.
+ * The block materials, one per drawing pass: `opaque` (every style except the see-through
+ * ones), `cloud` (Fog, Nimbus), `crystal` (refractive) and `translucent` (Water), plus the
+ * `body…` versions for Rendering: Smooth. Each pass draws its own InstancedMesh holding only
+ * its blocks (World batches, blockBatch.js); the vertex shader still drops other styles as a
+ * safeguard. All have per-instance colour and soft face outlines.
+ * `material.userData.dither.value` = instance index (in that material's pass) to draw 50 %
+ * see-through with a checkerboard dither (the block targeted by Delete); -1 = none.
  * `uniforms.uTime.value` = seconds, drives the water animation.
  * Instances whose `blockStyle.x` is BLOCK_STYLE.dirt (Perlin noise), BLOCK_STYLE.stone
  * (Perlin-warped Voronoi slabs), BLOCK_STYLE.water (wavy, animated, translucent) or
@@ -235,14 +240,18 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * `setProcedural(false)` switches both materials to plain instance colours (plus outlines
  * and Water / Crystal translucency): the procedural code is compiled out, for slower GPUs.
  */
+/** Crystal refraction (see createBlockMaterials): how much light passes through, its index of refraction, and how thick a gem the light crosses (cm). */
+export const CRYSTAL_TRANSMISSION = 0.85;
+export const CRYSTAL_IOR = 1.6;
+export const CRYSTAL_THICKNESS_CM = 1.6;
+
 export function createBlockMaterials() {
   const uniforms = {
-    uDitherIndex: { value: -1 },
     uTime: { value: 0 },
     uNoiseTex: { value: createNoiseTexture() },
     uOutlines: { value: 1 }, // Options → Outlines: 1 = draw face outlines, 0 = hide them
     uAO: { value: 1 }, // Options → Ambient Occlusion: 1 = on, 0 = off
-    uSmoothRendering: { value: 0 }, // Options → Rendering: Smooth = 1: blocks flagged blockMerged are hidden here and drawn as bundle bodies
+    uSmoothRendering: { value: 0 }, // Options → Rendering: Smooth = 1: blocks flagged blockMerged are hidden here and drawn as cluster bodies
   };
   const options = { procedural: true };
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
@@ -252,40 +261,59 @@ export function createBlockMaterials() {
   // later-drawn blocks showing through in front of them), while Water and Crystal in front of
   // a cloud still blend over it
   const cloud = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true });
-  // Rendering: Smooth: each BlockBundle drawn as one merged, smoothed mesh (bundleBody.js); ordinary (not
+  // Rendering: Smooth: each cluster drawn as one merged, smoothed mesh (clusterBody.js); ordinary (not
   // instanced) geometry carrying the same attributes per vertex, colour as vertex colour
   const body = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true });
   const bodyTranslucent = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false, vertexColors: true });
   const bodyCloud = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true, vertexColors: true });
+  // Crystal: refractive. Physical transmission: the scene behind is rendered to a texture and
+  // seen through the gem, bent by its index of refraction over its thickness (cm, like the
+  // lattice) and tinted by its colour; each facet's tilted normal (the Crystal shader) bends
+  // it its own way. Transmissive objects get their own render pass after the opaque ones.
+  const crystalOptions = { roughness: 0.04, metalness: 0.0, transmission: CRYSTAL_TRANSMISSION, ior: CRYSTAL_IOR, thickness: CRYSTAL_THICKNESS_CM, specularIntensity: 1 };
+  const crystal = new THREE.MeshPhysicalMaterial(crystalOptions);
+  const bodyCrystal = new THREE.MeshPhysicalMaterial({ ...crystalOptions, vertexColors: true });
   patchBlockShader(opaque, uniforms, options, false);
   patchBlockShader(translucent, uniforms, options, true);
-  patchBlockShader(cloud, uniforms, options, true, false, true);
+  patchBlockShader(cloud, uniforms, options, true, false, 'cloud');
+  patchBlockShader(crystal, uniforms, options, true, false, 'crystal');
   patchBlockShader(body, uniforms, options, false, true);
   patchBlockShader(bodyTranslucent, uniforms, options, true, true);
-  patchBlockShader(bodyCloud, uniforms, options, true, true, true);
-  const all = [opaque, translucent, cloud, body, bodyTranslucent, bodyCloud];
+  patchBlockShader(bodyCloud, uniforms, options, true, true, 'cloud');
+  patchBlockShader(bodyCrystal, uniforms, options, true, true, 'crystal');
+  const all = [opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal];
+  // the Delete tool's see-through block: an instance index per material (each pass numbers its
+  // own blocks; see World.setDithered)
+  for (const m of all) m.userData.dither = { value: -1 };
   const setProcedural = (on) => {
     if (options.procedural === on) return;
     options.procedural = on;
     for (const m of all) m.needsUpdate = true; // recompile with / without SOLID_MATERIALS
   };
-  return { opaque, translucent, cloud, body, bodyTranslucent, bodyCloud, uniforms, setProcedural };
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, uniforms, setProcedural };
 }
 
 /**
- * `mergedBody`: a material for merged BlockBundle bodies (MERGED_BODY, see bundleBody.js):
+ * `mergedBody`: a material for merged cluster bodies (MERGED_BODY, see clusterBody.js):
  * the geometry isn't instanced; positions are in cm around the lattice origin, `localPos`
  * is each vertex's place on its own block (so patterns stay per block), `blockIndex` its
  * block's instance index (for the Delete tool's see-through target), and the normals are the
  * smoothed body's: every style is shaded smooth, and the rounded styles (Fog, Nimbus, Crawly,
  * Squirmy) take their "out from the centre" normal from them instead of from the block centre.
  */
-/** `cloudPass` (with `translucentPass`): the see-through pass for clouds only (CLOUD_PASS); the plain translucent pass skips them. */
-function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = false, cloudPass = false) {
+/**
+ * `subPass` (with `translucentPass`): a see-through pass for one kind only, which the plain
+ * translucent pass skips: 'cloud' (CLOUD_PASS: Fog, Nimbus, writing depth) or 'crystal'
+ * (CRYSTAL_PASS: refractive Crystal).
+ */
+function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = false, subPass = null) {
+  const cloudPass = subPass === 'cloud', crystalPass = subPass === 'crystal';
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
+    shader.uniforms.uDitherIndex = mat.userData.dither; // this material's own (World.setDithered)
     if (translucentPass) shader.defines = { ...shader.defines, TRANSLUCENT_PASS: '' };
     if (cloudPass) shader.defines = { ...shader.defines, CLOUD_PASS: '' };
+    if (crystalPass) shader.defines = { ...shader.defines, CRYSTAL_PASS: '' };
     if (mergedBody) shader.defines = { ...shader.defines, MERGED_BODY: '' };
     if (!options.procedural) shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
     shader.vertexShader = shader.vertexShader
@@ -304,7 +332,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         attribute vec3 localPos;
         attribute float blockIndex;
         #else
-        attribute float blockMerged; // Rendering: Smooth: 1 = this block is drawn by a bundle body instead
+        attribute float blockMerged; // Rendering: Smooth: 1 = this block is drawn by a cluster body instead
         attribute float blockSmooth; // 1 = smooth shading (World.setSmooth, e.g. excreted blocks)
         #endif
         varying float vSmooth;
@@ -363,10 +391,14 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         if (!isTranslucent) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         // clouds have a pass of their own (CLOUD_PASS, drawn first and writing depth)
         bool isCloudStyle = abs(blockStyle.x - ${BLOCK_STYLE.fog.toFixed(1)}) < 0.5 || abs(blockStyle.x - ${BLOCK_STYLE.nimbus.toFixed(1)}) < 0.5;
+        // …and so does Crystal (CRYSTAL_PASS: refractive)
+        bool isCrystalStyle = abs(blockStyle.x - ${BLOCK_STYLE.crystal.toFixed(1)}) < 0.5;
         #ifdef CLOUD_PASS
         if (!isCloudStyle) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        #elif defined(CRYSTAL_PASS)
+        if (!isCrystalStyle) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #else
-        if (isCloudStyle) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        if (isCloudStyle || isCrystalStyle) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #endif
         #ifndef MERGED_BODY
         // also skip faces shared with a block of the same translucent type (no inner walls, less overdraw)
@@ -378,7 +410,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         // hidden block types (Void) are never drawn
         if (${BLOCK_TYPES.filter((t) => t.hidden).map((t) => `abs(blockStyle.x - ${t.style.toFixed(1)}) < 0.5`).join(' || ') || 'false'}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #ifndef MERGED_BODY
-        // Rendering: Smooth: blocks drawn by a bundle body instead (bundleBody.js)
+        // Rendering: Smooth: blocks drawn by a cluster body instead (clusterBody.js)
         if (uSmoothRendering > 0.5 && blockMerged > 0.5) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #endif`
       );
@@ -403,7 +435,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         ${NOISE_GLSL}
         ${WATER_GLSL}
         ${BUMP_GLSL}
-        #define BUFF_GLOW vec3(${new THREE.Color(Object.values(BUFF_TYPES).find((b) => b.color).color).toArray().map((v) => v.toFixed(3)).join(', ')})
+        #define BUFF_GLOW vec3(${new THREE.Color(Object.values(BUFF_TYPES).find((buff) => buff.color).color).toArray().map((v) => v.toFixed(3)).join(', ')})
         #ifdef MERGED_BODY
         #define BODY_DIR normalize(vLocalNormal)
         #else
@@ -494,9 +526,28 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           vec3 col = mix(pale, deep, clamp(vor.y * 0.75 + cloud * 0.45, 0.0, 1.0));
           float epw = length(fwidth(vNoisePos)) * 0.6 * 1.4; // pixel footprint in border-distance units
           col += (base * 0.25 + 0.06) * lineCoverage(vor.x, 0.02, epw); // bright facet edges, antialiased
+          // surface wear, as a light normal map (bump): a fine grain, and scratches: three sets
+          // of thin grooves in their own directions per block (a plane through the gem meets a
+          // face in a straight line), broken into short random runs by noise; each scratch is
+          // slightly frosted. Grooves thinner than a pixel fade out instead of shimmering.
+          float grain = perlin3(vNoisePos * 38.0) * 0.6 + perlin3(vNoisePos * 83.0 + 5.1) * 0.4;
+          float scratch = 0.0;
+          for (int k = 0; k < 3; k++) {
+            float fk = float(k);
+            vec3 dir = normalize(cellHash(vec3(vSeed * 3.7 + fk * 11.3, fk * 5.9, vSeed)) - 0.5 + 1e-3);
+            float u = dot(vNoisePos, dir) * (1.7 + fk * 0.9) + perlin3(vNoisePos * 0.7 + fk * 3.3) * 0.6;
+            float d = abs(fract(u) - 0.5);                       // distance to the groove, in its own units
+            float fw = max(fwidth(u), 1e-4);
+            float line = (1.0 - smoothstep(0.0, 0.012 + fw, d)) * clamp(0.02 / fw, 0.0, 1.0);
+            float run = smoothstep(0.35, 0.6, perlin3(vNoisePos * vec3(1.3, 1.1, 1.2) + fk * 7.7)); // short, sparse runs
+            scratch = max(scratch, line * run);
+          }
+          bumpH = grain * 0.35 - scratch * 0.8;
+          bumpStrength = 0.02;
+          col += vec3(0.07) * scratch; // frosted scratches catch a little light
           diffuseColor.rgb = col;
           diffuseColor.a = mix(0.82, 0.94, vor.y);
-          surfaceRough = 0.04;
+          surfaceRough = mix(0.04, 0.35, scratch); // polished, rougher in the scratches
           crystalGlow = col * 0.12;
         } else {
           bumpH = waterHeight(vNoisePos, uTime);
@@ -812,5 +863,5 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       );
   };
   mat.customProgramCacheKey = () =>
-    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}-${options.procedural ? 'procedural' : 'solid'}`;
+    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}-${options.procedural ? 'procedural' : 'solid'}`;
 }

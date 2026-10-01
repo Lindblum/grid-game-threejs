@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
+import { CameraCollider } from './cameraCollision.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-import { STEP_FRACTION, World } from './world.js';
-import { canStand, stepSquirmies, stepSight, stepNimbus, stepCrawlies, stepDirt, stepGroups, stepRain, stepWater, stepFog, stepFogForm, stepNimbusDrift, stepWood, updateBlockBundles, creatureEatNearby, SELECT_WAIT_TURNS } from './sim.js';
+import { STEP_FRACTION, World, isSaveData, parseTemplate } from './world.js';
+import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEatNearby, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature } from './blocks.js';
@@ -11,10 +12,10 @@ import { faceFromNormal, isValidCell } from './lattice.js';
 import { EDGE_SHADE, EDGE_WIDTH_CM, truncatedOctahedronFaces } from './geometry.js';
 import {
   playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
-  playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCrawlyDone, playCrawlyTrapped, playCrawlyDeath,
+  playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
 } from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE, SPEED } from './menu.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED, BACKGROUNDS } from './menu.js';
 import { loadOptionsCookie, saveOptionsCookie } from './optionsCookie.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
 
@@ -26,27 +27,18 @@ const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
 const WHEEL_TOOL_REARM_MS = 200; // horizontal-scroll tool switching: quiet gap that ends one push
 const BG = new THREE.Color('#1b2029');
+/** Options → Background: Skybox: a 2:1 panorama wrapped all around the scene (loaded on first use). */
+const SKYBOX_URL = new URL('../../img/skybox.jpg', import.meta.url).href;
 const ORBIT_HEIGHT_CM = 100; // light 1 m above the scene
 const ORBIT_RADIUS_CM = 300; // 3 m radius
 const ORBIT_PERIOD_S = 60; // one revolution per minute
 const GRAB_MIN_SCALE = 0.1; // two-hand zoom limits, relative to life size (1 lattice cm = 1 cm)
 const GRAB_MAX_SCALE = 20;
-// Browser camera vs blocks: closer than CAMERA_PUSH_WITHIN_CM to the nearest block centre, the
-// camera is pushed straight away from it, at least CAMERA_PUSH_TO_CM and on into a clear cell.
 const FLY_M_PER_WHEEL_PX = 0.00005; // zoomed all the way in, scrolling flies forward: ~0.5 cm per wheel notch
 const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's left stick flies up to 8 cm/s
 // Select tool wireframes (selected / pointed-at creatures, the target cell and its pulses): tubes
 // no thicker than the blocks' own face outlines.
 const SELECT_WIRE_RADIUS = EDGE_WIDTH_CM / 2;
-const CAMERA_PUSH_WITHIN_CM = 1.25;
-const CAMERA_PUSH_TO_CM = 1.5;
-/** The lattice cell containing point p (cm): the all-even or all-odd cell centre nearest to it. */
-function nearestLatticeCell(p) {
-  const even = [p.x, p.y, p.z].map((v) => 2 * Math.round(v / 2));
-  const odd = [p.x, p.y, p.z].map((v) => 2 * Math.round((v - 1) / 2) + 1);
-  const d2 = (c) => (c[0] - p.x) ** 2 + (c[1] - p.y) ** 2 + (c[2] - p.z) ** 2;
-  return d2(even) <= d2(odd) ? even : odd;
-}
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
 
 /** Thick wireframe of a truncated octahedron made from thin cylinders (visible in XR too). */
@@ -94,15 +86,15 @@ export class Engine {
       menu: 'main', // 'main' | 'load' | 'save' | 'options'
       soundOn: true,
       gameTime: -COUNTDOWN_SECONDS, // whole seconds (turns) since New / Load; negative = countdown
-      passthrough: true, // Options → Background: XR passthrough (true) or solid colour
+      background: 'passthrough', // Options → Background: 'solid', 'skybox' or 'passthrough' (XR passthrough; solid elsewhere)
       proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
       outlines: true, // Options → Outlines: darkened face edges on blocks
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
       speed: SPEED.default, // Options → Speed: turns per minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
-      fog: true, // Options → Fog: Fog recipe steps in New scenes, and Fog forming far out
+      fog: true, // Options → Fog: Fog template steps in New scenes
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
-      smoothRendering: false, // Options → Rendering: Smooth (BlockBundles drawn as merged, smoothed bodies) or Blocky (default)
+      smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       saves: null,
       savesError: null,
       page: 0,
@@ -116,7 +108,7 @@ export class Engine {
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
-      selectPhase: 'select', // Select tool: 'select' (pick a Crawly) or 'target' (pick where it walks)
+      selectPhase: 'select', // Select tool: 'select' (pick a creature) or 'target' (pick where it walks)
     };
     this._toastId = 0;
     this.turnSeconds = 60 / SPEED.default;
@@ -129,7 +121,7 @@ export class Engine {
     this._hudHover = null;
     this._xrFrames = 0;
     this._grab = null;
-    this.selected = []; // Select tool: the selected Crawlies (currently at most one)
+    this.selected = []; // Select tool: the selected creatures (currently at most one)
     this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
 
     this._initRenderer();
@@ -161,7 +153,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['soundOn', 'passthrough', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering'];
+  static OPTION_KEYS = ['soundOn', 'background', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering'];
 
   _saveOptions() {
     saveOptionsCookie(Object.fromEntries(Engine.OPTION_KEYS.map((k) => [k, this.state[k]])));
@@ -179,8 +171,9 @@ export class Engine {
       setMuted(!saved.soundOn);
       this.setState({ soundOn: saved.soundOn });
     }
-    if (bool('passthrough')) {
-      this.setState({ passthrough: saved.passthrough });
+    if (BACKGROUNDS.includes(saved.background) || bool('passthrough')) {
+      // (older settings stored passthrough on / off)
+      this.setState({ background: BACKGROUNDS.includes(saved.background) ? saved.background : saved.passthrough ? 'passthrough' : 'solid' });
       this._applyBackground();
     }
     if (bool('proceduralMaterials')) {
@@ -208,11 +201,11 @@ export class Engine {
   /**
    * One line in the console (and so the debug panel's log) for a game event:
    * "[turn 42] consume | Crawly #17 | size 1 | ate Berry". The index is the block's instance
-   * index, the size its BlockBundle's (a Squirmy's length, a tree's Wood count, …).
+   * index, the size its cluster's (a Squirmy's length, a tree's Wood count, …).
    */
   _logEvent(kind, block, detail) {
     const inWorld = this.world.get(block.x, block.y, block.z) === block;
-    const size = inWorld ? this.world.bundleOf(block).length : 1;
+    const size = inWorld ? this.world.clusterOf(block).length : 1;
     console.log(` | Turn ${this.world.turn} | ${blockProps(block.type).name} #${block.index} | size ${size} | ${kind} | ${detail}`);
   }
 
@@ -242,20 +235,24 @@ export class Engine {
     scene.background = BG;
     this.scene = scene;
 
-    const cam = new THREE.PerspectiveCamera(60, 1, 0.005, 100);
+    const cam = new THREE.PerspectiveCamera(60, 1, 0.0025, 20) // near 0.25 cm: inside the camera clearance (cameraCollision.js);
     cam.position.copy(START_CAMERA);
     this.camera = cam;
     scene.add(cam);
 
-    const controls = new OrbitControls(cam, this.renderer.domElement);
+    // Trackball: turns freely in every direction, over the poles and on round (the camera's
+    // "up" turns with it; the world is a planet, so there's no fixed horizon to keep)
+    const controls = new TrackballControls(cam, this.renderer.domElement);
     controls.target.set(0, 0, 0);
-    controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.12;
+    controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }; // left: tools
+    controls.keys = ['', '', '']; // no A / S / D mode keys (the game uses the keyboard)
+    controls.rotateSpeed = 5; // about as fast as the old orbit controls
+    controls.zoomSpeed = 1.2;
+    controls.panSpeed = 0.3;
+    controls.staticMoving = false; // eases out after a drag
+    controls.dynamicDampingFactor = 0.15;
     controls.minDistance = 0.04;
     controls.maxDistance = 4;
-    controls.zoomSpeed = 0.8;
-    controls.autoRotateSpeed = 0.8;
     controls.update();
     this.controls = controls;
 
@@ -273,8 +270,8 @@ export class Engine {
     this.world = new World(root);
     // sounds for things the simulation does on its own
     this.world.on('berryGrow', () => playBerryGrow());
-    this.world.on('crawlyArrived', () => playCrawlyDone());
-    this.world.on('crawlyTrapped', () => playCrawlyTrapped());
+    this.world.on('creatureArrived', () => playCreatureDone());
+    this.world.on('creatureTrapped', () => playCreatureTrapped());
     this.world.on('blockConsumed', ({ sound }) => playSfx(sound));
     this.world.on('blockExcreted', ({ sound }) => playSfx(sound));
     // event log (console, so it also shows in the debug panel): consume, excrete, buffs, behavior
@@ -288,9 +285,9 @@ export class Engine {
     this.world.on('behaviorChanged', ({ block, from, to }) => this._logEvent('behavior', block, `${from} → ${to}`));
     this.world.on('blockBlown', ({ sound }) => playSfx(sound, 250)); // many clouds at once: one breeze
     this.world.on('blockVanished', () => this._syncCount());
-    this.world.on('crawlyFreed', () => playCrawlyDone()); // same "made it" sound as arriving
-    this.world.on('crawlyDied', () => {
-      playCrawlyDeath();
+    this.world.on('creatureFreed', () => playCreatureDone()); // same "made it" sound as arriving
+    this.world.on('creatureDied', () => {
+      playCreatureDeath();
       this._syncCount(); // its block is gone
     });
 
@@ -309,7 +306,7 @@ export class Engine {
     this.deleteHL = makeWireframe('#ff2b2b', 0.045);
     this.deleteHL.scale.setScalar(1.05);
     root.add(this.placeHL, this.deleteHL);
-    // Select tool: green wireframes around selected Crawlies, a lighter one around a Crawly
+    // Select tool: green wireframes around selected creatures, a lighter one around a creature
     // you could select, and the target-cell indicator (plus its per-turn shrinking copies)
     this.selectHLs = [];
     this.hoverHLs = []; // light green, around every block of a creature you could select
@@ -418,6 +415,7 @@ export class Engine {
       this.renderer.setSize(w, h);
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
+      this.controls?.handleResize(); // trackball maths use the canvas size
     };
     this._ro = new ResizeObserver(this._onResize);
     this._ro.observe(this.container);
@@ -465,6 +463,22 @@ export class Engine {
     };
 
     el.addEventListener('wheel', this._onWheel, { passive: false });
+
+    // drag a save file or a template onto the page to load it (see openDroppedFile)
+    this._onDragOver = (e) => {
+      if (![...(e.dataTransfer?.types ?? [])].includes('Files')) return;
+      e.preventDefault(); // allow the drop
+      e.dataTransfer.dropEffect = 'copy';
+    };
+    this._onDrop = (e) => {
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      e.preventDefault(); // don't let the browser open the file
+      if (this.state.inXR) return;
+      this.openDroppedFile(file);
+    };
+    window.addEventListener('dragover', this._onDragOver);
+    window.addEventListener('drop', this._onDrop);
     el.addEventListener('pointermove', this._onPointerMove);
     el.addEventListener('pointerleave', this._onPointerLeave);
     el.addEventListener('pointerdown', this._onPointerDown);
@@ -567,7 +581,7 @@ export class Engine {
   }
 
   // ---------------------------------------------------------------- Select tool
-  // Two phases: 'select' (click a Crawly to select it) and 'target' (click an empty cell on
+  // Two phases: 'select' (click a creature to select it) and 'target' (click an empty cell on
   // a surface the creature can walk on: it Walks there and stays selected, so it can be sent
   // on again; clicking empty space or anything else deselects it).
   // Clicking anything else in 'target' (or empty space) just clears the selection.
@@ -581,7 +595,7 @@ export class Engine {
   }
 
   /**
-   * Debug panel content: properties of the selected Crawly, or else of the block under the
+   * Debug panel content: properties of the selected creature, or else of the block under the
    * pointer. Returns { title, rows: [[key, value]] }.
    */
   debugInfo() {
@@ -596,14 +610,14 @@ export class Engine {
       ['Index', b.index],
       ['Creature', isCreature(b.type) ? 'yes' : 'no'],
     ];
-    const bundle = this.world.bundleOf(b); // its BlockBundle, right now
-    rows.push(['Bundle size', `${bundle.length} block${bundle.length === 1 ? '' : 's'}`]);
+    const cluster = this.world.clusterOf(b); // its cluster, right now
+    rows.push(['Cluster size', `${cluster.length} block${cluster.length === 1 ? '' : 's'}`]);
     if (b.movedTurn != null) rows.push(['Last moved', `turn ${b.movedTurn}`]);
     rows.push(['Buffs', b.buffs?.length ? b.buffs.map(describeBuff).join(', ') : 'none']);
     if (isCreature(b.type)) rows.push(['Flies', blockProps(b.type).fly ? 'yes (its type)' : canFly(b) ? 'yes (Flight buff)' : 'no']);
     rows.push(['Inventory', b.inventory ? (TOOLS.find((t) => t.block === b.inventory)?.label ?? b.inventory) : 'empty']);
     if (b.type === BLOCK.WOOD || isCreature(b.type)) {
-      rows.push(['Bundle slots', `${bundle.filter((x) => x.inventory).length} of ${bundle.length} full`]);
+      rows.push(['Cluster slots', `${cluster.filter((x) => x.inventory).length} of ${cluster.length} full`]);
     }
     if (b.type === BLOCK.SQUIRMY) {
       const segs = this.world.squirmyOf.get(b)?.segments ?? [b];
@@ -611,7 +625,7 @@ export class Engine {
       rows.push(['Segment', `${i + 1} of ${segs.length}${b.isHead ? ' (head)' : b.isTail ? ' (tail)' : ''}`]);
       if (!b.isHead) rows.push(['Behavior', `${segs[0].behavior ?? '—'} (the head's)`]);
     }
-    if (isCreature(b.type) && (b.type !== BLOCK.SQUIRMY || b.isHead)) {
+    if (isCreature(b.type) && (b.isHead)) {
       rows.push(['Behavior', b.behavior ?? '—']);
       rows.push(['Assigned', b.isAssignedBehavior ? 'yes (by the player)' : 'no (forages for Berries)']);
       if (b.sightRadius != null) rows.push(['Sight radius', `${b.sightRadius} blocks`]);
@@ -660,7 +674,7 @@ export class Engine {
   /**
    * Gamepad / Touch A: each selected creature eats the block in front of it (its `front`
    * side; for a Squirmy, its head's), or else any other edible block next to it, if its
-   * bundle has an inventory slot free. If none of them can, "ineffective" plays.
+   * cluster has an inventory slot free. If none of them can, "ineffective" plays.
    */
   selectedEat() {
     if (!this.selected.length || !this.toolsReady()) return false;
@@ -686,7 +700,7 @@ export class Engine {
       return false;
     }
     for (const c of this.selected) {
-      if (c.behavior === BEHAVIOR.TRAPPED) continue; // can't wander off while walled in
+//    if (c.behavior === BEHAVIOR.TRAPPED) continue; // can't wander off while walled in
       c.behavior = behavior;
       c.isAssignedBehavior = true;
       delete c.waitTurns; // X's Wait lasts until deselected
@@ -703,40 +717,42 @@ export class Engine {
 
   /**
    * Gamepad / Touch B: each selected creature excretes the item in its tail's inventory slot
-   * (World.excrete on its BlockBundle). If none of them can, "ineffective" plays.
+   * (World.excrete on its cluster). If none of them can, "ineffective" plays.
    */
   selectedExcrete() {
     if (!this.selected.length || !this.toolsReady()) return false;
     let did = false;
     for (const c of this.selected) {
-      if (this.world.excrete(this.world.bundleOf(c), 'excrete')) did = true;
+      if (this.world.excrete(this.world.clusterOf(c), 'excrete')) did = true;
     }
     if (did) this._syncCount();
     else playSfx('ineffective', 0);
     return did;
   }
 
-  /** A cell a selected Crawly can be sent to: empty, next to the pointed-at walking surface. */
+  /** A cell a selected creature can be sent to: empty, next to the pointed-at walking surface. */
   _isSelectTarget(t) {
     if (!t?.block || !t.place || !t.placeFree) return false;
     // a surface the selected creature walks on, with room for it beside it
-    return this.selected.some((c) => (canWalkOn(c.type, t.block.type) || canFly(c)) && canStand(this.world, c, ...t.place));
+    return this.selected.some((creature) => (canWalkOn(creature.type, t.block.type) || canFly(creature)) && canStand(this.world, creature, ...t.place));
   }
 
-  /** The creature a block belongs to: a Crawly itself, or a Squirmy segment's head. Else null. */
-  _creatureOf(b) {
-    if (isSingleCreature(b?.type)) return b;
-    if (b?.type === BLOCK.SQUIRMY) return this.world.squirmyOf.get(b)?.segments[0] ?? b;
+  /** The creature a block belongs to: a one-block creature itself, a Buzzy segment's or Squirmy segment's head. Else null. */
+  _creatureOf(block) {
+    if (block?.segmentOf) return block.segmentOf; // a Buzzy's body segment: the Buzzy
+    if (isSingleCreature(block?.type)) return block;
+    if (block?.type === BLOCK.SQUIRMY) return this.world.squirmyOf.get(block)?.segments[0] ?? block;
     return null;
   }
 
-  /** Every block of a creature: a Squirmy's whole chain, or just the Crawly. */
-  _bodyOf(c) {
-    return c.type === BLOCK.SQUIRMY ? this.world.squirmyOf.get(c)?.segments ?? [c] : [c];
+  /** Every block of a creature: a Squirmy's or segmented Buzzy's whole body, or the one block. */
+  _bodyOf(creature) {
+    if (creature.segments?.length) return [creature, ...creature.segments]; // a Buzzy with body segments
+    return creature.type === BLOCK.SQUIRMY ? this.world.squirmyOf.get(creature)?.segments ?? [creature] : [creature];
   }
 
   _useSelect(t) {
-    // clicking a creature (Crawly, or any segment of a Squirmy) selects it (in either phase:
+    // clicking a creature (any block of it) selects it (in either phase:
     // in 'target' it swaps the selection)
     const creature = this._creatureOf(t?.block);
     if (creature) {
@@ -747,7 +763,7 @@ export class Engine {
     }
     if (!this.selected.length) return false;
     if (!this._isSelectTarget(t)) {
-      // clicked something that is neither a Crawly nor a valid target (or empty space):
+      // clicked something that is neither a creature nor a valid target (or empty space):
       // drop the selection and go back to the Select phase
       this._setSelected([]);
       playTick();
@@ -782,10 +798,10 @@ export class Engine {
     p.t0 = performance.now();
   }
 
-  /** Per frame: selection wireframes follow their (possibly sliding) Crawlies; pulses shrink. */
+  /** Per frame: selection wireframes follow their (possibly sliding) creatures; pulses shrink. */
   _updateSelectionVisuals(now) {
     // a selected creature that was deleted, or changed type, drops out of the selection
-    const alive = this.selected.filter((c) => this.world.get(c.x, c.y, c.z) === c && this._creatureOf(c));
+    const alive = this.selected.filter((creature) => this.world.get(creature.x, creature.y, creature.z) === creature && this._creatureOf(creature));
     if (alive.length !== this.selected.length) this._setSelected(alive);
     // wireframes around every block of each selected creature (a Squirmy's whole chain),
     // and lighter ones around a creature you are pointing at
@@ -802,7 +818,7 @@ export class Engine {
         if (b) this.world.renderedPosition(b, now, hl.position);
       });
     };
-    place(this.selectHLs, this.selected.flatMap((c) => this._bodyOf(c)), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
+    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
     place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], '#9be8a8', SELECT_WIRE_RADIUS * 0.8, 1.04);
     for (const p of this._pulses) {
       if (!p.obj.visible) continue;
@@ -836,13 +852,19 @@ export class Engine {
   /** New / Load: back to the T -3 … 0 countdown (tools and the simulation wait for it, like on page load). */
   _resetClock() {
     this._clock = 0;
+    this._resumeTime = 0; // Load: the saved game time, taken up when the countdown ends
     this.setState({ gameTime: -COUNTDOWN_SECONDS });
+  }
+
+  /** The game time to save: the current turn (during a countdown, the time it will resume at). */
+  _savedGameTime() {
+    return this.state.gameTime >= 0 ? this.state.gameTime : this._resumeTime || 0;
   }
 
   /** Game clock: runs only while playing (not while the menu is open). One turn per turnSeconds (Options → Speed). */
   /**
-   * Options → Fog: on, New scenes include the recipe's Fog steps and new Fog forms far out
-   * each few turns; off, neither happens (Fog already in the world stays).
+   * Options → Fog: on, New scenes include the template's Fog steps; off, they're skipped (Fog
+   * already in the world stays).
    */
   setFog(on) {
     this.world.fogEnabled = on;
@@ -873,7 +895,13 @@ export class Engine {
       const turn = this.state.gameTime + 1;
       this.setState({ gameTime: turn });
       if (turn < 0) playReady(); // countdown…
-      else if (turn === 0) playGo(); // …go: tools work from here, the simulation from turn 1
+      else if (turn === 0) {
+        playGo(); // …go: tools work from here, the simulation from the next turn
+        if (this._resumeTime > 0) {
+          this.setState({ gameTime: this._resumeTime }); // a loaded save carries on from its time
+          this._resumeTime = 0;
+        }
+      }
       else {
         const t0 = performance.now();
         this._turn(turn);
@@ -885,32 +913,50 @@ export class Engine {
   /** Everything that happens once per turn (`turn` = 1, 2, 3… since New / Load). */
   _turn(turn) {
     this.world.turn = turn; // moves this turn are stamped with it (Water settling)
+    this.world.trimChangeLog(); // the change log only needs to reach back to the oldest stuck rule
     this.world.tickBuffs(); // buffs count down a turn (and wear off)
     const moved = stepGroups(this.world); // detached groups fall toward the origin first…
     for (const w of stepWater(this.world, moved)) moved.add(w); // …then Water flows…
-    for (const f of stepFog(this.world, moved)) moved.add(f); // …Fog bundles settle down, whole…
+    for (const s of stepSink(this.world, moved)) moved.add(s); // …sinkable creatures (Crawlies) sink through Water…
+    for (const f of stepFog(this.world, moved)) moved.add(f); // …Fog clusters settle down, whole…
     for (const n of stepNimbusDrift(this.world, moved)) moved.add(n); // …Nimbus clouds drift west…
-    stepCrawlies(this.world, moved); // …then Crawlies (a Crawly that just fell with its group waits)…
+    stepSoloCreatures(this.world, moved); // …then one-block creatures (one that just fell with its group waits)…
     stepSquirmies(this.world, moved); // …and Squirmies crawl as chains, head first…
-    stepSight(this.world); // …and every Crawly clears the Fog it can see (it shrinks away, then goes)…
+    stepSight(this.world); // …and every creature clears the Fog it can see (it shrinks away, then goes)…
     stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
     stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss…
     if (this.state.rain) stepRain(this.world, turn); // …a raindrop appears far out now and then (Options → Rain)…
-    if (this.state.fog) stepFogForm(this.world, turn); // …and so does a wisp of Fog (Options → Fog)…
     stepNimbus(this.world, turn); // …and every 3rd turn each Nimbus may rain one Water below it
-    updateBlockBundles(this.world); // finally, bucket non-creature blocks into same-type BlockBundles
     this._syncCount(); // rain, Nimbus and growth add blocks: keep the HUD's count (and diameter) current
     if (this.targetHL.visible) this._pulseTarget(); // Select tool: a turn tick on the pointed-at target
   }
 
-  newScene() {
+  /** A new world from `template` (default: NEW_SCENE_TEMPLATE); `name`: where it came from, for the message. */
+  newScene(template = undefined, name = null) {
     this._resetClock();
     this._resetPlayerView();
-    this.world.generateNew();
+    this.world.generateNew(template);
     this._syncCount();
     this._startPlaying();
     playLoad();
-    this.toast('New scene created');
+    this.toast(name ? `New world from template "${name}"` : 'New scene created');
+  }
+
+  /**
+   * A file dropped on the page: a save file (World.toJSON) is loaded; a template (see
+   * parseTemplate) generates a new world from it; anything else gets an error message.
+   */
+  async openDroppedFile(file) {
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      return this.toast(`"${file.name}" isn't a JSON file`, 'error');
+    }
+    if (isSaveData(data)) return this.importJSON(data, file.name);
+    const { template, error } = parseTemplate(data);
+    if (template) return this.newScene(template, file.name);
+    this.toast(`"${file.name}" isn't a save file or a template (${error})`, 'error');
   }
 
   async refreshSaves() {
@@ -927,7 +973,7 @@ export class Engine {
     const name = rawName ? normalizeSaveName(rawName) : timestampName();
     if (!name) return this.toast('Please enter a file name', 'error');
     try {
-      await writeSave(name, this.world.toJSON());
+      await writeSave(name, this.exportJSON());
       this._startPlaying();
       playSave();
       this.toast(`Saved ${this.world.size} blocks as "${displayName(name)}"`);
@@ -949,6 +995,8 @@ export class Engine {
     try {
       const { loaded, skipped } = this.world.fromJSON(data);
       this._resetClock();
+      const time = Number(data?.gameTime);
+      if (Number.isFinite(time) && time > 0) this._resumeTime = Math.floor(time); // resumes after the countdown
       this._resetPlayerView();
       this._syncCount();
       this._startPlaying();
@@ -959,8 +1007,9 @@ export class Engine {
     }
   }
 
+  /** The save file: the world's blocks, plus the game time (turns played). */
   exportJSON() {
-    return this.world.toJSON();
+    return { ...this.world.toJSON(), gameTime: this._savedGameTime() };
   }
 
   setSound(on) {
@@ -982,8 +1031,9 @@ export class Engine {
     if (id === 'options') return this.setState({ menu: 'options' });
     if (id === 'sound') return this.setSound(!s.soundOn);
     if (id === 'background') {
-      this.setState({ passthrough: !s.passthrough });
-      if (s.inXR && !s.passthrough && this._xrMode !== 'immersive-ar') {
+      const next = BACKGROUNDS[(BACKGROUNDS.indexOf(s.background) + 1) % BACKGROUNDS.length];
+      this.setState({ background: next });
+      if (s.inXR && next === 'passthrough' && this._xrMode !== 'immersive-ar') {
         this.toast('This XR session can’t show passthrough (it was started as VR)');
       }
       return this._applyBackground();
@@ -1013,7 +1063,7 @@ export class Engine {
       return;
     }
     if (id === 'rendering') {
-      this.world.setSmoothRendering(!s.smoothRendering); // Smooth: BlockBundles drawn as merged, smoothed bodies
+      this.world.setSmoothRendering(!s.smoothRendering); // Smooth: clusters drawn as merged, smoothed bodies
       return this.setState({ smoothRendering: !s.smoothRendering });
     }
     if (id === 'enterxr') return this.enterXR();
@@ -1032,7 +1082,8 @@ export class Engine {
 
   // ---------------------------------------------------------------- XR
   async enterXR() {
-    const { xrAR, xrVR, passthrough } = this.state;
+    const { xrAR, xrVR } = this.state;
+    const passthrough = this.state.background === 'passthrough';
     // Passthrough needs an immersive-ar session (Quest Browser). PC browsers driving a headset
     // over Link only offer immersive-vr, which always has a solid background.
     const mode = (passthrough || !xrVR) && xrAR ? 'immersive-ar' : xrVR ? 'immersive-vr' : null;
@@ -1046,7 +1097,7 @@ export class Engine {
         requiredFeatures: ['local-floor'],
         optionalFeatures: ['hand-tracking'],
       });
-      this._savedView = { pos: this.camera.position.clone(), target: this.controls.target.clone() };
+      this._savedView = { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() };
       this.renderer.xr.setReferenceSpaceType('local-floor');
       await this.renderer.xr.setSession(session);
       session.addEventListener('end', () => this._onXREnd());
@@ -1067,7 +1118,7 @@ export class Engine {
     this.debugTablet.mesh.visible = false;
     this._tabletGrab = null;
     this._xrMode = null;
-    this.scene.background = BG;
+    this._applyBackground();
     if (this.menuPanel.mesh.parent !== this.scene) this.scene.add(this.menuPanel.mesh);
     this.worldRoot.position.set(0, 0, 0);
     this.worldRoot.quaternion.identity();
@@ -1078,7 +1129,10 @@ export class Engine {
     if (this._savedView) {
       this.camera.position.copy(this._savedView.pos);
       this.camera.quaternion.identity();
+      this.camera.up.copy(this._savedView.up);
+      this._camSafe = null;
       this.controls.target.copy(this._savedView.target);
+      this.camera.lookAt(this.controls.target);
     }
     this.controls.enabled = true;
     this.controls.update();
@@ -1196,6 +1250,8 @@ export class Engine {
       this.worldRoot.position.set(0, 0, 0);
       this.controls.target.set(0, 0, 0);
       this.camera.position.copy(START_CAMERA);
+      this.camera.up.set(0, 1, 0); // upright again (the trackball may have tipped it)
+      this._camSafe = null; // a jump, not a move: no collision sweep from the old spot
       this.camera.lookAt(0, 0, 0);
       this.controls.update();
     }
@@ -1235,10 +1291,36 @@ export class Engine {
     this._menuHover = null;
   }
 
-  /** Applies Options → Background: passthrough (AR) or the solid colour. */
+  /**
+   * Applies Options → Background: the solid colour, the skybox panorama, or passthrough
+   * (nothing drawn behind the scene, in an XR passthrough session; elsewhere the solid colour).
+   */
   _applyBackground() {
     const ar = this.renderer.xr.isPresenting && this._xrMode === 'immersive-ar';
-    this.scene.background = ar && this.state.passthrough ? null : BG;
+    const mode = this.state.background;
+    if (mode === 'passthrough' && ar) this.scene.background = null;
+    else if (mode === 'skybox') this.scene.background = this._skybox() ?? BG; // the colour until it has loaded
+    else this.scene.background = BG;
+  }
+
+  /** The skybox texture: loaded on first use (then applied, if Skybox is still chosen); null until then. */
+  _skybox() {
+    if (this._skyboxTexture) return this._skyboxTexture;
+    if (!this._skyboxLoading) {
+      this._skyboxLoading = true;
+      new THREE.TextureLoader().load(
+        SKYBOX_URL,
+        (tex) => {
+          tex.mapping = THREE.EquirectangularReflectionMapping; // a 2:1 panorama all around
+          tex.colorSpace = THREE.SRGBColorSpace;
+          this._skyboxTexture = tex;
+          this._applyBackground();
+        },
+        undefined,
+        () => this.toast('Couldn’t load the skybox image (img/skybox.jpg)', 'error'),
+      );
+    }
+    return null;
   }
 
   _pulse(intensity, ms) {
@@ -1414,14 +1496,14 @@ export class Engine {
   }
 
   _pick() {
-    const hits = this.raycaster.intersectObject(this.world.mesh, false);
+    const hits = this.raycaster.intersectObjects(this.world.pickMeshes, false);
     const h = hits.find((x) => x.instanceId != null);
     if (!h) {
       // Empty world: allow placing the first block at the origin.
       if (this.world.size === 0) return { block: null, place: [0, 0, 0], placeFree: true, faceType: null };
       return null;
     }
-    const block = this.world.blockAtIndex(h.instanceId);
+    const block = this.world.blockAtHit(h);
     if (!block) return null;
     const face = faceFromNormal(h.face.normal);
     const place = [block.x + face.offset[0], block.y + face.offset[1], block.z + face.offset[2]];
@@ -1463,34 +1545,33 @@ export class Engine {
   }
 
   /**
-   * Browser only: keeps the camera out of blocks. If the nearest block centre is within
-   * CAMERA_PUSH_WITHIN_CM, the camera is pushed straight away from that block: out to at
-   * least CAMERA_PUSH_TO_CM, and further along the same direction until it sits in a clear
-   * (empty) cell. The orbit target stays put, so orbiting and zooming carry on from there.
+   * Browser only: keeps the camera out of blocks (cameraCollision.js). The camera sweeps from
+   * where it safely was last frame to where the controls put it, sliding along block surfaces
+   * it would come too close to; blocks that arrive at it ease it out. When a surface stopped
+   * some of the motion, the controls' leftover momentum is dropped, so they don't keep
+   * pushing into it.
    */
-  _pushCameraOutOfBlocks() {
-    const p = this.worldRoot.worldToLocal(this.camera.position.clone()); // cm, lattice space
-    // nearest block centre (cells within ±2 cm per axis cover the 1.25 cm radius)
-    let nearest = null, best = CAMERA_PUSH_WITHIN_CM;
-    const x0 = Math.floor(p.x) - 1, y0 = Math.floor(p.y) - 1, z0 = Math.floor(p.z) - 1;
-    for (let x = x0; x <= x0 + 3; x++) for (let y = y0; y <= y0 + 3; y++) for (let z = z0; z <= z0 + 3; z++) {
-      if (!this.world.has(x, y, z)) continue;
-      const d = Math.hypot(p.x - x, p.y - y, p.z - z);
-      if (d < best) {
-        best = d;
-        nearest = new THREE.Vector3(x, y, z);
-      }
+  _collideCamera(now, dt) {
+    this.cameraCollider ??= new CameraCollider(this.world);
+    const cam = this.camera, root = this.worldRoot;
+    const to = root.worldToLocal(cam.position.clone()); // cm, lattice space
+    const away = to.clone().sub(root.worldToLocal(this.controls.target.clone())); // back off along the view line
+    const { pos, blocked } = this.cameraCollider.resolve(this._camSafe, to, now, dt, away);
+    this._camSafe = pos.clone();
+    if (pos.distanceToSquared(to) > 1e-10) {
+      cam.position.copy(root.localToWorld(pos));
+      cam.lookAt(this.controls.target);
     }
-    if (!nearest) return;
-    const dir = p.clone().sub(nearest);
-    if (dir.lengthSq() < 1e-12) dir.copy(this.camera.position).sub(this.controls.target); // dead centre: back off along the view line
-    dir.normalize();
-    // step outward from that block until the camera's cell is empty (give up after 30 cm)
-    for (let dist = CAMERA_PUSH_TO_CM; dist <= 30; dist += 0.25) {
-      p.copy(nearest).addScaledVector(dir, dist);
-      if (!this.world.has(...nearestLatticeCell(p))) break;
-    }
-    this.camera.position.copy(this.worldRoot.localToWorld(p));
+    if (blocked) this._stopControlsMomentum();
+  }
+
+  /** Drops the trackball's leftover turning, zooming and panning (its ease-out after a drag). */
+  _stopControlsMomentum() {
+    const c = this.controls;
+    c._lastAngle = 0;
+    c._movePrev?.copy(c._moveCurr);
+    c._zoomStart?.copy(c._zoomEnd);
+    c._panStart?.copy(c._panEnd);
   }
 
   /**
@@ -1500,9 +1581,9 @@ export class Engine {
    * chamber through its entrance, instead of being stuck zooming at a target inside it.
    * `sph`: the gamepad's spherical offset, when called from _padCamera (then it applies there).
    */
-  _flyForward(metres, sph = null) {
+  _flyForward(metres, radius = null) {
     const c = this.controls, cam = this.camera;
-    const dist = sph ? sph.radius : cam.position.distanceTo(c.target);
+    const dist = radius ?? cam.position.distanceTo(c.target);
     if (dist > c.minDistance * 1.05 || metres <= 0) return;
     const fwd = c.target.clone().sub(cam.position).normalize().multiplyScalar(metres);
     c.target.add(fwd);
@@ -1526,7 +1607,7 @@ export class Engine {
     const others = pads.filter((p) => !isTouch(p));
     const gp = others.find((p) => p.mapping === 'standard') || others[0];
     if (!gp) return;
-    const pressed = gp.buttons.map((b) => b.pressed || b.value > 0.5);
+    const pressed = gp.buttons.map((button) => button.pressed || button.value > 0.5);
     const prev = this._padPrev || [];
     this._padPrev = pressed;
     const edge = (i) => pressed[i] && !prev[i];
@@ -1595,23 +1676,27 @@ export class Engine {
     if (edge(9) && s.paused) this.resume();
   }
 
-  /** Right stick orbits, left stick up/down zooms, D-pad pans. */
+  /**
+   * Right stick orbits (like the trackball: about the camera's own up and right axes, so it
+   * keeps turning over the poles), left stick up/down zooms, D-pad pans.
+   */
   _padCamera(dt, rx, ry, ly, [du, dd, dl, dr]) {
     if (!rx && !ry && !ly && !du && !dd && !dl && !dr) return;
     const c = this.controls, cam = this.camera;
     const off = cam.position.clone().sub(c.target);
-    const sph = new THREE.Spherical().setFromVector3(off);
-    sph.theta += rx * 2.2 * dt;
-    sph.phi += ry * 1.6 * dt;
-    sph.radius = THREE.MathUtils.clamp(sph.radius * Math.exp(ly * 1.6 * dt), c.minDistance, c.maxDistance);
-    if (ly < 0) this._flyForward(-ly * FLY_M_PER_PAD_S * dt, sph); // stick past the zoom limit: fly forward
-    sph.makeSafe();
-    off.setFromSpherical(sph);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+    const upv = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+    // stick right: round the camera's up axis; stick down: over its right axis
+    const turn = new THREE.Quaternion().setFromAxisAngle(upv, rx * 2.2 * dt)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(right, ry * 1.6 * dt));
+    off.applyQuaternion(turn);
+    cam.up.copy(upv).applyQuaternion(turn);
+    const radius = THREE.MathUtils.clamp(off.length() * Math.exp(ly * 1.6 * dt), c.minDistance, c.maxDistance);
+    if (ly < 0) this._flyForward(-ly * FLY_M_PER_PAD_S * dt, radius); // stick past the zoom limit: fly forward
+    off.setLength(radius);
     const pan = new THREE.Vector3();
     if (du || dd || dl || dr) {
-      const speed = sph.radius * 0.8 * dt;
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
-      const upv = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+      const speed = radius * 0.8 * dt;
       pan.addScaledVector(right, ((dr ? 1 : 0) - (dl ? 1 : 0)) * speed);
       pan.addScaledVector(upv, ((du ? 1 : 0) - (dd ? 1 : 0)) * speed);
     }
@@ -1626,6 +1711,10 @@ export class Engine {
    */
   fps = 0;
   turnMs = null; // Debug → Performance: how long the last turn's actions (_turn) took, ms
+  animMs = null; // Debug → Performance: World.updateAnimations per frame, ms (averaged like fps)
+  _animTotal = 0;
+  renderMs = null; // Debug → Performance: renderer.render per frame, ms (averaged like fps; CPU time: issuing the draws, not the GPU finishing them)
+  _renderTotal = 0;
   _fpsFrames = 0;
   _fpsSince = null;
 
@@ -1634,6 +1723,10 @@ export class Engine {
     this._fpsFrames++;
     if (now - this._fpsSince >= FPS_WINDOW_MS) {
       this.fps = (this._fpsFrames * 1000) / (now - this._fpsSince);
+      this.animMs = this._animTotal / this._fpsFrames;
+      this._animTotal = 0;
+      this.renderMs = this._renderTotal / this._fpsFrames;
+      this._renderTotal = 0;
       this._fpsFrames = 0;
       this._fpsSince = now;
     }
@@ -1646,13 +1739,15 @@ export class Engine {
     this._countFrame(now);
     this._updateOrbitLight(now);
     this._advanceClock(dt);
-    this.world.updateAnimations();
+    const a0 = performance.now();
+    this.world.updateAnimations(); // every 3D object's per-frame update (see World.updateAnimations)
+    this._animTotal += performance.now() - a0;
     this._updateSelectionVisuals(now);
     const xr = this.renderer.xr.isPresenting;
     if (!xr) {
       this._pollBrowserGamepad(dt);
       this.controls.update();
-      this._pushCameraOutOfBlocks();
+      this._collideCamera(now, dt);
     } else {
       this._xrFrames++;
       if (this._needsXRPlacement && this._xrFrames > 2) {
@@ -1686,7 +1781,9 @@ export class Engine {
       this.menuPanel.mesh.visible = open;
     }
     this._updateTarget();
+    const r0 = performance.now();
     this.renderer.render(this.scene, this.camera);
+    this._renderTotal += performance.now() - r0;
   };
 
   dispose() {
@@ -1699,6 +1796,8 @@ export class Engine {
     el.removeEventListener('pointerdown', this._onPointerDown);
     el.removeEventListener('contextmenu', this._onContextMenu);
     window.removeEventListener('keydown', this._onKeyDown);
+    window.removeEventListener('dragover', this._onDragOver);
+    window.removeEventListener('drop', this._onDrop);
     this.controls.dispose();
     this.renderer.dispose();
     el.remove();

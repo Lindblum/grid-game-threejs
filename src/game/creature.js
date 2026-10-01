@@ -62,6 +62,7 @@ const _legDown = new THREE.Vector3(0, -1, 0);
 const _foot = new THREE.Vector3();
 const _legDir = new THREE.Vector3();
 const _legScale = new THREE.Vector3();
+const _sized = new THREE.Vector3();
 const _wq = new THREE.Quaternion();
 const _flap = new THREE.Quaternion();
 const _zAxis = new THREE.Vector3(0, 0, 1);
@@ -77,12 +78,12 @@ const dot = (a, b) => (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / Math.hypot(...
 const same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 
 /** Neighbour offsets (lattice directions) that hold a floor block. */
-function floorDirs(world, c) {
-  return NEIGHBOR_DIRS.filter(([dx, dy, dz]) => FLOOR_TYPES.has(world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz))?.type));
+function floorDirs(world, creature) {
+  return NEIGHBOR_DIRS.filter(([dx, dy, dz]) => FLOOR_TYPES.has(world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz))?.type));
 }
 
 /**
- * Updates `c.floor` and `c.front` (lattice direction arrays, or floor = null when no
+ * Updates `creature.floor` and `creature.front` (lattice direction arrays, or floor = null when no
  * floor block touches it).
  * - Front: the direction it just moved (`moveDir`); unchanged when it didn't move. A new
  *   creature faces a random side perpendicular (or nearly) to its floor.
@@ -90,19 +91,19 @@ function floorDirs(world, c) {
  *   valid; otherwise the candidate best aligned with the old floor (or world down) wins,
  *   so "down" stays consistent as the creature walks around corners.
  */
-export function orientCreature(world, c, moveDir = null) {
-  if (moveDir) c.front = moveDir;
-  const dirs = floorDirs(world, c);
-  if (!dirs.length) c.floor = null;
-  else if (!dirs.some((d) => same(d, c.floor))) {
-    const ref = c.floor ?? [0, -1, 0];
-    c.floor = dirs.reduce((best, d) => (dot(d, ref) > dot(best, ref) ? d : best));
+export function orientCreature(world, creature, moveDir = null) {
+  if (moveDir) creature.front = moveDir;
+  const dirs = floorDirs(world, creature);
+  if (!dirs.length) creature.floor = null;
+  else if (!dirs.some((d) => same(d, creature.floor))) {
+    const ref = creature.floor ?? [0, -1, 0];
+    creature.floor = dirs.reduce((best, d) => (dot(d, ref) > dot(best, ref) ? d : best));
   }
-  if (!c.front) {
-    const down = c.floor ?? [0, -1, 0];
+  if (!creature.front) {
+    const down = creature.floor ?? [0, -1, 0];
     const minDot = Math.min(...NEIGHBOR_DIRS.map((d) => Math.abs(dot(d, down))));
     const cands = NEIGHBOR_DIRS.filter((d) => Math.abs(dot(d, down)) - minDot < 1e-6);
-    c.front = cands[Math.floor(Math.random() * cands.length)];
+    creature.front = cands[Math.floor(Math.random() * cands.length)];
   }
 }
 
@@ -113,28 +114,28 @@ export function orientCreature(world, c, moveDir = null) {
  * eyes perpendicular to the floor normal: the pair stays level with the floor surface even
  * after a diagonal step. With no floor, world up is used.
  */
-function frameQuaternion(c, out) {
-  _f.set(...c.front).normalize();
-  if (c.floor) _up.set(...c.floor).negate().normalize();
+function frameQuaternion(creature, out) {
+  _f.set(...creature.front).normalize();
+  if (creature.floor) _up.set(...creature.floor).negate().normalize();
   else _up.set(0, 1, 0);
   _up.addScaledVector(_f, -_up.dot(_f)); // make up perpendicular to forward
   if (_up.lengthSq() < 1e-6) {
     // moved straight toward / away from the floor: keep the previous up, or pick any
-    if (c.eyeUp) {
-      _up.set(...c.eyeUp);
+    if (creature.eyeUp) {
+      _up.set(...creature.eyeUp);
       _up.addScaledVector(_f, -_up.dot(_f));
     }
     if (_up.lengthSq() < 1e-6) _up.set(0, 1, 0).addScaledVector(_f, -_f.y);
     if (_up.lengthSq() < 1e-6) _up.set(1, 0, 0).addScaledVector(_f, -_f.x);
   }
   _up.normalize();
-  c.eyeUp = _up.toArray();
+  creature.eyeUp = _up.toArray();
   _right.crossVectors(_up, _f);
   return out.setFromRotationMatrix(_basis.makeBasis(_right, _up, _f));
 }
 
 /**
- * Renders two shiny black eyes (small spheres) per creature (a Crawly, or a Squirmy's head),
+ * Renders two shiny black eyes (small spheres) per creature (a one-block creature, or a Squirmy's head),
  * sized by its type's eyeScale. When a creature's front or floor changes, the eyes revolve around its centre to the new front side;
  * they only change position, never rotation.
  */
@@ -198,12 +199,12 @@ export class CreatureEyes {
     this.legMesh = legs;
   }
 
-  /** Points the eyes at `c`'s current front/floor, revolving there over `durationS`. */
-  track(c, durationS = 0, now = performance.now()) {
-    const to = frameQuaternion(c, new THREE.Quaternion());
-    const s = this.state.get(c);
+  /** Points the eyes at `creature`'s current front/floor, revolving there over `durationS`. */
+  track(creature, durationS = 0, now = performance.now()) {
+    const to = frameQuaternion(creature, new THREE.Quaternion());
+    const s = this.state.get(creature);
     if (!s || durationS <= 0) {
-      this.state.set(c, { q: to.clone(), from: to.clone(), to, t0: now, dur: 0 });
+      this.state.set(creature, { q: to.clone(), from: to.clone(), to, t0: now, dur: 0 });
       return;
     }
     s.from.copy(s.q);
@@ -212,8 +213,8 @@ export class CreatureEyes {
     s.dur = durationS * 1000;
   }
 
-  untrack(c) {
-    this.state.delete(c);
+  untrack(creature) {
+    this.state.delete(creature);
   }
 
   clear() {
@@ -225,7 +226,7 @@ export class CreatureEyes {
    * (the game turn) starts a wing flap and a leg step each time it changes; a flap lasts
    * `flapSeconds`, a step `stepSeconds`.
    */
-  update(now, positionOf, { turn = null, flapSeconds = 0.4, stepSeconds = 0.8 } = {}) {
+  update(now, positionOf, { turn = null, flapSeconds = 0.4, stepSeconds = 0.8, sizeOf = null } = {}) {
     if (turn !== this._flapTurn) {
       this._flapTurn = turn;
       this._flapT0 = now;
@@ -252,10 +253,15 @@ export class CreatureEyes {
         if (t >= 1) s.dur = 0;
       }
       positionOf(c, pos);
-      scale.setScalar(blockProps(c.type).eyeScale ?? 0.25);
-      for (const off of EYE_OFFSETS) {
-        p.copy(off).applyQuaternion(s.q).add(pos); // revolve the offset, not the eye
-        this.mesh.setMatrixAt(i++, _m.compose(p, _noRot, scale));
+      // the creature's drawn size (shrinking away as it dies, growing in when it appears):
+      // eyes, wings and legs scale with it, toward its centre
+      const size = Math.max(sizeOf ? sizeOf(c) : 1, 1e-4);
+      scale.setScalar((blockProps(c.type).eyeScale ?? 0.25) * size);
+      if (!c.segmentOf) { // body segments (a long Buzzy) have wings and legs, but only the head has eyes
+        for (const off of EYE_OFFSETS) {
+          p.copy(off).multiplyScalar(size).applyQuaternion(s.q).add(pos); // revolve the offset, not the eye
+          this.mesh.setMatrixAt(i++, _m.compose(p, _noRot, scale));
+        }
       }
       if (blockProps(c.type).wings) {
         // one flap per turn, each creature slightly out of step with the others
@@ -263,26 +269,26 @@ export class CreatureEyes {
         const t = Math.min(1, Math.max(0, (now - this._flapT0 - lag) / (flapSeconds * 1000)));
         const lift = WING_REST + WING_FLAP * Math.sin(Math.PI * t);
         WING_HINGES.forEach((hinge, k) => {
-          p.copy(hinge).applyQuaternion(s.q).add(pos);
+          p.copy(hinge).multiplyScalar(size).applyQuaternion(s.q).add(pos);
           // turn with the body, then swing up about the front-back axis (mirrored for the left)
           _flap.setFromAxisAngle(_zAxis, k === 0 ? lift : -lift);
           _wq.copy(s.q).multiply(_flap);
-          this.wingMesh.setMatrixAt(w++, _m.compose(p, _wq, _wingScale[k]));
+          this.wingMesh.setMatrixAt(w++, _m.compose(p, _wq, _sized.copy(_wingScale[k]).multiplyScalar(size)));
         });
       }
       if (blockProps(c.type).legs) {
         for (const leg of LEGS) {
-          p.copy(leg.hip).applyQuaternion(s.q).add(pos);
+          p.copy(leg.hip).multiplyScalar(size).applyQuaternion(s.q).add(pos);
           _foot.copy(leg.foot);
           if (leg.tripod === stepping) {
             _foot.y += LEG_LIFT * lift; // lifted off the floor…
             _foot.z += LEG_LIFT * 0.5 * lift; // …and reaching forward
           }
-          _foot.applyQuaternion(s.q).add(pos);
+          _foot.multiplyScalar(size).applyQuaternion(s.q).add(pos);
           _legDir.subVectors(_foot, p);
           const len = _legDir.length();
           _wq.setFromUnitVectors(_legDown, _legDir.divideScalar(len));
-          this.legMesh.setMatrixAt(l++, _m.compose(p, _wq, _legScale.set(1, len, 1)));
+          this.legMesh.setMatrixAt(l++, _m.compose(p, _wq, _legScale.set(size, len, size)));
         }
       }
     }

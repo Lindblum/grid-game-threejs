@@ -17,7 +17,7 @@ export function saveOptionsCookie(options) {
 /** The saved Options settings, or null if there are none (or they can't be read). */
 export function loadOptionsCookie() {
   try {
-    const entry = document.cookie.split('; ').find((c) => c.startsWith(`${COOKIE}=`));
+    const entry = document.cookie.split('; ').find((cookie) => cookie.startsWith(`${COOKIE}=`));
     if (!entry) return null;
     const data = JSON.parse(decodeURIComponent(entry.slice(COOKIE.length + 1)));
     return data && typeof data === 'object' ? data : null;

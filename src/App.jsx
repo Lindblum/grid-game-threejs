@@ -54,8 +54,8 @@ function ControlsTable() {
       <table className="controls">
         <thead>
           <tr>
-            {CONTROL_COLUMNS.map((c) => (
-              <th key={c}>{c}</th>
+            {CONTROL_COLUMNS.map((column) => (
+              <th key={column}>{column}</th>
             ))}
           </tr>
         </thead>
@@ -63,11 +63,11 @@ function ControlsTable() {
           {CONTROLS.map((row) => (
             <tr key={row.action}>
               <td className="action">{row.action}</td>
-              {[row.mk, row.pad, row.xr].map((b, i) => {
-                const img = cellURL(b.g, 64);
+              {[row.mk, row.pad, row.xr].map((binding, i) => {
+                const img = cellURL(binding.g, 64);
                 return (
-                  <td key={i} title={b.t}>
-                    <img src={img.url} alt={b.t} style={{ height: 32, width: img.w / 2 }} draggable={false} />
+                  <td key={i} title={binding.t}>
+                    <img src={img.url} alt={binding.t} style={{ height: 32, width: img.w / 2 }} draggable={false} />
                   </td>
                 );
               })}
@@ -79,10 +79,102 @@ function ControlsTable() {
   );
 }
 
+/** A number kept in localStorage (a per-browser preference, e.g. a panel's size); `fallback` when unset or unreadable. */
+function useStoredNumber(key, fallback) {
+  const [value, setValue] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem(key));
+      return localStorage.getItem(key) != null && Number.isFinite(v) ? v : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const store = (v) => {
+    setValue(v);
+    try {
+      localStorage.setItem(key, String(v));
+    } catch {}
+  };
+  return [value, store];
+}
+
+/** HUD panel sizes (px): the panel resizes, its contents keep their size. 0 = automatic. */
+const HUD_SIZE = { minWidth: 80, minHeight: 60 };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * A drag grip on a HUD panel's edge or corner (`place`: CSS class for where it sits).
+ * `onStart()` is called when a drag begins; `onDrag(up, right)`: how far the pointer has
+ * moved since then, in px (up and right positive). Double-click calls `onReset`.
+ */
+function ResizeGrip({ place, title, onStart, onDrag, onReset }) {
+  const from = useRef(null);
+  return (
+    <div
+      className={`resize-grip ${place}`}
+      title={title}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        from.current = { x: e.clientX, y: e.clientY };
+        onStart();
+      }}
+      onPointerMove={(e) => {
+        if (from.current) onDrag(from.current.y - e.clientY, e.clientX - from.current.x);
+      }}
+      onPointerUp={() => (from.current = null)}
+      onPointerCancel={() => (from.current = null)}
+      onDoubleClick={onReset}
+    />
+  );
+}
+
+/**
+ * Resizing for a HUD panel (its contents keep their size): returns [style, grip props].
+ * Dragging the grip up makes the panel taller; dragging it outward (`outward` = +1 right,
+ * -1 left) makes it wider. Double-click goes back to the automatic size.
+ */
+function useHudSize(key, panelRef, outward) {
+  const [width, setWidth] = useStoredNumber(`${key}.width`, 0);
+  const [height, setHeight] = useStoredNumber(`${key}.height`, 0);
+  const start = useRef(null);
+  const grip = {
+    onStart: () => (start.current = { width: panelRef.current?.offsetWidth || 100, height: panelRef.current?.offsetHeight || 100 }),
+    onDrag: (up, right) => {
+      const s0 = start.current;
+      if (!s0) return;
+      setWidth(Math.round(clamp(s0.width + right * outward, HUD_SIZE.minWidth, window.innerWidth - 32)));
+      setHeight(Math.round(clamp(s0.height + up, HUD_SIZE.minHeight, window.innerHeight * 0.6)));
+    },
+    onReset: () => {
+      setWidth(0);
+      setHeight(0);
+    },
+  };
+  const style = { ...(width ? { width } : {}), ...(height ? { height } : {}) };
+  return [style, grip];
+}
+
 function Hud({ engine, s }) {
   const slotsRef = useRef(null);
   const labelRef = useRef(null);
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
   const [labelX, setLabelX] = useState(null);
+  // each panel's size (drag its grip; double-click resets): left grows up / right, right up / left
+  const [leftSize, leftGrip] = useHudSize('hudLeft', leftRef, +1);
+  const [rightSize, rightGrip] = useHudSize('hudRight', rightRef, -1);
+  // the Debug dock stops just above the HUD panels, however big they are
+  const wrapRef = useRef(null);
+  const [hudHeight, setHudHeight] = useState(0);
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const watch = new ResizeObserver(() => setHudHeight(el.offsetHeight));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
   const label = engine.toolLabel(s);
   // keep the current tool visible when the bar is scrolled (e.g. switching with the keys)
   useEffect(() => {
@@ -98,15 +190,17 @@ function Hud({ engine, s }) {
     const half = lab.offsetWidth / 2, pad = 8;
     setLabelX(Math.min(Math.max(centre, half + pad), panel.clientWidth - half - pad));
   };
-  useLayoutEffect(placeLabel, [s.toolIndex, label]);
+  useLayoutEffect(placeLabel, [s.toolIndex, label, rightSize.width]);
   useEffect(() => {
     window.addEventListener('resize', placeLabel);
     return () => window.removeEventListener('resize', placeLabel);
   });
   return (
-    <div className="hud-wrap">
+    <>
+    <div className="hud-wrap" ref={wrapRef}>
       <div className="hud-row">
-      <div className="panel hud hud-left">
+      <div className="panel hud hud-left" ref={leftRef} style={leftSize}>
+        <ResizeGrip place="grip-top-right" title="Drag to resize (double-click: reset)" {...leftGrip} />
         <div className="hud-label hud-time" title="Game time">{Engine.formatTime(s.gameTime)}</div>
         <div className="hud-label hud-diameter" title="Mean Diameter: estimated from the block count">
           {Engine.formatDiameter(s.blockCount)}
@@ -119,7 +213,8 @@ function Hud({ engine, s }) {
           <img src={menuIconURL()} alt="Menu" draggable={false} />
         </button>
       </div>
-      <div className="panel hud hud-right">
+      <div className="panel hud hud-right" ref={rightRef} style={rightSize}>
+        <ResizeGrip place="grip-top-left" title="Drag to resize (double-click: reset)" {...rightGrip} />
         <div className="hud-label tool-label-row">
           <span ref={labelRef} className="tool-label" style={labelX == null ? undefined : { left: labelX }}>
             {label}
@@ -147,17 +242,45 @@ function Hud({ engine, s }) {
         </div>
       </div>
       </div>
-      {s.debugMode && <DebugPanel engine={engine} />}
     </div>
+    {s.debugMode && <DebugPanel engine={engine} bottom={hudHeight + 16 + 10} />}
+    </>
+  );
+}
+
+/** The Debug dock's width (px; drag its right edge), and its limits (px, and a fraction of the window). */
+const DEBUG_WIDTH = { initial: 280, min: 170, max: 0.7 };
+
+/**
+ * A collapsible section of the Debug dock: a header (title, a short `summary` shown while
+ * collapsed, and a toggle), then its content. Each section remembers being collapsed in this
+ * browser. `grow`: it takes the dock's leftover height (Logging).
+ */
+function DebugSection({ id, title, summary, grow = false, children }) {
+  const [collapsed, setCollapsed] = useStoredNumber(`debugCollapsed.${id}`, 0);
+  return (
+    <section className={`debug-section-box${grow && !collapsed ? ' grow' : ''}`}>
+      <button className="debug-section-head" onClick={blurThen(() => setCollapsed(collapsed ? 0 : 1))} title={collapsed ? 'Expand' : 'Collapse'}>
+        <span className="debug-section">{title}</span>
+        {collapsed && summary ? <span className="debug-summary">{summary}</span> : null}
+        <span className="debug-arrow">{collapsed ? '▸' : '▾'}</span>
+      </button>
+      {!collapsed && children}
+    </section>
   );
 }
 
 /**
- * Options → Debug (browser): Performance (FPS), the Inspector (the selected / targeted
- * block's properties) and Logging (the recent console log). Polls the engine a few times a second rather than re-rendering every frame.
+ * Options → Debug (browser): a dock on the left edge, from the top of the window down to just
+ * above the HUD (`bottom`, px). Performance (FPS and timings), the Inspector (the selected /
+ * targeted block's properties) and Logging (the recent console log) stack vertically, each
+ * collapsible; Logging takes the leftover height. Resized by width only (drag its right edge;
+ * double-click resets). Polls the engine a few times a second rather than every frame.
  */
-function DebugPanel({ engine }) {
+function DebugPanel({ engine, bottom }) {
   const [, setTick] = useState(0);
+  const [width, setWidth] = useStoredNumber('debugWidth', DEBUG_WIDTH.initial);
+  const startWidth = useRef(width);
   const logRef = useRef(null);
   const stick = useRef(true); // keep the log scrolled to the bottom unless the user scrolled up
   useEffect(() => {
@@ -170,28 +293,30 @@ function DebugPanel({ engine }) {
   useEffect(() => {
     const el = logRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [version]);
+  });
+  const ms = (v, digits) => (v == null ? '—' : `${v.toFixed(digits)} ms`);
   return (
-    <div className="panel debug-panel">
-      <div className="debug-perf">
-        <div className="debug-section">Performance</div>
-        <table>
+    <div className="panel debug-dock" style={{ width, bottom }}>
+      <ResizeGrip
+        place="grip-right-edge"
+        title="Drag to resize (double-click: reset)"
+        onStart={() => (startWidth.current = width)}
+        onDrag={(up, right) => setWidth(Math.round(clamp(startWidth.current + right, DEBUG_WIDTH.min, window.innerWidth * DEBUG_WIDTH.max)))}
+        onReset={() => setWidth(DEBUG_WIDTH.initial)}
+      />
+      <DebugSection id="performance" title="Performance" summary={`${engine.fps.toFixed(0)} FPS`}>
+        <table className="debug-table">
           <tbody>
-            <tr>
-              <th>FPS</th>
-              <td>{engine.fps.toFixed(0)}</td>
-            </tr>
-            <tr>
-              <th>Turn</th>
-              <td>{engine.turnMs == null ? '—' : `${engine.turnMs.toFixed(1)} ms`}</td>
-            </tr>
+            <tr><th>FPS</th><td>{engine.fps.toFixed(0)}</td></tr>
+            <tr><th>Turn</th><td>{ms(engine.turnMs, 1)}</td></tr>
+            <tr><th>Anim</th><td>{ms(engine.animMs, 2)}</td></tr>
+            <tr><th>Render</th><td>{ms(engine.renderMs, 2)}</td></tr>
           </tbody>
         </table>
-      </div>
-      <div className="debug-props">
-        <div className="debug-section">Inspector</div>
+      </DebugSection>
+      <DebugSection id="inspector" title="Inspector" summary={info.title}>
         <div className="debug-title">{info.title}</div>
-        <table>
+        <table className="debug-table">
           <tbody>
             {info.rows.map(([k, v]) => (
               <tr key={k}>
@@ -201,28 +326,27 @@ function DebugPanel({ engine }) {
             ))}
           </tbody>
         </table>
-      </div>
-      <div className="debug-logging">
-      <div className="debug-section">Logging</div>
-      <div
-        className="debug-log"
-        ref={logRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
-        }}
-      >
-        {logs.length ? (
-          logs.map((e, i) => (
-            <div key={i} className={`log-${e.level}`}>
-              <span className="log-time">{e.t}</span> {e.text}
-            </div>
-          ))
-        ) : (
-          <div className="log-empty">No log output yet</div>
-        )}
-      </div>
-      </div>
+      </DebugSection>
+      <DebugSection id="logging" title="Logging" summary={`${logs.length} lines`} grow>
+        <div
+          className="debug-log"
+          ref={logRef}
+          onScroll={(ev) => {
+            const el = ev.currentTarget;
+            stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+          }}
+        >
+          {logs.length ? (
+            logs.map((entry, i) => (
+              <div key={i} className={`log-${entry.level}`}>
+                <span className="log-time">{entry.t}</span> {entry.text}
+              </div>
+            ))
+          ) : (
+            <div className="log-empty">No log output yet</div>
+          )}
+        </div>
+      </DebugSection>
     </div>
   );
 }
@@ -246,12 +370,8 @@ function MenuScreen({ engine, s }) {
   };
   const openFile = async (e) => {
     const f = e.target.files?.[0];
-    if (!f) return;
-    try {
-      engine.importJSON(JSON.parse(await f.text()), f.name);
-    } catch {
-      engine.toast('That file is not valid JSON', 'error');
-    }
+    e.target.value = ''; // the same file can be picked again
+    if (f) engine.openDroppedFile(f); // a save file loads; a template builds a new world
   };
 
   const renderItem = (it) =>

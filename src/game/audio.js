@@ -3,9 +3,9 @@
 import berryGrowUrl from '../../sfx/fruit.wav?url';
 import waitUrl from '../../sfx/wait.wav?url';
 import assignUrl from '../../sfx/assign.wav?url';
-import crawlyDoneUrl from '../../sfx/done.wav?url';
-import crawlyTrappedUrl from '../../sfx/trapped.wav?url';
-import crawlyDeathUrl from '../../sfx/death.wav?url';
+import creatureDoneUrl from '../../sfx/done.wav?url';
+import creatureTrappedUrl from '../../sfx/trapped.wav?url';
+import creatureDeathUrl from '../../sfx/death.wav?url';
 import eatUrl from '../../sfx/eat.wav?url';
 import sipUrl from '../../sfx/sip.wav?url';
 import waterDripUrl from '../../sfx/drip.wav?url';
@@ -44,9 +44,9 @@ const SAMPLE_URLS = {
   berryGrow: berryGrowUrl,
   wait: waitUrl,
   assign: assignUrl,
-  crawlyDone: crawlyDoneUrl,
-  crawlyTrapped: crawlyTrappedUrl,
-  crawlyDeath: crawlyDeathUrl,
+  creatureDone: creatureDoneUrl,
+  creatureTrapped: creatureTrappedUrl,
+  creatureDeath: creatureDeathUrl,
   eat: eatUrl,
   sip: sipUrl,
   waterDrip: waterDripUrl,
@@ -56,13 +56,13 @@ const SAMPLE_URLS = {
 };
 const samples = new Map(); // name -> Promise<AudioBuffer | null>
 
-function loadSample(c, name) {
+function loadSample(audioCtx, name) {
   if (!samples.has(name)) {
     samples.set(
       name,
       fetch(SAMPLE_URLS[name])
         .then((r) => r.arrayBuffer())
-        .then((data) => c.decodeAudioData(data))
+        .then((data) => audioCtx.decodeAudioData(data))
         .catch(() => null) // a missing / broken file just stays silent
     );
   }
@@ -94,12 +94,12 @@ export const playBerryGrow = () => playSample('berryGrow');
 export const playWait = () => playSample('wait');
 /** A creature was given something to do: Wander (Y), or sent to a target. */
 export const playAssign = () => playSample('assign');
-/** A walking Crawly reached its target (back to Wander). */
-export const playCrawlyDone = () => playSample('crawlyDone');
-/** A Crawly got walled in (Trapped). */
-export const playCrawlyTrapped = () => playSample('crawlyTrapped');
-/** A Crawly died. */
-export const playCrawlyDeath = () => playSample('crawlyDeath');
+/** A walking creature reached its target (back to Wander). */
+export const playCreatureDone = () => playSample('creatureDone');
+/** A creature got walled in (Trapped). */
+export const playCreatureTrapped = () => playSample('creatureTrapped');
+/** A creature died. */
+export const playCreatureDeath = () => playSample('creatureDeath');
 
 const lastPlayed = new Map();
 /**
@@ -114,34 +114,34 @@ export function playSfx(name, minGapMs = 90) {
   playSample(name);
 }
 
-function tone(c, { type = 'sine', f0, f1, t0, dur, gain = 0.2 }) {
-  const o = c.createOscillator();
-  const g = c.createGain();
+function tone(audioCtx, { type = 'sine', f0, f1, t0, dur, gain = 0.2 }) {
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
   o.type = type;
   o.frequency.setValueAtTime(f0, t0);
   o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(gain, t0 + 0.008);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g).connect(c.destination);
+  o.connect(g).connect(audioCtx.destination);
   o.start(t0);
   o.stop(t0 + dur + 0.02);
 }
 
-function noise(c, { t0, dur, gain = 0.15, freq = 1200, q = 0.8 }) {
-  const len = Math.floor(c.sampleRate * dur);
-  const buf = c.createBuffer(1, len, c.sampleRate);
+function noise(audioCtx, { t0, dur, gain = 0.15, freq = 1200, q = 0.8 }) {
+  const len = Math.floor(audioCtx.sampleRate * dur);
+  const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
   const d = buf.getChannelData(0);
   for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-  const src = c.createBufferSource();
+  const src = audioCtx.createBufferSource();
   src.buffer = buf;
-  const f = c.createBiquadFilter();
+  const f = audioCtx.createBiquadFilter();
   f.type = 'bandpass';
   f.frequency.value = freq;
   f.Q.value = q;
-  const g = c.createGain();
+  const g = audioCtx.createGain();
   g.gain.value = gain;
-  src.connect(f).connect(g).connect(c.destination);
+  src.connect(f).connect(g).connect(audioCtx.destination);
   src.start(t0);
 }
 
@@ -196,9 +196,9 @@ export function playGo() {
 }
 
 /** Short bell-like note (sine + quiet octave overtone). */
-function bell(c, f, t0, dur = 0.35, gain = 0.14) {
-  tone(c, { type: 'sine', f0: f, f1: f * 0.998, t0, dur, gain });
-  tone(c, { type: 'sine', f0: f * 2, f1: f * 2 * 0.998, t0, dur: dur * 0.6, gain: gain * 0.3 });
+function bell(audioCtx, f, t0, dur = 0.35, gain = 0.14) {
+  tone(audioCtx, { type: 'sine', f0: f, f1: f * 0.998, t0, dur, gain });
+  tone(audioCtx, { type: 'sine', f0: f * 2, f1: f * 2 * 0.998, t0, dur: dur * 0.6, gain: gain * 0.3 });
 }
 
 /** Resume: soft two-note rise. */

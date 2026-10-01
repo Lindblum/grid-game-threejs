@@ -265,7 +265,7 @@ export class MenuPanel extends CanvasPanel {
     ctx.textAlign = 'left';
     ctx.font = '700 18px system-ui, -apple-system, Segoe UI, sans-serif';
     ctx.fillStyle = 'rgba(232,236,242,0.65)';
-    CONTROL_COLUMNS.forEach((c, i) => ctx.fillText(c, colX[i] + 8, y0 + headH / 2));
+    CONTROL_COLUMNS.forEach((column, i) => ctx.fillText(column, colX[i] + 8, y0 + headH / 2));
     let y = y0 + headH;
     const glyphH = 40;
     CONTROLS.forEach((row, r) => {
@@ -278,10 +278,10 @@ export class MenuPanel extends CanvasPanel {
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'left';
       ctx.fillText(fit(ctx, row.action, widths[0] - 12), colX[0] + 8, y + rowH / 2);
-      [row.mk, row.pad, row.xr].forEach((b, i) => {
+      [row.mk, row.pad, row.xr].forEach((binding, i) => {
         const avail = widths[i + 1] - 12;
-        const h = Math.min(glyphH, (glyphH * avail) / Math.max(1, cellWidth(ctx, b.g, glyphH)));
-        drawCell(ctx, b.g, colX[i + 1] + 8, y + rowH / 2, h);
+        const h = Math.min(glyphH, (glyphH * avail) / Math.max(1, cellWidth(ctx, binding.g, glyphH)));
+        drawCell(ctx, binding.g, colX[i + 1] + 8, y + rowH / 2, h);
       });
       y += rowH;
     });

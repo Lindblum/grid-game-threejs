@@ -13,11 +13,18 @@ for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) HEX_D
 
 export const NEIGHBOR_DIRS = [...SQUARE_DIRS, ...HEX_DIRS];
 
-export const cellKey = (x, y, z) => `${x},${y},${z}`;
+/**
+ * Map key of cell (x, y, z): one number packing the three coordinates (each within
+ * ±KEY_HALF cm), much faster to build and look up than a string, and no garbage.
+ */
+const KEY_SPAN = 1 << 17;
+const KEY_HALF = KEY_SPAN / 2;
+export const cellKey = (x, y, z) => ((x + KEY_HALF) * KEY_SPAN + (y + KEY_HALF)) * KEY_SPAN + (z + KEY_HALF);
 
 export function parseKey(k) {
-  const [x, y, z] = k.split(',').map(Number);
-  return { x, y, z };
+  const z = (k % KEY_SPAN) - KEY_HALF;
+  const rest = Math.floor(k / KEY_SPAN);
+  return { x: Math.floor(rest / KEY_SPAN) - KEY_HALF, y: (rest % KEY_SPAN) - KEY_HALF, z };
 }
 
 /** True when (x,y,z) is a valid cell centre: integers that are all even or all odd. */
@@ -48,7 +55,7 @@ export function faceFromNormal(n) {
 export function nearestCell(x, y, z) {
   const even = [x, y, z].map((v) => 2 * Math.round(v / 2));
   const odd = [x, y, z].map((v) => 2 * Math.round((v - 1) / 2) + 1);
-  const d2 = (c) => (c[0] - x) ** 2 + (c[1] - y) ** 2 + (c[2] - z) ** 2;
+  const d2 = (cell) => (cell[0] - x) ** 2 + (cell[1] - y) ** 2 + (cell[2] - z) ** 2;
   const [cx, cy, cz] = d2(even) <= d2(odd) ? even : odd;
   return { x: cx, y: cy, z: cz };
 }

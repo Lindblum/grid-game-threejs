@@ -162,7 +162,7 @@ export function drawSelectIcon(ctx, cx, cy, size) {
   ctx.restore();
 }
 
-/** Colour of the Select tool's wireframes (selected Crawly, target cell). */
+/** Colour of the Select tool's wireframes (selected creature, target cell). */
 export const SELECT_GREEN = '#3ddc5a';
 
 /**
