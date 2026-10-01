@@ -7,7 +7,7 @@ export const CONTROLS = [
   {
     action: 'Use tool',
     mk: { g: ['mouse:L'], t: 'Left click' },
-    pad: { g: ['pad:RT'], t: 'Right trigger (RT)' },
+    pad: { g: ['pad:A'], t: 'A' },
     xr: { g: ['xr:trigger:R'], t: 'Right trigger' },
   },
   {
@@ -25,7 +25,7 @@ export const CONTROLS = [
   {
     action: 'Eat (selected creature)',
     mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-    pad: { g: ['pad:A'], t: 'A: the selected creature eats the block in front of it' },
+    pad: { g: ['pad:Y'], t: 'Y: the selected creature eats the block in front of it' },
     xr: { g: ['xr:A'], t: 'A: the selected creature eats the block in front of it' },
   },
   {
@@ -37,7 +37,7 @@ export const CONTROLS = [
   {
     action: 'Wander / Wait (selected creature)',
     mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-    pad: { g: ['pad:Y', 'sep:/', 'pad:X'], t: 'Y: Wander, X: Wait' },
+    pad: { g: ['pad:X'], t: 'X: Wait, or resume what it was doing (toggle)' },
     xr: { g: ['xr:Y', 'sep:/', 'xr:X'], t: 'Left Y: Wander (opens the menu when nothing is selected), left X: Wait' },
   },
   {
@@ -55,7 +55,7 @@ export const CONTROLS = [
   {
     action: 'Zoom',
     mk: { g: ['mouse:wheel'], t: 'Mouse wheel' },
-    pad: { g: ['stick:L:y'], t: 'Left stick up / down' },
+    pad: { g: ['pad:LT', 'sep:/', 'pad:RT'], t: 'LT: zoom out, RT: zoom in (or the left stick up / down)' },
     xr: { g: ['xr:grip:L', 'sep:+', 'xr:grip:R'], t: 'Hold both grips and move your hands apart / together' },
   },
   {

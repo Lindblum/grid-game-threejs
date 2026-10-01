@@ -322,76 +322,167 @@ function fit(ctx, text, maxW) {
   return s + '…';
 }
 
-const TABLET_W = 1000, TABLET_H = 760;
+/** The debug tablet's pixel density (canvas px per metre): its text is always this size, however big the tablet. */
+const TABLET_PX_PER_M = 1000 / 0.34;
+/** The debug tablet's size (m): at first, and the limits when resizing it (drag its corner handle). */
+export const TABLET_SIZE = { width: 0.34, height: 0.26, minWidth: 0.2, minHeight: 0.16, maxWidth: 0.8, maxHeight: 0.7 };
+const TABLET_GRIP_PX = 64; // the resize handle: this square in the bottom-right corner
 const LOG_COLORS = { log: '#c9d1dc', info: '#9cc8ff', warn: '#ffd166', error: '#ff8a80' };
 
 /**
- * Debug tablet for XR: a free-floating panel showing the same content as the browser's debug
- * HUD panel (properties of the selected / targeted block, then the recent console log).
- * It lives in the scene, and can be picked up and moved with either grip.
+ * Debug tablet for XR: a free-floating panel showing the same content as the browser's Debug
+ * dock: Performance (FPS and timings), the Inspector (properties of the selected / targeted
+ * block), then the recent console log. It lives in the scene, can be picked up and moved with
+ * either grip, and resized by dragging its bottom-right corner with the trigger: the panel
+ * gets bigger or smaller, its text keeps its size (more or fewer rows and log lines fit).
  */
 export class DebugTablet extends CanvasPanel {
   constructor() {
-    super(TABLET_W, TABLET_H, 0.34);
+    super(Math.round(TABLET_SIZE.width * TABLET_PX_PER_M), Math.round(TABLET_SIZE.height * TABLET_PX_PER_M), TABLET_SIZE.width);
     this.mesh.name = 'xr-debug-tablet';
     this.mesh.visible = false;
+    this.width = TABLET_SIZE.width;
+    this.height = TABLET_SIZE.height;
     this._last = '';
   }
 
-  /** info = { title, rows: [[key, value]] } (Engine.debugInfo); logs = debugLog entries. */
-  draw(info, logs, logVersion, grabbed) {
-    const sig = JSON.stringify([info, logVersion, grabbed]);
+  /**
+   * Sets the tablet's size (m, clamped to TABLET_SIZE's limits), keeping its top-left corner
+   * where it is: a bigger canvas at the same pixel density, so the contents don't scale.
+   */
+  setSize(widthM, heightM) {
+    const w = Math.min(TABLET_SIZE.maxWidth, Math.max(TABLET_SIZE.minWidth, widthM));
+    const h = Math.min(TABLET_SIZE.maxHeight, Math.max(TABLET_SIZE.minHeight, heightM));
+    const pxW = Math.round(w * TABLET_PX_PER_M), pxH = Math.round(h * TABLET_PX_PER_M);
+    if (pxW === this.canvas.width && pxH === this.canvas.height) return;
+    // keep the top-left corner in place: the plane is centred on the mesh's position
+    const shift = new THREE.Vector3((w - this.width) / 2, -(h - this.height) / 2, 0).applyQuaternion(this.mesh.quaternion);
+    this.mesh.position.add(shift);
+    this.width = w;
+    this.height = h;
+    this.canvas.width = pxW;
+    this.canvas.height = pxH;
+    // a texture can't change size once uploaded: a new one for the new canvas
+    this.texture.dispose();
+    this.texture = new THREE.CanvasTexture(this.canvas);
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.anisotropy = 4;
+    this.material.map = this.texture;
+    this.mesh.geometry.dispose();
+    this.mesh.geometry = new THREE.PlaneGeometry(w, h);
+    this._last = ''; // redraw
+  }
+
+  /** Whether `uv` (a ray hit on the tablet) is on its resize handle (bottom-right corner). */
+  onResizeHandle(uv) {
+    const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
+    return px >= this.canvas.width - TABLET_GRIP_PX && py >= this.canvas.height - TABLET_GRIP_PX;
+  }
+
+  /**
+   * info = { title, rows: [[key, value]] } (Engine.debugInfo); perf = [[label, text]]
+   * (Performance); logs = debugLog entries. `highlight`: grabbed or pointed at (brighter rim);
+   * `handleHot`: the resize handle is pointed at or being dragged.
+   */
+  draw(info, perf, logs, logVersion, highlight, handleHot = false) {
+    const sig = JSON.stringify([info, perf, logVersion, highlight, handleHot]);
     if (sig === this._last) return;
     this._last = sig;
     const { ctx } = this;
-    const W = TABLET_W, H = TABLET_H;
+    const W = this.canvas.width, H = this.canvas.height;
     ctx.clearRect(0, 0, W, H);
     roundRect(ctx, 4, 4, W - 8, H - 8, 30);
     ctx.fillStyle = 'rgba(12, 15, 22, 0.94)';
     ctx.fill();
-    ctx.strokeStyle = grabbed ? '#9cc8ff' : 'rgba(255,255,255,0.22)';
-    ctx.lineWidth = grabbed ? 6 : 3;
+    ctx.strokeStyle = highlight ? '#9cc8ff' : 'rgba(255,255,255,0.22)';
+    ctx.lineWidth = highlight ? 6 : 3;
     ctx.stroke();
 
+    const sans = (size, weight = 400) => `${weight} ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    const mono = (size, weight = 400) => `${weight} ${size}px ui-monospace, Consolas, monospace`;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffffff';
-    ctx.font = '700 34px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.font = sans(34, 700);
     ctx.fillText('Debug', 32, 42);
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.font = '400 22px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText('grip to move', W - 32, 42);
-
-    // properties
-    const mono = (size, weight = 400) => `${weight} ${size}px ui-monospace, Consolas, monospace`;
-    let y = 96;
+    ctx.font = sans(22);
+    ctx.fillText(fit(ctx, 'grip to move · trigger on corner to resize', W - 200), W - 32, 42);
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#e8ecf2';
-    ctx.font = '600 26px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText(fit(ctx, info.title, W - 64), 32, y);
-    y += 40;
-    for (const [k, v] of info.rows.slice(0, 11)) {
+
+    const section = (title, y) => {
+      ctx.font = sans(20, 700);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fillText(title.toUpperCase(), 32, y);
+      return y + 34;
+    };
+    const keyX = 40, valueX = Math.min(270, W * 0.4);
+    const row = (k, v, y) => {
       ctx.font = mono(22, 600);
       ctx.fillStyle = 'rgba(255,255,255,0.55)';
-      ctx.fillText(k, 40, y);
+      ctx.fillText(fit(ctx, k, valueX - keyX - 12), keyX, y);
       ctx.font = mono(22);
       ctx.fillStyle = '#e8ecf2';
-      ctx.fillText(fit(ctx, String(v), W - 300), 270, y);
+      ctx.fillText(fit(ctx, String(v), W - valueX - 40), valueX, y);
+    };
+
+    // Performance: two columns when the tablet is wide enough
+    let y = section('Performance', 92);
+    const cols = W >= 700 ? 2 : 1;
+    perf.forEach(([k, v], i) => {
+      const col = i % cols, line = Math.floor(i / cols);
+      const x0 = col * (W / 2);
+      ctx.font = mono(22, 600);
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillText(k, x0 + keyX, y + line * 30);
+      ctx.font = mono(22);
+      ctx.fillStyle = '#e8ecf2';
+      ctx.fillText(v, x0 + keyX + 110, y + line * 30);
+    });
+    y += Math.ceil(perf.length / cols) * 30 + 14;
+
+    // Inspector: as many rows as fit, leaving at least a few log lines
+    y = section('Inspector', y);
+    ctx.font = sans(26, 600);
+    ctx.fillStyle = '#e8ecf2';
+    ctx.fillText(fit(ctx, info.title, W - 64), 32, y);
+    y += 38;
+    const lineH = 26;
+    const minLogH = 4 * lineH + 50;
+    const rowsFit = Math.max(0, Math.floor((H - 24 - minLogH - y) / 30));
+    for (const [k, v] of info.rows.slice(0, rowsFit)) {
+      row(k, v, y);
+      y += 30;
+    }
+    if (info.rows.length > rowsFit) {
+      ctx.font = sans(20);
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.fillText(`… ${info.rows.length - rowsFit} more (make the tablet taller)`, keyX, y);
       y += 30;
     }
 
-    // log, newest at the bottom
-    const logTop = Math.max(y + 16, 420);
+    // Logging: newest at the bottom, filling the rest
+    y = section('Logging', y + 10);
     ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(24, logTop - 4, W - 48, 2);
-    const lineH = 26;
-    const fitLines = Math.floor((H - 24 - logTop) / lineH);
+    ctx.fillRect(24, y - 20, W - 48, 2);
+    const fitLines = Math.max(0, Math.floor((H - 24 - y) / lineH));
     ctx.font = mono(19);
     logs.slice(-fitLines).forEach((e, i) => {
       ctx.fillStyle = LOG_COLORS[e.level] ?? LOG_COLORS.log;
-      ctx.fillText(fit(ctx, `${e.t} ${e.text}`, W - 64), 32, logTop + 16 + i * lineH);
+      ctx.fillText(fit(ctx, `${e.t} ${e.text}`, W - 64 - TABLET_GRIP_PX * 0.5), 32, y + i * lineH);
     });
+
+    // the resize handle: diagonal ridges in the bottom-right corner
+    ctx.strokeStyle = handleHot ? '#9cc8ff' : 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = handleHot ? 5 : 3;
+    ctx.lineCap = 'round';
+    for (const d of [18, 32, 46]) {
+      ctx.beginPath();
+      ctx.moveTo(W - 14 - d, H - 14);
+      ctx.lineTo(W - 14, H - 14 - d);
+      ctx.stroke();
+    }
     this.texture.needsUpdate = true;
   }
 }

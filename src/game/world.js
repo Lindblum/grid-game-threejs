@@ -12,7 +12,7 @@ import { CreatureEyes, orientCreature } from './creature.js';
  * Per-turn animations (block slides, eye turns, vanishing) last this fraction of a turn.
  * The length in seconds is world.stepSeconds, which follows Options → Speed.
  */
-export const STEP_FRACTION = 0.75;
+export const STEP_FRACTION = 1;
 
 /**
  * Steps of the "New" scene, in order (after the Stone at the origin). Each step adds
@@ -265,6 +265,10 @@ export class World {
     const { front, floor } = creature;
     orientCreature(this, creature, moveDir);
     if (creature.front !== front || creature.floor !== floor) this.eyes.track(creature, durationS);
+    // a Buzzy turning where it is buzzes ('creatureTurned'; the engine plays it); one that
+    // moved has buzzed already ('creatureMoved')
+    const turned = front && creature.front && creature.front.some((v, i) => v !== front[i]);
+    if (turned && !moveDir && creature.type === BLOCK.BUZZY) this.emit('creatureTurned', creature);
   }
 
   /** Re-derives the floor of every creature next to cell (x, y, z). */
@@ -835,6 +839,11 @@ export class World {
     this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), t0: performance.now(), dur: durationS * 1000 });
     // a creature now faces the way it moved (unless it was carried, e.g. by a falling group);
     // its old and new neighbours may change floors
+    // a Buzzy or Squirmy moving under its own power (not carried): 'creatureMoved' (the
+    // engine plays its sound: buzz, slither)
+    if (turnCreature && ((b.type === BLOCK.BUZZY && !b.segmentOf) || (b.type === BLOCK.SQUIRMY && b.isHead))) {
+      this.emit('creatureMoved', b);
+    }
     if (isSingleCreature(b.type) || b.isHead) {
       this._reorient(b, turnCreature ? [to.x - fromPos.x, to.y - fromPos.y, to.z - fromPos.z] : null, durationS);
     }

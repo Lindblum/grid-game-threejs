@@ -223,7 +223,7 @@ export function stepDirt(world, turn) {
     }
     if (!waters.length || Math.random() >= DIRT_ABSORB_CHANCE) continue;
     const w = closestToOrigin(waters);
-    if (!world.consume(d, w, 'waterDrip')) continue; // the Water shrinks into the Dirt (its slot)
+    if (!world.consume(d, w, 'waterSip')) continue; // the Water shrinks into the Dirt (its slot)
     if (world.setType(d, BLOCK.MOSS)) changed++;
   }
   return changed;
@@ -414,8 +414,15 @@ export function creatureEat(world, creature, food) {
   }
   if (creature.type === BLOCK.BUZZY && wasBerry) world.growSegment(creature); // a Buzzy grows a body segment (wings and legs too)
   if (creature.type === BLOCK.SQUIRMY && wasBerry) {
-    const cell = world._wormCell(world.clusterOf(creature));
-    if (cell) world.add(...cell, BLOCK.SQUIRMY); // the newest block becomes the tail
+    const body = world.clusterOf(creature);
+    const cell = world._wormCell(body);
+    // the newest block becomes the tail: it grows in out of the body block it's next to (the
+    // old tail, if there was room there), like a Buzzy's segment
+    if (cell && world.add(...cell, BLOCK.SQUIRMY)) {
+      const [x, y, z] = cell;
+      const from = body.findLast((b) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => b.x + dx === x && b.y + dy === y && b.z + dz === z));
+      world.appear(world.get(x, y, z), from ?? body[body.length - 1]);
+    }
   }
   return true;
 }
@@ -634,7 +641,7 @@ export function stepWood(world, turn) {
     // (growing right where the Water was: it is taken at once, so the cell is free)
     const feeder = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === drink.x && w.y + dy === drink.y && w.z + dz === drink.z));
     const instant = cellKey(c.x, c.y, c.z) === drinkKey;
-    if (!world.consume(feeder ?? tree[0], drink, 'waterDrip', { instant })) continue; // tree's inventory is full
+    if (!world.consume(feeder ?? tree[0], drink, 'waterSip', { instant })) continue; // tree's inventory is full
     // the new block is excreted by the Wood it grows from, so it grows in out of the branch
     const parent = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === c.x && w.y + dy === c.y && w.z + dz === c.z));
     const made = growFrom(world, parent ?? tree[0], c, fruit ? BLOCK.BERRY : BLOCK.WOOD);
@@ -838,11 +845,24 @@ export function isWalkable(world, x, y, z, self = null) {
 }
 
 /**
+ * A Buzzy in mid-air: nothing next to it but empty cells and clouds (Fog, Nimbus). Its body
+ * segments don't count (they're part of it).
+ */
+function isAirborneBuzzy(world, creature) {
+  if (creature.type !== BLOCK.BUZZY) return false;
+  return NEIGHBOR_DIRS.every(([dx, dy, dz]) => {
+    const n = world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz));
+    return !n || CLOUD_TYPES.has(n.type) || n.segmentOf === creature;
+  });
+}
+
+/**
  * Wander: with WANDER_MOVE_CHANCE the creature steps to a random walkable adjacent cell
- * (any of its 14 neighbours). Returns whether it moved.
+ * (any of its 14 neighbours); a Buzzy in mid-air (isAirborneBuzzy) always does, it can't
+ * hover. Returns whether it moved.
  */
 function wander(world, creature) {
-  if (Math.random() >= WANDER_MOVE_CHANCE) return false;
+  if (Math.random() >= WANDER_MOVE_CHANCE && !isAirborneBuzzy(world, creature)) return false;
   const options = [];
   for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
     const x = creature.x + dx, y = creature.y + dy, z = creature.z + dz;

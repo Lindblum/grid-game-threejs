@@ -290,7 +290,21 @@ export function createBlockMaterials() {
     options.procedural = on;
     for (const m of all) m.needsUpdate = true; // recompile with / without SOLID_MATERIALS
   };
-  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, uniforms, setProcedural };
+  // Options → Refraction (either material mode): On, Crystal bends the scene behind it
+  // (transmission, an extra render pass); Off, it is simply see-through, alpha-blended like
+  // Water (its shader's opacity), which is much cheaper
+  let refraction = true;
+  const setRefraction = (on) => {
+    if (refraction === on) return;
+    refraction = on;
+    for (const m of [crystal, bodyCrystal]) {
+      m.transmission = on ? CRYSTAL_TRANSMISSION : 0;
+      m.transparent = !on;
+      m.depthWrite = on;
+      m.needsUpdate = true; // recompile with / without transmission
+    }
+  };
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, uniforms, setProcedural, setRefraction };
 }
 
 /**

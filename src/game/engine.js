@@ -13,6 +13,7 @@ import { EDGE_SHADE, EDGE_WIDTH_CM, truncatedOctahedronFaces } from './geometry.
 import {
   playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
+  setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
 import { menuModel, displayName, PAGE_SIZE, SPEED, BACKGROUNDS } from './menu.js';
@@ -27,6 +28,9 @@ const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
 const WHEEL_TOOL_REARM_MS = 200; // horizontal-scroll tool switching: quiet gap that ends one push
 const BG = new THREE.Color('#1b2029');
+// scratch for the listener (positional sound)
+const _earPos = new THREE.Vector3(), _earFwd = new THREE.Vector3(), _earUp = new THREE.Vector3();
+const _earQuat = new THREE.Quaternion(), _earScale = new THREE.Vector3();
 /** Options → Background: Skybox: a 2:1 panorama wrapped all around the scene (loaded on first use). */
 const SKYBOX_URL = new URL('../../img/skybox.jpg', import.meta.url).href;
 const ORBIT_HEIGHT_CM = 100; // light 1 m above the scene
@@ -84,7 +88,8 @@ export class Engine {
       screen: 'playing',
       paused: false, // the game opens straight into a New scene, with a countdown
       menu: 'main', // 'main' | 'load' | 'save' | 'options'
-      soundOn: true,
+      soundOn: true, // Options → Sounds
+      musicOn: true, // Options → Music: plays while the game is running (quieter in the pause menu)
       gameTime: -COUNTDOWN_SECONDS, // whole seconds (turns) since New / Load; negative = countdown
       background: 'passthrough', // Options → Background: 'solid', 'skybox' or 'passthrough' (XR passthrough; solid elsewhere)
       proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
@@ -94,6 +99,7 @@ export class Engine {
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
       fog: true, // Options → Fog: Fog template steps in New scenes
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
+      refraction: true, // Options → Refraction: Crystal bends what's behind it (Off: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       saves: null,
       savesError: null,
@@ -149,11 +155,15 @@ export class Engine {
     const wasInOptions = inOptions(this.state);
     this.state = { ...this.state, ...patch };
     if (wasInOptions && !inOptions(this.state)) this._saveOptions(); // left Options (Back, Esc, Resume, …)
+    // the music plays while the game is running, at a quarter of its volume in the pause menu
+    // (fades in / out / down / up as that changes)
+    const s = this.state;
+    setMusicLevel(s.musicOn && s.screen === 'playing' ? (s.paused ? MUSIC_LEVEL.paused : MUSIC_LEVEL.playing) : 0);
     for (const fn of this.listeners) fn();
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['soundOn', 'background', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering'];
+  static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction'];
 
   _saveOptions() {
     saveOptionsCookie(Object.fromEntries(Engine.OPTION_KEYS.map((k) => [k, this.state[k]])));
@@ -167,6 +177,7 @@ export class Engine {
   _applyOptions(saved) {
     if (!saved) return;
     const bool = (k) => typeof saved[k] === 'boolean';
+    if (bool('musicOn')) this.setState({ musicOn: saved.musicOn });
     if (bool('soundOn')) {
       setMuted(!saved.soundOn);
       this.setState({ soundOn: saved.soundOn });
@@ -187,6 +198,10 @@ export class Engine {
     if (bool('ambientOcclusion')) {
       this.world.materials.uniforms.uAO.value = saved.ambientOcclusion ? 1 : 0;
       this.setState({ ambientOcclusion: saved.ambientOcclusion });
+    }
+    if (bool('refraction')) {
+      this.world.materials.setRefraction(saved.refraction);
+      this.setState({ refraction: saved.refraction });
     }
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed);
     for (const k of ['rain', 'debugMode', 'smoothRendering']) if (bool(k)) this.setState({ [k]: saved[k] });
@@ -268,12 +283,17 @@ export class Engine {
     scene.add(root);
     this.worldRoot = root;
     this.world = new World(root);
-    // sounds for things the simulation does on its own
-    this.world.on('berryGrow', () => playBerryGrow());
-    this.world.on('creatureArrived', () => playCreatureDone());
-    this.world.on('creatureTrapped', () => playCreatureTrapped());
-    this.world.on('blockConsumed', ({ sound }) => playSfx(sound));
-    this.world.on('blockExcreted', ({ sound }) => playSfx(sound));
+    // sounds for things the simulation does on its own, each from where it happens
+    const at = (cell) => this._soundAt(cell);
+    this.world.on('berryGrow', (berry) => playBerryGrow(at(berry)));
+    this.world.on('creatureArrived', (creature) => playCreatureDone(at(creature)));
+    this.world.on('creatureTrapped', (creature) => playCreatureTrapped(at(creature)));
+    this.world.on('creatureTurned', (creature) => playSfx('buzz', 150, at(creature)));
+    // a creature moving under its own power: a Buzzy buzzes, a Squirmy slithers
+    const MOVE_SOUNDS = { [BLOCK.BUZZY]: 'buzz', [BLOCK.SQUIRMY]: 'slither' };
+    this.world.on('creatureMoved', (creature) => playSfx(MOVE_SOUNDS[creature.type], 150, at(creature)));
+    this.world.on('blockConsumed', ({ sound, block }) => playSfx(sound, 90, at(block)));
+    this.world.on('blockExcreted', ({ sound, block }) => playSfx(sound, 90, at(block)));
     // event log (console, so it also shows in the debug panel): consume, excrete, buffs, behavior
     const nameOf = (type) => blockProps(type).name;
     this.world.on('blockConsumed', ({ by, block }) => this._logEvent('consume', by, `ate ${nameOf(block.type)}`));
@@ -283,11 +303,11 @@ export class Engine {
       this._logEvent('buff', block, `used a ${BUFF_TYPES[type]?.name ?? type} charge (${charges} left)`));
     this.world.on('buffExpired', ({ block, type }) => this._logEvent('buff', block, `${BUFF_TYPES[type]?.name ?? type} wore off`));
     this.world.on('behaviorChanged', ({ block, from, to }) => this._logEvent('behavior', block, `${from} → ${to}`));
-    this.world.on('blockBlown', ({ sound }) => playSfx(sound, 250)); // many clouds at once: one breeze
+    this.world.on('blockBlown', ({ sound, block }) => playSfx(sound, 250, at(block))); // many clouds at once: one breeze
     this.world.on('blockVanished', () => this._syncCount());
-    this.world.on('creatureFreed', () => playCreatureDone()); // same "made it" sound as arriving
-    this.world.on('creatureDied', () => {
-      playCreatureDeath();
+    this.world.on('creatureFreed', (creature) => playCreatureDone(at(creature))); // same "made it" sound as arriving
+    this.world.on('creatureDied', (died) => {
+      playCreatureDeath(at(died));
       this._syncCount(); // its block is gone
     });
 
@@ -343,7 +363,15 @@ export class Engine {
     this.debugTablet = new DebugTablet(); // Options → Debug, in XR
     this.scene.add(this.debugTablet.mesh);
     this._tabletGrab = null; // { slot, offset: Matrix4 } while a grip holds the tablet
-    this._tabletHover = false; // right controller ray is on the tablet
+    this._tabletResizing = false; // the right trigger is dragging the tablet's resize handle
+    this._tabletHandleHover = false; // the right controller ray is on the tablet's resize handle
+    try {
+      // the tablet's size (drag its corner) is remembered in this browser
+      const size = JSON.parse(localStorage.getItem('xrTabletSize'));
+      if (size && Number.isFinite(size.width) && Number.isFinite(size.height)) this.debugTablet.setSize(size.width, size.height);
+    } catch {}
+    this._tabletHover = false;
+    this._tabletHandleHover = false; // right controller ray is on the tablet
 
     for (let i = 0; i < 2; i++) {
       const ctrl = r.xr.getController(i);
@@ -375,7 +403,10 @@ export class Engine {
         if (this.hands.right === slot) this._onRightTrigger();
       });
       ctrl.addEventListener('selectend', () => {
-        if (this.hands.right === slot) this._sliderDrag = null;
+        if (this.hands.right === slot) {
+          this._sliderDrag = null;
+          this._endTabletResize();
+        }
       });
       // Grips: one hand drags the build, both hands rotate + scale it (Tilt Brush style).
       // A grip near the debug tablet (or the right grip while its ray is on it) moves the tablet instead.
@@ -568,10 +599,11 @@ export class Engine {
     let ok = false;
     if (tool.block && t.place && t.placeFree) {
       ok = this.world.add(t.place[0], t.place[1], t.place[2], tool.block);
-      if (ok) playPlace();
+      if (ok) playPlace(this._soundAt({ x: t.place[0], y: t.place[1], z: t.place[2] }));
     } else if (tool.id === TOOL.DELETE && t.block) {
+      const where = this._soundAt(t.block);
       ok = this.world.remove(t.block.x, t.block.y, t.block.z);
-      if (ok) playDelete();
+      if (ok) playDelete(where);
     }
     if (ok) {
       this._syncCount();
@@ -598,6 +630,17 @@ export class Engine {
    * Debug panel content: properties of the selected creature, or else of the block under the
    * pointer. Returns { title, rows: [[key, value]] }.
    */
+  /** Debug → Performance as [label, text] rows (the XR debug tablet). */
+  performanceRows() {
+    const ms = (v, digits) => (v == null ? '—' : `${v.toFixed(digits)} ms`);
+    return [
+      ['FPS', this.fps.toFixed(0)],
+      ['Turn', ms(this.turnMs, 1)],
+      ['Anim', ms(this.animMs, 2)],
+      ['Render', ms(this.renderMs, 2)],
+    ];
+  }
+
   debugInfo() {
     const sel = this.selected[0];
     const b = sel ?? this.target?.block ?? null;
@@ -710,8 +753,39 @@ export class Engine {
         delete c.walkStuck;
       }
     }
-    if (behavior === BEHAVIOR.WANDER) playAssign();
-    else playWait();
+    const where = this._soundAt(this.selected[0]);
+    if (behavior === BEHAVIOR.WANDER) playAssign(where);
+    else playWait(where);
+    return true;
+  }
+
+  /**
+   * Gamepad X: toggles Wait for the selected creatures. If they are all waiting, each resumes
+   * what it was doing before (its `heldBehavior`: Wander, or Walk on to its target); otherwise
+   * each one not yet waiting remembers what it was doing and waits, until X again (or it is
+   * deselected). Plays wait.wav / assign.wav, or ineffective.wav with nothing selected.
+   */
+  selectedToggleWait() {
+    if (!this.selected.length || !this.toolsReady()) {
+      playSfx('ineffective', 0);
+      return false;
+    }
+    const resume = this.selected.every((c) => c.behavior === BEHAVIOR.WAIT);
+    for (const c of this.selected) {
+      delete c.waitTurns; // X's Wait (and its end) is up to the player, not a timer
+      c.isAssignedBehavior = true;
+      if (resume) {
+        const next = c.heldBehavior && c.heldBehavior !== BEHAVIOR.WAIT ? c.heldBehavior : BEHAVIOR.WANDER;
+        c.behavior = next === BEHAVIOR.WALK && !c.walkTarget ? BEHAVIOR.WANDER : next;
+        c.heldBehavior = c.behavior; // what it carries on with once deselected
+      } else if (c.behavior !== BEHAVIOR.WAIT) {
+        c.heldBehavior = c.behavior;
+        c.behavior = BEHAVIOR.WAIT;
+      }
+    }
+    const where = this._soundAt(this.selected[0]);
+    if (resume) playAssign(where);
+    else playWait(where);
     return true;
   }
 
@@ -758,7 +832,7 @@ export class Engine {
     if (creature) {
       if (this.selected.length === 1 && this.selected[0] === creature) return false;
       this._setSelected([creature]);
-      playWait(); // selecting puts it in Wait
+      playWait(this._soundAt(creature)); // selecting puts it in Wait
       return true;
     }
     if (!this.selected.length) return false;
@@ -780,7 +854,7 @@ export class Engine {
       delete c.waitTurns;
     }
     // it stays selected, so it can be re-targeted straight away
-    playAssign();
+    playAssign(this._soundAt({ x, y, z }));
     return true;
   }
 
@@ -824,7 +898,7 @@ export class Engine {
       if (!p.obj.visible) continue;
       const k = (now - p.t0) / (this.world.stepSeconds * 1000);
       if (k >= 1) p.obj.visible = false;
-      else p.obj.scale.setScalar(1 - k);
+      else p.obj.scale.setScalar(1 - k); // (it moves with the target wireframe: _showHighlight)
     }
   }
 
@@ -904,7 +978,12 @@ export class Engine {
       }
       else {
         const t0 = performance.now();
-        this._turn(turn);
+        beginTurnSounds(); // the turn's sounds are collected…
+        try {
+          this._turn(turn);
+        } finally {
+          endTurnSounds(this.turnSeconds); // …then each plays as often as it happened, spread over the turn
+        }
         this.turnMs = performance.now() - t0; // Debug → Performance
       }
     }
@@ -1030,6 +1109,7 @@ export class Engine {
     }
     if (id === 'options') return this.setState({ menu: 'options' });
     if (id === 'sound') return this.setSound(!s.soundOn);
+    if (id === 'music') return this.setState({ musicOn: !s.musicOn });
     if (id === 'background') {
       const next = BACKGROUNDS[(BACKGROUNDS.indexOf(s.background) + 1) % BACKGROUNDS.length];
       this.setState({ background: next });
@@ -1052,6 +1132,11 @@ export class Engine {
       const on = !s.ambientOcclusion;
       this.world.materials.uniforms.uAO.value = on ? 1 : 0;
       return this.setState({ ambientOcclusion: on });
+    }
+    if (id === 'refraction') {
+      const on = !s.refraction;
+      this.world.materials.setRefraction(on);
+      return this.setState({ refraction: on });
     }
     if (id === 'rain') return this.setState({ rain: !s.rain });
     if (id === 'fog') return this.setFog(!s.fog);
@@ -1084,9 +1169,11 @@ export class Engine {
   async enterXR() {
     const { xrAR, xrVR } = this.state;
     const passthrough = this.state.background === 'passthrough';
-    // Passthrough needs an immersive-ar session (Quest Browser). PC browsers driving a headset
-    // over Link only offer immersive-vr, which always has a solid background.
-    const mode = (passthrough || !xrVR) && xrAR ? 'immersive-ar' : xrVR ? 'immersive-vr' : null;
+    // Passthrough needs an immersive-ar session (Quest Browser), so that's used whenever the
+    // browser offers it, whatever the Background: Solid and Skybox draw over the room in it, and
+    // switching to Passthrough later just works. PC browsers driving a headset over Link only
+    // offer immersive-vr, which always has a background drawn.
+    const mode = xrAR ? 'immersive-ar' : xrVR ? 'immersive-vr' : null;
     if (!mode || this.renderer.xr.isPresenting) return;
     if (passthrough && mode !== 'immersive-ar') {
       this.toast('Passthrough isn’t available in this browser — open the game in the Quest Browser for passthrough');
@@ -1169,6 +1256,31 @@ export class Engine {
     m.updateMatrixWorld();
     this._tabletGrab = { slot, offset: slot.grip.matrixWorld.clone().invert().multiply(m.matrixWorld) };
     return true;
+  }
+
+  /**
+   * While the trigger drags the tablet's resize handle: its bottom-right corner follows where
+   * the right controller's ray meets the tablet's plane (its top-left corner stays put).
+   */
+  _updateTabletResize() {
+    if (!this._tabletResizing || !this._setRayFromController()) return;
+    const tablet = this.debugTablet, m = tablet.mesh;
+    m.updateMatrixWorld();
+    const normal = new THREE.Vector3(0, 0, 1).transformDirection(m.matrixWorld);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, m.getWorldPosition(new THREE.Vector3()));
+    const hit = this.raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+    if (!hit) return;
+    const local = m.worldToLocal(hit); // metres, centred on the tablet
+    tablet.setSize(local.x + tablet.width / 2, tablet.height / 2 - local.y);
+  }
+
+  /** The resize drag is over: remember the tablet's size. */
+  _endTabletResize() {
+    if (!this._tabletResizing) return;
+    this._tabletResizing = false;
+    try {
+      localStorage.setItem('xrTabletSize', JSON.stringify({ width: this.debugTablet.width, height: this.debugTablet.height }));
+    } catch {}
   }
 
   /** While grabbed, the tablet keeps its pose relative to the hand holding it. */
@@ -1298,9 +1410,24 @@ export class Engine {
   _applyBackground() {
     const ar = this.renderer.xr.isPresenting && this._xrMode === 'immersive-ar';
     const mode = this.state.background;
+    // in a passthrough (immersive-ar) session three.js always clears to transparent, so a plain
+    // colour background would show the room: draw the colour as a texture there instead
+    const solid = ar ? this._solidTexture() : BG;
     if (mode === 'passthrough' && ar) this.scene.background = null;
-    else if (mode === 'skybox') this.scene.background = this._skybox() ?? BG; // the colour until it has loaded
-    else this.scene.background = BG;
+    else if (mode === 'skybox') this.scene.background = this._skybox() ?? solid; // the colour until it has loaded
+    else this.scene.background = solid;
+  }
+
+  /** The solid background colour as a 1-pixel texture (drawn, unlike a colour, in passthrough sessions). */
+  _solidTexture() {
+    if (!this._solidTex) {
+      const c = BG.clone().convertLinearToSRGB();
+      const px = new Uint8Array([c.r * 255, c.g * 255, c.b * 255, 255].map(Math.round));
+      this._solidTex = new THREE.DataTexture(px, 1, 1);
+      this._solidTex.colorSpace = THREE.SRGBColorSpace;
+      this._solidTex.needsUpdate = true;
+    }
+    return this._solidTex;
   }
 
   /** The skybox texture: loaded on first use (then applied, if Skybox is still chosen); null until then. */
@@ -1336,7 +1463,11 @@ export class Engine {
 
   _onRightTrigger() {
     if (this._hudHover === 'menu') return this.toggleMenu();
-    if (this._tabletHover) return; // pointing at the debug tablet: the trigger does nothing
+    if (this._tabletHover) {
+      // pointing at the debug tablet: the trigger on its corner handle resizes it (held), else nothing
+      if (this._tabletHandleHover) this._tabletResizing = true;
+      return;
+    }
     if (this.isMenuOpen()) {
       const slider = this._menuHover && this.menuPanel.sliderValueAt(this._menuHoverUV, this._menuHover);
       if (slider != null) {
@@ -1434,7 +1565,8 @@ export class Engine {
       if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
       for (const hit of this.raycaster.intersectObjects(targets, false)) {
         if (hit.object === this.debugTablet.mesh) {
-          this._tabletHover = true; // grip now grabs it; the trigger does nothing here
+          this._tabletHover = true; // grip now grabs it; the trigger resizes it from its corner handle
+          this._tabletHandleHover = this.debugTablet.onResizeHandle(hit.uv);
           uiHit = hit;
           break;
         } else if (hit.object === this.leftHud.mesh) {
@@ -1530,6 +1662,8 @@ export class Engine {
       } else if (this.selected.length && this._isSelectTarget(t)) {
         this.targetHL.position.set(...t.place);
         this.targetHL.visible = true;
+        // its shrinking pulses move with it (same frame), staying centred in it
+        for (const p of this._pulses) if (p.obj.visible) p.obj.position.copy(this.targetHL.position);
       }
     } else if (tool.block) {
       if (t.place && t.placeFree) {
@@ -1615,7 +1749,13 @@ export class Engine {
       const v = gp.axes[i] || 0;
       return Math.abs(v) < 0.18 ? 0 : v;
     };
-    if (!pressed.some(Boolean) && ![0, 1, 2, 3].some((i) => ax(i))) {
+    // LT / RT zoom out / in, by how far they're pulled
+    const trigger = (i) => {
+      const v = gp.buttons[i]?.value ?? (gp.buttons[i]?.pressed ? 1 : 0);
+      return v < 0.05 ? 0 : v;
+    };
+    const zoom = trigger(6) - trigger(7);
+    if (!pressed.some(Boolean) && ![0, 1, 2, 3].some((i) => ax(i)) && !zoom) {
       this._padStickArmed = true;
       return;
     }
@@ -1625,18 +1765,18 @@ export class Engine {
     if (s.screen !== 'playing') return;
     if (!s.gamepadAim) this.setState({ gamepadAim: true });
     if (edge(9)) return this.toggleMenu(); // Start
-    if (edge(0)) this.selectedEat(); // A: a selected creature eats what is in front of it
-    if (edge(1)) this.selectedExcrete(); // B: … or excretes what is in its tail's slot
-    if (edge(3)) this.selectedBehavior(BEHAVIOR.WANDER); // Y: selected creatures wander
-    if (edge(2)) this.selectedBehavior(BEHAVIOR.WAIT); // X: … or wait again
-    if (edge(4)) this.cycleTool(-1); // LB
-    if (edge(5)) this.cycleTool(1); // RB
-    if (edge(7)) {
-      // RT
+    if (edge(0)) {
+      // A: use the tool (at the crosshair)
       this._updateTarget();
       this.useTool();
     }
-    this._padCamera(dt, ax(2), ax(3), ax(1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
+    if (edge(3)) this.selectedEat(); // Y: a selected creature eats what is in front of it
+    if (edge(1)) this.selectedExcrete(); // B: … or excretes what is in its tail's slot
+    if (edge(2)) this.selectedToggleWait(); // X: selected creatures wait, or resume what they were doing
+    if (edge(4)) this.cycleTool(-1); // LB
+    if (edge(5)) this.cycleTool(1); // RB
+    // left stick up / down and the triggers zoom (LT out, RT in)
+    this._padCamera(dt, ax(2), ax(3), THREE.MathUtils.clamp(ax(1) + zoom, -1, 1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
   }
 
   /** D-pad / left stick moves the focus, A selects, B goes back, Start closes the pause menu. */
@@ -1762,9 +1902,12 @@ export class Engine {
       if (dbg) {
         if (this._needsTabletPlacement !== false && this._xrFrames > 2) this._placeDebugTablet();
         this._updateTabletGrab();
-        this.debugTablet.draw(this.debugInfo(), getLogs(40), getLogVersion(), !!this._tabletGrab || this._tabletHover);
+        this._updateTabletResize();
+        this.debugTablet.draw(this.debugInfo(), this.performanceRows(), getLogs(120), getLogVersion(),
+          !!this._tabletGrab || this._tabletHover, this._tabletResizing || this._tabletHandleHover);
       } else {
         this._tabletGrab = null;
+        this._endTabletResize();
       }
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
@@ -1781,13 +1924,29 @@ export class Engine {
       this.menuPanel.mesh.visible = open;
     }
     this._updateTarget();
+    this._updateListener();
     const r0 = performance.now();
     this.renderer.render(this.scene, this.camera);
     this._renderTotal += performance.now() - r0;
   };
 
+  /** Where lattice cell `cell` ({x, y, z}, cm) is in the scene (metres), for positional sound; null without one. */
+  _soundAt(cell) {
+    if (!cell) return null;
+    this.worldRoot.updateWorldMatrix(true, false);
+    return this.worldRoot.localToWorld(new THREE.Vector3(cell.x, cell.y, cell.z));
+  }
+
+  /** Scene sounds are heard from the camera (the headset in XR). */
+  _updateListener() {
+    const cam = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
+    cam.matrixWorld.decompose(_earPos, _earQuat, _earScale);
+    setListener(_earPos, _earFwd.set(0, 0, -1).applyQuaternion(_earQuat), _earUp.set(0, 1, 0).applyQuaternion(_earQuat));
+  }
+
   dispose() {
     this.renderer.setAnimationLoop(null);
+    setMusicLevel(0); // fades out
     this._ro?.disconnect();
     const el = this.renderer.domElement;
     el.removeEventListener('wheel', this._onWheel);

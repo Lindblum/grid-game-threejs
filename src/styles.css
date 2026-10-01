@@ -117,11 +117,16 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
    narrow at the normal font size: labels, values and log lines wrap instead of widening it */
 .debug-dock {
   position: absolute; left: 16px; top: 16px; z-index: 5; pointer-events: auto;
-  display: flex; flex-direction: column; gap: 8px; min-height: 0; max-height: none;
+  display: flex; flex-direction: column; gap: 8px; min-height: 0; max-height: none; overflow: hidden;
   padding: 8px 10px 10px; font-size: 12px; border-radius: 14px;
 }
-.debug-section-box { display: flex; flex-direction: column; min-height: 0; flex: none; overflow: auto; }
-.debug-section-box.grow { flex: 1; overflow: hidden; }
+/* sections share the dock's height: each shrinks to fit and scrolls its own content (the
+   header stays put); Logging (.grow) takes what is left over */
+.debug-section-box { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; overflow: hidden; }
+.debug-section-box.grow { flex: 1 1 0; min-height: 70px; }
+.debug-section-head { flex: none; }
+.debug-section-body { min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.debug-section-box.grow > .debug-section-body { flex: 1; overflow: hidden; }
 .debug-section-head {
   display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 2px 0; margin: 0 0 4px;
   background: none; border: none; color: inherit; font: inherit; cursor: pointer; text-align: left;

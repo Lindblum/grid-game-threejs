@@ -265,7 +265,7 @@ function DebugSection({ id, title, summary, grow = false, children }) {
         {collapsed && summary ? <span className="debug-summary">{summary}</span> : null}
         <span className="debug-arrow">{collapsed ? '▸' : '▾'}</span>
       </button>
-      {!collapsed && children}
+      {!collapsed && <div className="debug-section-body">{children}</div>}
     </section>
   );
 }

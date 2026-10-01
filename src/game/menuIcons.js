@@ -70,6 +70,25 @@ const HEX = [0, 1, 2, 3, 4, 5].map((i) => {
   return [0.5 + Math.cos(a) * 0.38, 0.5 + Math.sin(a) * 0.38];
 });
 
+/** A cut gem: a flat crown over a pointed base. */
+const GEM = [[0.3, 0.2], [0.7, 0.2], [0.84, 0.38], [0.5, 0.84], [0.16, 0.38]];
+
+/** Two beamed eighth notes. */
+function musicNote(ctx, P, s) {
+  ctx.fillStyle = INK;
+  for (const [x, y] of [[0.34, 0.72], [0.66, 0.64]]) {
+    const [cx, cy] = P(x, y);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, s * 0.09, s * 0.065, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  line(ctx, P, [[0.42, 0.7], [0.42, 0.26]]); // stems…
+  line(ctx, P, [[0.74, 0.62], [0.74, 0.18]]);
+  ctx.lineWidth *= 2;
+  line(ctx, P, [[0.42, 0.27], [0.74, 0.19]]); // …and the beam
+  ctx.lineWidth /= 2;
+}
+
 const DRAW = {
   resume(ctx, P) {
     ctx.fillStyle = INK;
@@ -136,6 +155,13 @@ const DRAW = {
       ctx.arc(cx, cy, s * r, -0.75, 0.75);
       ctx.stroke();
     }
+  },
+  musicOn(ctx, P, s) {
+    musicNote(ctx, P, s);
+  },
+  musicOff(ctx, P, s) {
+    musicNote(ctx, P, s);
+    line(ctx, P, [[0.18, 0.18], [0.82, 0.82]]); // struck through
   },
   soundOff(ctx, P) {
     speaker(ctx, P);
@@ -238,6 +264,16 @@ const DRAW = {
     // the same two blocks, no shadow
     poly(ctx, P, [[0.14, 0.2], [0.44, 0.2], [0.44, 0.82], [0.14, 0.82]]);
     poly(ctx, P, [[0.44, 0.52], [0.86, 0.52], [0.86, 0.82], [0.44, 0.82]]);
+  },
+  refractionOn(ctx, P) {
+    // a gem with a ray of light bent as it passes through
+    poly(ctx, P, GEM);
+    line(ctx, P, [[0.06, 0.36], [0.3, 0.46], [0.7, 0.62], [0.94, 0.86]]);
+  },
+  refractionOff(ctx, P) {
+    // the same gem, the ray going straight through
+    poly(ctx, P, GEM);
+    line(ctx, P, [[0.06, 0.36], [0.94, 0.72]]);
   },
   speed(ctx, P, s) {
     // speedometer: an arc with a needle
