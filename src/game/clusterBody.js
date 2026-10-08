@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
 import { FACE_DIRS, truncatedOctahedronFaces } from './geometry.js';
-import { BLOCK, blockProps, isCreature, isTranslucent } from './blocks.js';
+import { BLOCK, blockProps, isChainCreature, isCreature, isTranslucent } from './blocks.js';
 
 const FACES = truncatedOctahedronFaces();
 /** Taubin smoothing (shrink, then inflate) passes over a welded body: rounds its edges off. */
@@ -37,18 +37,23 @@ const MAX_OWNERS = 4;
  * over the welded vertices (`tris`, for normals), and the render vertices: every outer face
  * fanned from its centre (3 per edge), each knowing its block (`rBlock`), face (`rFace`),
  * block-local position (`rLocal`) and welded vertex (`rWeld`). `flat` (shadeFlat types):
- * no smoothing, the faces stay flat.
+ * no smoothing, the faces stay flat. `linked(i, j)`: whether touching blocks i and j (indices
+ * into `blocks`) are joined (default: every touching pair). Unjoined ones (a chain creature
+ * touching itself away from its next / previous segment) each keep their face between them
+ * and share no corners, so the smoothing rounds them apart instead of fusing them.
  */
-function buildBody(blocks, flat = false) {
+export function buildBody(blocks, flat = false, linked = null) {
   const at = new Map();
   blocks.forEach((block, i) => at.set(cellKey(block.x, block.y, block.z), i));
+  const joined = (i, j) => i === j || !linked || linked(i, j);
   // which faces are on the outside, and how big everything will be
   const outer = new Uint8Array(blocks.length * FACES.length);
   let faceCount = 0, cornerCount = 0;
   blocks.forEach((block, i) => {
     for (let fi = 0; fi < FACES.length; fi++) {
       const [dx, dy, dz] = FACE_DIRS[fi];
-      if (at.has(cellKey(block.x + dx, block.y + dy, block.z + dz))) continue; // inside the body
+      const j = at.get(cellKey(block.x + dx, block.y + dy, block.z + dz));
+      if (j !== undefined && joined(i, j)) continue; // inside the body
       outer[i * FACES.length + fi] = 1;
       faceCount++;
       cornerCount += FACES[fi].verts.length;
@@ -62,7 +67,42 @@ function buildBody(blocks, flat = false) {
   const tris = new Uint32Array(cornerCount * 3);
   const rBlock = new Uint32Array(renderCount), rWeld = new Uint32Array(renderCount);
   const rFace = new Float32Array(renderCount), rLocal = new Float32Array(renderCount * 3);
-  const weld = new Map(); // corner key -> welded vertex
+  // corner key -> welded vertex; with `linked`, a corner shared by unjoined blocks is one
+  // vertex per group of joined ones: key -> [[block index, vertex], …]
+  const weld = new Map();
+  const weldFor = (key, i, x, y, z) => {
+    if (!linked) {
+      let w = weld.get(key);
+      if (w === undefined) weld.set(key, (w = newVertex(x, y, z)));
+      return w;
+    }
+    let users = weld.get(key);
+    if (!users) weld.set(key, (users = []));
+    let w = -1;
+    for (const [j, v] of users) {
+      if (!joined(i, j)) continue;
+      if (w < 0) w = v;
+      else if (v !== w) {
+        // block i joins two groups that were apart (e.g. its previous and next segments):
+        // one vertex for all of them
+        for (const u of users) if (u[1] === v) u[1] = w;
+        mergeInto(v, w);
+      }
+    }
+    if (w < 0) w = newVertex(x, y, z);
+    users.push([i, w]);
+    return w;
+  };
+  // vertex merges (rare): `alias[v]` is the vertex v was merged into; resolved at the end
+  const alias = new Map();
+  const mergeInto = (v, w) => {
+    alias.set(v, w);
+    for (let k = 0, o = v * MAX_OWNERS; k < ownerCount[v]; k++) addOwner(w, ownerIdx[o + k]);
+  };
+  const resolve = (v) => {
+    while (alias.has(v)) v = alias.get(v);
+    return v;
+  };
   let n = 0, nt = 0, nr = 0;
   const addOwner = (w, i) => {
     const o = w * MAX_OWNERS, c = ownerCount[w];
@@ -83,9 +123,7 @@ function buildBody(blocks, flat = false) {
       for (let k = 0; k < len; k++) {
         const v = verts[k];
         const x = block.x + v.x, y = block.y + v.y, z = block.z + v.z;
-        const key = weldKey(x, y, z);
-        let w = weld.get(key);
-        if (w === undefined) weld.set(key, (w = newVertex(x, y, z)));
+        const w = weldFor(weldKey(x, y, z), i, x, y, z);
         addOwner(w, i);
         ring[k] = w;
       }
@@ -110,6 +148,10 @@ function buildBody(blocks, flat = false) {
       }
     }
   });
+  if (alias.size) {
+    for (let k = 0; k < nt; k++) tris[k] = resolve(tris[k]);
+    for (let k = 0; k < nr; k++) rWeld[k] = resolve(rWeld[k]);
+  }
   // neighbours along the triangle edges, as compressed sparse rows: vertex v's neighbours are
   // list[start[v] .. start[v] + count[v]] (each listed once, as the old Sets did)
   const start = new Int32Array(n + 1);
@@ -316,7 +358,15 @@ export class ClusterBodies {
 
   _create(blocks) {
     const flat = !!blockProps(blocks[0].type).shadeFlat;
-    const topo = buildBody(blocks, flat);
+    // a chain creature is joined only segment to segment (head, 2nd, 3rd, …): curled up
+    // against itself, its body stays a chain instead of fusing into a lump
+    let linked = null;
+    const chain = isChainCreature(blocks[0].type) && this._world?.squirmyOf.get(blocks[0])?.segments;
+    if (chain) {
+      const pos = blocks.map((b) => chain.indexOf(b));
+      linked = (i, j) => Math.abs(pos[i] - pos[j]) === 1;
+    }
+    const topo = buildBody(blocks, flat, linked);
     const n = topo.rWeld.length;
     const vn = topo.vertexCount;
     const g = new THREE.BufferGeometry();

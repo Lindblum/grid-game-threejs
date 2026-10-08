@@ -2,3 +2,5 @@ node_modules
 dist
 *.bat
 *-Notes.txt
+# secrets (the Debug → Claude bridge token)
+.env.local

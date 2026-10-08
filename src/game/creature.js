@@ -50,6 +50,23 @@ const LEGS = [1, -1].flatMap((side) => LEG_ROWS.map((z, row) => ({
 const LEG_LIFT = 0.4; // cm the foot rises (and swings forward by half that) mid-step
 const LEG_RADIUS = 0.06; // cm
 
+/**
+ * Fangs (creature types with `fangs: true`): two ivory cones under the front of the head, in
+ * its own frame (cm; x = right, y = up, z = front), roots just inside the head, tips pointing
+ * down (toward its floor). They turn and shrink with it, like the eyes.
+ */
+const FANG_ROOTS = [new THREE.Vector3(-0.22, -0.4, 0.8), new THREE.Vector3(0.22, -0.4, 0.8)];
+const FANG_LENGTH = 0.5; // cm
+const FANG_RADIUS = 0.08; // cm, at the root
+
+/** Fang geometry: a cone with its base at the origin (the root) and its tip FANG_LENGTH below. */
+function createFangGeometry() {
+  const g = new THREE.ConeGeometry(FANG_RADIUS, FANG_LENGTH, 12);
+  g.rotateX(Math.PI); // tip down
+  g.translate(0, -FANG_LENGTH / 2, 0); // base at the origin
+  return g;
+}
+
 /** Leg geometry: a unit-long cylinder from the origin (hip) down to (0, -1, 0) (foot). */
 function createLegGeometry() {
   const g = new THREE.CylinderGeometry(LEG_RADIUS, LEG_RADIUS * 0.7, 1, 8, 1);
@@ -155,6 +172,9 @@ export class CreatureEyes {
     this.legGeometry = createLegGeometry();
     this.legMaterial = new THREE.MeshStandardMaterial({ color: 0x080808, roughness: 0.4, metalness: 0.0 });
     this.legMesh = null;
+    this.fangGeometry = createFangGeometry();
+    this.fangMaterial = new THREE.MeshStandardMaterial({ color: 0xf2ead2, roughness: 0.25, metalness: 0.0 });
+    this.fangMesh = null;
     this._flapTurn = null; // the turn the current flap belongs to
     this._flapT0 = -Infinity; // when it started (ms)
     this._allocate(64);
@@ -197,6 +217,18 @@ export class CreatureEyes {
     legs.raycast = () => { };
     this.parent.add(legs);
     this.legMesh = legs;
+    if (this.fangMesh) {
+      this.parent.remove(this.fangMesh);
+      this.fangMesh.dispose();
+    }
+    const fangs = new THREE.InstancedMesh(this.fangGeometry, this.fangMaterial, capacity); // 2 per creature, like the eyes
+    fangs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    fangs.count = 0;
+    fangs.frustumCulled = false;
+    fangs.name = 'creature-fangs';
+    fangs.raycast = () => { };
+    this.parent.add(fangs);
+    this.fangMesh = fangs;
   }
 
   /** Points the eyes at `creature`'s current front/floor, revolving there over `durationS`. */
@@ -231,7 +263,7 @@ export class CreatureEyes {
       this._flapTurn = turn;
       this._flapT0 = now;
     }
-    let w = 0, l = 0;
+    let w = 0, l = 0, f = 0;
     // which tripod steps this turn, and how far through its step it is (0..1)
     const stepping = (turn ?? 0) % 2;
     const stepT = Math.min(1, Math.max(0, (now - this._flapT0) / (stepSeconds * 1000)));
@@ -261,6 +293,12 @@ export class CreatureEyes {
         for (const off of EYE_OFFSETS) {
           p.copy(off).multiplyScalar(size).applyQuaternion(s.q).add(pos); // revolve the offset, not the eye
           this.mesh.setMatrixAt(i++, _m.compose(p, _noRot, scale));
+        }
+      }
+      if (blockProps(c.type).fangs && !c.segmentOf) {
+        for (const root of FANG_ROOTS) {
+          p.copy(root).multiplyScalar(size).applyQuaternion(s.q).add(pos);
+          this.fangMesh.setMatrixAt(f++, _m.compose(p, s.q, _sized.setScalar(size)));
         }
       }
       if (blockProps(c.type).wings) {
@@ -298,5 +336,7 @@ export class CreatureEyes {
     this.wingMesh.instanceMatrix.needsUpdate = true;
     this.legMesh.count = l;
     this.legMesh.instanceMatrix.needsUpdate = true;
+    this.fangMesh.count = f;
+    this.fangMesh.instanceMatrix.needsUpdate = true;
   }
 }

@@ -20,10 +20,13 @@
 //                   the origin), if every cell beneath it is Water (sim.js stepSink)
 // Creatures also have:
 //   creature        true
-//   body            'single' (one block: Crawly, Buzzy) or 'chain' (a Squirmy's segments)
+//   body            'single' (one block: Crawly, Buzzy) or 'chain' (segments: Squirmy, Slither)
 //   fly             true: it flies (like the Flight buff): any empty cell is a floor, never falls
+//   selfAvoidance   chain creatures: true = its head never steps next to its own body (Slither);
+//                   false / left out = it may curl up alongside itself (Squirmy)
 //   wings           true: two translucent wings on its sides that flap every turn
 //   legs            true: six black legs on its floor side that step every turn
+//   fangs           true: two ivory fangs, downward cones under the front of its head
 //   diet            keys of the block types it can consume (World.consume); CREATURE_DIET and
 //                   blockProps(type).diet give them as ids
 //   priorityDiet    keys of the foods it goes for on its own when it sees one (and eats once
@@ -65,9 +68,9 @@ export const BLOCK_TYPES = [
     sinkable: true,
     body: 'single',
     legs: true,
-    diet: ['BERRY','WOOD'],
+    diet: ['BERRY', 'WOOD'],
     priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY'],
+    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 2,
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED],
     defaultBehavior: BEHAVIOR.WANDER,
@@ -84,7 +87,7 @@ export const BLOCK_TYPES = [
     legs: true,
     diet: ['BERRY'],
     priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY'],
+    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 3,
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED],
     defaultBehavior: BEHAVIOR.WANDER,
@@ -95,10 +98,27 @@ export const BLOCK_TYPES = [
     creature: true,
     sinkable: true,
     body: 'chain',
+    selfAvoidance: false, // may curl up alongside itself
     diet: ['BERRY', 'DIRT', 'WATER'],
     priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY'], // the solid ones
+    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 1, // around its head
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED], // the head's behavior drives the chain
+    defaultBehavior: BEHAVIOR.WANDER,
+    eyeScale: 0.25,
+  },
+  {
+    // a copy of the Squirmy (a chain of segments), green and scaly
+    key: 'SLITHER', id: 'slither', name: 'Slither', color: '#2f9e4f', style: 14, opacity: 1, // green, shiny scales
+    creature: true,
+    sinkable: true,
+    body: 'chain',
+    selfAvoidance: true, // never steps next to its own body
+    fangs: true,
+    diet: ['BERRY', 'WATER', 'CRAWLY', 'SQUIRMY', 'BUZZY'],
+    priorityDiet: ['CRAWLY', 'SQUIRMY'],
+    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
+    sightRadius: 2, // around its head
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
@@ -185,6 +205,8 @@ export const isCreature = (type) => !!BLOCK_PROPS[type]?.creature;
 export const isTranslucent = (type) => blockProps(type).opacity < 1;
 /** A one-block creature (Crawly, Buzzy), as opposed to a chain like a Squirmy. */
 export const isSingleCreature = (type) => BLOCK_PROPS[type]?.body === 'single';
+/** Whether `type` is a creature made of a chain of segments (Squirmy, Slither): the head leads, the rest follow. */
+export const isChainCreature = (type) => BLOCK_PROPS[type]?.body === 'chain';
 /** Whether `block` flies: its type does (Buzzy), or it has a buff that does (Flight). */
 export const canFly = (block) => !!block && (!!BLOCK_PROPS[block.type]?.fly || hasBuffFlag(block, 'fly'));
 /** A buff's name and what's left of it, e.g. "Rockbiter (permanent, 3 charges)". */

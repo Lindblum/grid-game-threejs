@@ -445,15 +445,19 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         uniform float uTime;
         uniform float uOutlines;
         uniform float uAO;
+        uniform float uSmoothRendering;
         varying float vAO;
         ${NOISE_GLSL}
         ${WATER_GLSL}
         ${BUMP_GLSL}
         #define BUFF_GLOW vec3(${new THREE.Color(Object.values(BUFF_TYPES).find((buff) => buff.color).color).toArray().map((v) => v.toFixed(3)).join(', ')})
+        // a rounded body's "out from the centre" direction: a merged body's smooth normal; a lone
+        // block's direction from its centre with Rendering: Smooth, else (Blocky: no exceptions,
+        // creatures and clouds too) its flat face normal
         #ifdef MERGED_BODY
         #define BODY_DIR normalize(vLocalNormal)
         #else
-        #define BODY_DIR normalize(vLocalPos)
+        #define BODY_DIR (ROUND_LOOK > 0.5 ? normalize(vLocalPos) : normalize(vLocalNormal))
         #endif`
       )
       .replace(
@@ -477,7 +481,14 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         // Fog / Nimbus: purely diffuse, no specular highlights or reflections (any Materials mode)
         float specDim = 1.0;     // scales specular light (highlights, reflections); matte styles lower it
         float isCloud = vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.nimbus + 0.5).toFixed(1)} ? 1.0 : 0.0;
-        float noOutline = isCloud; // soft, rounded bodies skip face outlines and corner shading
+        // Rendering: Smooth (or a block smoothed on its own): soft, rounded bodies skip face outlines
+        // and corner shading; Blocky: every block has them, creatures and clouds too
+        #ifdef MERGED_BODY
+        #define ROUND_LOOK 1.0
+        #else
+        #define ROUND_LOOK ((uSmoothRendering > 0.5 || vSmooth > 0.5) ? 1.0 : 0.0)
+        #endif
+        float noOutline = isCloud * ROUND_LOOK;
         vec3 facetTilt = vec3(0.0);   // Crystal: per-facet normal tilt (block-local), applied with the normal
         #if defined(SOLID_MATERIALS)
           // Options → Materials: Solid — flat instance colour only
@@ -705,11 +716,11 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           bumpStrength = 0.05;
           surfaceRough = mix(0.14, 0.5, max(seed, pit * 0.5));           // glossy red, matte seeds
         } else if ((vStyle > 5.5 && vStyle < 6.5) || (vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.buzzy + 0.5).toFixed(1)})) {
-          // Crawly and Buzzy (Buzzy = the pearlescent variant): smooth, rounded shading like a
-          // Squirmy (the normal points out from the block centre, no flat faces or outlines)
+          // Crawly and Buzzy (Buzzy = the pearlescent variant): with Rendering: Smooth, rounded
+          // shading like a Squirmy (the normal points out from the block centre, no outlines)
           isPearl = vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} ? 1.0 : 0.0;
           cloudNormal = BODY_DIR;
-          noOutline = 1.0;
+          noOutline = ROUND_LOOK;
           // 2D beetle shell in each face's plane: a smooth, glossy sheen whose colour drifts
           // in broad noise patches. Only the shading is set here; the iridescent hue depends
           // on the view angle and is added after the normal.
@@ -785,7 +796,39 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           diffuseColor.rgb = col;
           crystalGlow = col * 0.12;
           surfaceRough = 0.22;
-          noOutline = 1.0;
+          noOutline = ROUND_LOOK;
+        } else if (vStyle > ${(BLOCK_STYLE.slither - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.slither + 0.5).toFixed(1)}) {
+          // Slither: a rounded body (the normal points out from the block centre) covered in
+          // shiny green scales. The scales are cells of a 3D Voronoi pattern, stretched along
+          // the body so they read as rows of overlapping plates: each one domed (raised in
+          // the middle, sunk at its edges: the normal is tilted by the slope of that height),
+          // darker in the gaps, paler and a little yellower toward its centre, each a slightly
+          // different shade, with a faint iridescent sheen. Over it, soft-edged yellow splotches
+          // (3D noise patches) blend into the green; the seams stay dark across them.
+          vec3 n0 = BODY_DIR;
+          vec3 t1 = normalize(cross(n0, abs(n0.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+          vec3 t2 = cross(n0, t1);
+          vec3 sp = vLocalPos * vec3(3.4, 2.4, 3.4);  // scale cells, ~3 mm across
+          float e = 0.03;
+          vec2 s0 = voronoi3(sp);
+          float h0 = smoothstep(0.0, 0.32, s0.x);
+          float h1 = smoothstep(0.0, 0.32, voronoi3(sp + t1 * e).x);
+          float h2 = smoothstep(0.0, 0.32, voronoi3(sp + t2 * e).x);
+          cloudNormal = normalize(n0 - 0.55 * ((h1 - h0) * t1 + (h2 - h0) * t2) / e * 0.1);
+          float gap = 1.0 - smoothstep(0.0, 0.07, s0.x);   // 1 in the seams between scales
+          vec3 base = diffuseColor.rgb;
+          vec3 col = base * (0.86 + 0.28 * s0.y);          // each scale its own shade
+          col = mix(col, base * vec3(1.15, 1.25, 0.8) + vec3(0.04, 0.05, 0.0), h0 * 0.45); // paler centres
+          // yellow splotches: broad noise patches with soft, blended edges (each scale keeps its shade)
+          float splotch = smoothstep(0.08, 0.38, perlinFbm(vNoisePos * 0.9 + vec3(7.3, 1.9, 4.1)));
+          vec3 yellow = vec3(0.86, 0.74, 0.16) * (0.86 + 0.28 * s0.y) * mix(0.9, 1.1, h0);
+          col = mix(col, yellow, splotch * 0.85);
+          col = mix(col, base * vec3(0.18, 0.3, 0.2), gap * 0.8);                            // dark seams
+          float sheen = 0.5 + 0.5 * sin(dot(vLocalPos, vec3(2.1, 3.3, 1.7)) + s0.y * 6.2831);
+          col += vec3(0.02, 0.06, 0.07) * sheen * h0;      // a faint teal-gold iridescence
+          diffuseColor.rgb = col;
+          surfaceRough = mix(0.12, 0.6, gap);              // glossy scales, dull seams
+          noOutline = ROUND_LOOK;
         }
         #endif
         if (vSmooth > 0.5) noOutline = 1.0; // smooth-shaded blocks: a rounded look, no face outlines

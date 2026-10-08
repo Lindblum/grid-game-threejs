@@ -13,6 +13,7 @@ export const TOOLS = [
   { id: BLOCK.CRAWLY, label: blockProps(BLOCK.CRAWLY).name, block: BLOCK.CRAWLY },
   { id: BLOCK.BUZZY, label: blockProps(BLOCK.BUZZY).name, block: BLOCK.BUZZY },
   { id: BLOCK.SQUIRMY, label: blockProps(BLOCK.SQUIRMY).name, block: BLOCK.SQUIRMY },
+  { id: BLOCK.SLITHER, label: blockProps(BLOCK.SLITHER).name, block: BLOCK.SLITHER },
   { id: BLOCK.STONE, label: blockProps(BLOCK.STONE).name, block: BLOCK.STONE },
   { id: BLOCK.DIRT, label: blockProps(BLOCK.DIRT).name, block: BLOCK.DIRT },
   { id: BLOCK.MOSS, label: blockProps(BLOCK.MOSS).name, block: BLOCK.MOSS },

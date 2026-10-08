@@ -64,9 +64,10 @@ export function drawBuzzyIcon(ctx, cx, cy, size) {
   drawIconEyes(ctx, cx, cy, size);
 }
 
-/** Squirmy icon: a pink, fleshy head block with eyes. */
-export function drawSquirmyIcon(ctx, cx, cy, size) {
-  drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[BLOCK.SQUIRMY], { stroke: 'rgba(90,20,40,0.35)' });
+/** Squirmy icon: a pink, fleshy head block with eyes (`type`: Slither for a green one). */
+export function drawSquirmyIcon(ctx, cx, cy, size, type = BLOCK.SQUIRMY) {
+  const stroke = type === BLOCK.SLITHER ? 'rgba(10,50,20,0.4)' : 'rgba(90,20,40,0.35)';
+  drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[type], { stroke });
   drawIconEyes(ctx, cx, cy, size);
 }
 
@@ -181,7 +182,7 @@ export function drawToolIcon(ctx, tool, cx, cy, size, style = {}) {
   }
   if (tool.block === BLOCK.CRAWLY) drawCrawlyIcon(ctx, cx, cy, size);
   else if (tool.block === BLOCK.BUZZY) drawBuzzyIcon(ctx, cx, cy, size);
-  else if (tool.block === BLOCK.SQUIRMY) drawSquirmyIcon(ctx, cx, cy, size);
+  else if (tool.block === BLOCK.SQUIRMY || tool.block === BLOCK.SLITHER) drawSquirmyIcon(ctx, cx, cy, size, tool.block);
   else if (tool.block === BLOCK.VOID) drawVoidIcon(ctx, cx, cy, size);
   else if (tool.block) drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[tool.block]);
   else if (tool.id === TOOL.SELECT) drawSelectIcon(ctx, cx, cy, size);

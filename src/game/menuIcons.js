@@ -141,6 +141,40 @@ const DRAW = {
     line(ctx, P, [[0.8, 0.5], [0.22, 0.5]]);
     line(ctx, P, [[0.44, 0.28], [0.22, 0.5], [0.44, 0.72]]);
   },
+  forward(ctx, P) {
+    // Back's arrow, mirrored: marks a button that opens another menu screen
+    line(ctx, P, [[0.2, 0.5], [0.78, 0.5]]);
+    line(ctx, P, [[0.56, 0.28], [0.78, 0.5], [0.56, 0.72]]);
+  },
+  mic(ctx, P, s) {
+    // microphone: capsule head, a cradle arc under it, stem and base
+    roundedRect(ctx, P, 0.37, 0.12, 0.26, 0.44, 0.13, s);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(...P(0.5, 0.44), 0.24 * s, 0.15, Math.PI - 0.15);
+    ctx.stroke();
+    line(ctx, P, [[0.5, 0.68], [0.5, 0.84]]);
+    line(ctx, P, [[0.34, 0.86], [0.66, 0.86]]);
+  },
+  speak(ctx, P) {
+    // a head in profile (facing right) with sound waves coming from the mouth
+    line(ctx, P, [
+      [0.2, 0.86], [0.2, 0.66], [0.12, 0.54], [0.12, 0.36], [0.2, 0.2], [0.34, 0.12], [0.46, 0.14],
+      [0.54, 0.24], [0.56, 0.36], [0.62, 0.46], [0.56, 0.5], [0.56, 0.62], [0.48, 0.66], [0.42, 0.66], [0.42, 0.86],
+    ]);
+    const [cx, cy] = P(0.6, 0.5);
+    const s = P(1, 0)[0] - P(0, 0)[0];
+    for (const r of [0.14, 0.26]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, s * r, -0.7, 0.7);
+      ctx.stroke();
+    }
+  },
+  clear(ctx, P) {
+    // an X: empty the field
+    line(ctx, P, [[0.24, 0.24], [0.76, 0.76]]);
+    line(ctx, P, [[0.76, 0.24], [0.24, 0.76]]);
+  },
   prev(ctx, P) {
     line(ctx, P, [[0.6, 0.24], [0.36, 0.5], [0.6, 0.76]]);
   },
@@ -193,6 +227,14 @@ const DRAW = {
     ctx.fillStyle = INK;
     circle(ctx, P, 0.66, 0.43, 0.04, s, { fill: true });
     circle(ctx, P, 0.74, 0.52, 0.04, s, { fill: true });
+  },
+  video(ctx, P, s) {
+    // monitor on a stand, with a small play triangle on the screen
+    roundedRect(ctx, P, 0.1, 0.18, 0.8, 0.5, 0.05, s);
+    ctx.stroke();
+    line(ctx, P, [[0.5, 0.68], [0.5, 0.8]]);
+    line(ctx, P, [[0.32, 0.82], [0.68, 0.82]]);
+    poly(ctx, P, [[0.43, 0.32], [0.6, 0.43], [0.43, 0.54]]);
   },
   bgPass(ctx, P, s) {
     // framed landscape: see the real world

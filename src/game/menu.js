@@ -1,3 +1,4 @@
+import { CONTROL_SCHEMAS } from './controls.js';
 // Start/pause-menu model shared by the DOM menu (desktop) and the canvas panel (XR).
 
 export const PAGE_SIZE = 5;
@@ -17,72 +18,97 @@ export function displayName(fileName) {
 
 export const GAME_TITLE = 'Grid Game';
 
-/** Options → Speed: turns per minute, in steps of 12. A turn lasts 60 / speed seconds. */
-export const SPEED = Object.freeze({ min: 0, max: 240, step: 12, default: 60 });
+/**
+ * Options → Speed: a multiplier from 1x to 4x in steps of 0.25. 1x is `turnsPerMinute` (60) turns a minute,
+ * so a turn lasts 60 / (turnsPerMinute * speed) seconds.
+ */
+/** Options → Speed: a multiplier, 0x (the simulation stands still) to 4x in steps of 0.25x; 1x is 60 turns a minute. */
+export const SPEED = Object.freeze({ min: 0, max: 4, step: 0.25, default: 1, turnsPerMinute: 60 });
 
 /** Options → Background, in the order the option cycles through them (passthrough last). */
 export const BACKGROUNDS = ['solid', 'skybox', 'passthrough'];
 const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Passthrough (XR Only)' };
 const BACKGROUND_ICONS = { solid: 'bgSolid', skybox: 'bgSky', passthrough: 'bgPass' };
 
-/** Options → Background: a solid colour, the sky panorama, or passthrough (see-through in XR). */
+/** Options → Video → XR: enter / exit XR, or greyed out when the browser has no XR. */
+function xrItem(state) {
+  if (state.inXR) return { id: 'exitxr', label: 'XR: On', icon: 'xr' };
+  if (state.xrSupport) return { id: 'enterxr', label: 'XR: Off', icon: 'xr' };
+  return { id: 'noop', label: 'XR: Unavailable', icon: 'xr', disabled: true };
+}
+
+/** Options → Video → Background: a solid colour, the sky panorama, or passthrough (see-through in XR). */
 function background(state) {
   return {
     id: 'background',
     label: `Background: ${BACKGROUND_LABELS[state.background] ?? 'Solid'}`,
     icon: BACKGROUND_ICONS[state.background] ?? 'bgSolid',
+    toggle: true,
   };
 }
 
 const BACK = { id: 'back', label: 'Back', icon: 'back' };
 
+
+
 /**
- * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent?, slider? }] } for the current
- * menu screen. Every submenu lists Back first; renderers draw it at the very top of the panel
+ * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent?, slider?, submenu?, toggle? }] } for the current
+ * menu screen. `submenu`: the button opens another menu screen (drawn with a right arrow at its far right).
+ * `toggle`: the button switches a setting (On / Off, or the next choice); Right on the keyboard presses it too.
+ * Every submenu lists Back first; renderers draw it at the very top of the panel
  * (above the Controls table / save-name row).
  */
 export function menuModel(state) {
   const { menu, saves, savesError, page } = state;
   if (menu === 'controls') {
-    return { title: 'Controls', table: true, items: [BACK] };
+    // the table of the control schema in use (Observer, or Creature: see controls.js)
+    const schema = CONTROL_SCHEMAS[state.controlSchema] ?? CONTROL_SCHEMAS.observer;
+    return { title: `Controls: ${schema.name}`, table: schema.id, items: [BACK] };
   }
-  if (menu === 'options') {
-    const xr = state.inXR
-      ? { id: 'exitxr', label: 'XR: On', icon: 'xr' }
-      : state.xrSupport
-        ? { id: 'enterxr', label: 'XR: Off', icon: 'xr' }
-        : { id: 'noop', label: 'XR: Unavailable', icon: 'xr', disabled: true };
+  if (menu === 'video') {
+    // graphics / performance settings, a submenu of Options
     return {
-      title: 'Options',
+      title: 'Video',
       items: [
         BACK,
-        { id: 'controls', label: 'Controls', icon: 'controls' },
-        { id: 'music', label: `Music: ${state.musicOn ? 'On' : 'Off'}`, icon: state.musicOn ? 'musicOn' : 'musicOff' },
-        { id: 'sound', label: `Sounds: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff' },
-        {
-          id: 'speed',
-          label: `Speed: ${state.speed} turns/min`,
-          icon: 'speed',
-          slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
-        },
-        xr,
+        xrItem(state),
         background(state),
         {
           id: 'materials',
           label: `Materials: ${state.proceduralMaterials ? 'Procedural' : 'Solid'}`,
           icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
+          toggle: true,
         },
         {
           id: 'rendering',
           label: `Rendering: ${state.smoothRendering ? 'Smooth' : 'Blocky'}`,
           icon: state.smoothRendering ? 'renderSmooth' : 'renderBlocky',
+          toggle: true,
         },
-        { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff' },
-        { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff' },
-        { id: 'refraction', label: `Refraction: ${state.refraction ? 'On' : 'Off'}`, icon: state.refraction ? 'refractionOn' : 'refractionOff' },
-        { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff' },
-        { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff' },
-        { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug' },
+        { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff', toggle: true },
+        { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff', toggle: true },
+        { id: 'refraction', label: `Refraction: ${state.refraction ? 'On' : 'Off'}`, icon: state.refraction ? 'refractionOn' : 'refractionOff', toggle: true },
+        { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff', toggle: true },
+      ],
+    };
+  }
+  if (menu === 'options') {
+    return {
+      title: 'Options',
+      items: [
+        BACK,
+        { id: 'controls', label: 'Controls', icon: 'controls', submenu: true },
+        { id: 'video', label: 'Video', icon: 'video', submenu: true },
+        { id: 'music', label: `Music: ${state.musicOn ? 'On' : 'Off'}`, icon: state.musicOn ? 'musicOn' : 'musicOff', toggle: true },
+        { id: 'sound', label: `Sounds: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff', toggle: true },
+        {
+          id: 'speed',
+          label: `Speed: ${state.speed}x${state.speed === 0 ? ' (stopped)' : ''}`,
+          icon: 'speed',
+          slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
+        },
+        { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff', toggle: true },
+        { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug', toggle: true },
       ],
     };
   }
@@ -92,9 +118,9 @@ export function menuModel(state) {
       items: [
         { id: 'resume', label: 'Resume', icon: 'resume', accent: true },
         { id: 'new', label: 'New', icon: 'new' },
-        { id: 'load', label: 'Load', icon: 'load' },
-        { id: 'save', label: 'Save', icon: 'save' },
-        { id: 'options', label: 'Options', icon: 'options' },
+        { id: 'load', label: 'Load', icon: 'load', submenu: true },
+        { id: 'save', label: 'Save', icon: 'save', submenu: true },
+        { id: 'options', label: 'Options', icon: 'options', submenu: true },
       ],
     };
   }

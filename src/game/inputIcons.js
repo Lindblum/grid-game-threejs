@@ -8,6 +8,7 @@
 //   pad:LB|RB|LT|RT        bumpers / triggers
 //   pad:start              Start / Menu button
 //   stick:L|R:x|y|any      gamepad thumbstick (with direction arrows)
+//   stick:L|R:press        gamepad thumbstick pressed in (L3 / R3)
 //   dpad:lr|ud|any         D-pad with highlighted arms
 //   xr:trigger:L|R         Touch controller index trigger
 //   xr:grip:L|R            Touch controller grip
@@ -253,6 +254,15 @@ export function drawGlyph(ctx, token, x, cy, h) {
       ctx.fill();
       ctx.strokeStyle = tint;
       ctx.stroke();
+      if (dir === 'press') {
+        // pressed in: a lit knob, labelled L3 / R3
+        ctx.fillStyle = tint;
+        ctx.beginPath();
+        ctx.arc(cx, cy, h * 0.22, 0, Math.PI * 2);
+        ctx.fill();
+        text(ctx, `${side || ''}3`, cx, cy + h * 0.01, h * 0.22, '#ffffff', 800);
+        break;
+      }
       text(ctx, side || '', cx, cy + h * 0.01, h * 0.24, INK, 800);
       ctx.fillStyle = tint;
       const d = h * 0.33, ts = h * 0.07;

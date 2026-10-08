@@ -1,9 +1,11 @@
-// The control mappings shown on the Options → Controls panel (DOM and XR).
+// Control schemas: which input does what, and the tables the Options → Controls panel shows
+// (DOM and XR). The Observer schema is the default; with a creature selected, the gamepad's L3
+// switches to the Creature schema (and back).
 // Each binding: { g: glyph tokens (see inputIcons.js), t: text for tooltips / screen readers }.
 
 export const CONTROL_COLUMNS = ['Action', 'Mouse / Keyboard', 'Gamepad', 'XR Controller'];
 
-export const CONTROLS = [
+const OBSERVER_CONTROLS = [
   {
     action: 'Use tool',
     mk: { g: ['mouse:L'], t: 'Left click' },
@@ -71,9 +73,72 @@ export const CONTROLS = [
     xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point and pull the right trigger' },
   },
   {
+    action: 'Debug panel',
+    mk: { g: ['key:`', 'sep:/', 'key:~'], t: '` or ~ (the key left of 1): Debug panel on / off' },
+    pad: { g: ['text:—'], t: 'Options → Debug' },
+    xr: { g: ['text:—'], t: 'Options → Debug' },
+  },
+  {
     action: 'Menu back',
     mk: { g: ['key:Esc'], t: 'Esc' },
     pad: { g: ['pad:B'], t: 'B' },
     xr: { g: ['text:the Back item'], t: 'Point at Back and pull the trigger' },
   },
 ];
+
+/** R3: the selected creature's first-person view (either schema). */
+const CREATURE_VIEW_ROW = {
+  action: "Creature's view",
+  mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+  pad: { g: ['stick:R:press'], t: "R3 (press the right stick): see through the selected creature's eyes (the right stick looks around); R3 again: back" },
+  xr: { g: ['text:—'], t: 'Not in XR (the headset is the camera)' },
+};
+
+/** The default controls: looking around, building, and giving creatures orders. */
+export const ObserverControlSchema = {
+  id: 'observer',
+  name: 'Observer',
+  controls: [
+    ...OBSERVER_CONTROLS,
+    {
+      action: 'Control schema',
+      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+      pad: { g: ['stick:L:press'], t: 'L3 (press the left stick): Creature controls for the selected creature' },
+      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+    },
+    CREATURE_VIEW_ROW,
+  ],
+};
+
+/**
+ * Controlling the selected creature (L3 with a creature selected; L3 again, or deselecting
+ * it, goes back to Observer): as Observer, but the gamepad's left stick moves the creature,
+ * relative to the camera (on its turn), so zooming is LT / RT only; and no tools (using,
+ * aiming or switching them): those belong to the Observer.
+ */
+const TOOL_ACTIONS = new Set(['Use tool', 'Aim', 'Change tool']);
+export const CreatureControlSchema = {
+  id: 'creature',
+  name: 'Creature',
+  controls: [
+    {
+      action: 'Move creature',
+      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+      pad: { g: ['stick:L:any'], t: 'Left stick: moves the selected creature, relative to the camera (on its turn)' },
+      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+    },
+    ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action)).map((row) =>
+      row.action === 'Zoom' ? { ...row, pad: { g: ['pad:LT', 'sep:/', 'pad:RT'], t: 'LT: zoom out, RT: zoom in' } } : row,
+    ),
+    {
+      action: 'Control schema',
+      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+      pad: { g: ['stick:L:press'], t: 'L3 (press the left stick): back to Observer controls' },
+      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+    },
+    CREATURE_VIEW_ROW,
+  ],
+};
+
+/** The control schemas by id (Engine state.controlSchema). */
+export const CONTROL_SCHEMAS = { observer: ObserverControlSchema, creature: CreatureControlSchema };

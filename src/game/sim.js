@@ -6,7 +6,7 @@
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
 import { NEIGHBOR_DIRS, cellKey, randomCellOnSphere } from './lattice.js';
-import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, canFly } from './blocks.js';
+import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly } from './blocks.js';
 
 
 /** Chance that a wandering creature decides to move on a given turn (when it has somewhere to go). */
@@ -230,19 +230,22 @@ export function stepDirt(world, turn) {
 }
 
 /**
- * Whether a Squirmy's head (`head`, body `own`) could step into cell (x, y, z): the cell is
- * empty and touches a block the Squirmy can walk on (walkableBlocks). On its very next step (`strict`) the cell may
- * touch no Squirmy block but the head; further along a path it may pass next to its own body
- * (which will have moved on by then), but never next to another Squirmy.
+ * Whether a chain creature's head (`head`, body `own`) could step into cell (x, y, z): the
+ * cell is empty and touches a block it can walk on (walkableBlocks). A creature without
+ * `selfAvoidance` (Squirmy) may go next to any chain creature block, its own body or
+ * another's (chains keep their own ids, so touching ones don't merge). One with it (Slither)
+ * never goes next to another chain creature, nor next to its own body on its very next step
+ * (`strict`): only further along a path (by then the body has moved on).
  */
 function squirmyCellOk(world, head, own, x, y, z, strict) {
   if (world.blocks.has(cellKey(x, y, z))) return false;
+  const avoids = !!blockProps(head.type).selfAvoidance;
   let habitat = false;
   for (const [ex, ey, ez] of NEIGHBOR_DIRS) {
     const n = world.blocks.get(cellKey(x + ex, y + ey, z + ez));
     if (!n || n === head) continue;
-    if (n.type === BLOCK.SQUIRMY) {
-      if (strict || !own.has(n)) return false;
+    if (isChainCreature(n.type)) {
+      if (avoids && (strict || !own.has(n))) return false;
     } else if (canWalkOn(head.type, n.type)) habitat = true;
   }
   return habitat || canFly(head); // Flight: no surface needed
@@ -250,7 +253,7 @@ function squirmyCellOk(world, head, own, x, y, z, strict) {
 
 /** Whether `creature` (a one-block creature, or a Squirmy's head) can be sent to cell (x, y, z). */
 export function canStand(world, creature, x, y, z) {
-  if (creature.type !== BLOCK.SQUIRMY) return isWalkable(world, x, y, z, creature);
+  if (!isChainCreature(creature.type)) return isWalkable(world, x, y, z, creature);
   const own = new Set(world.squirmyOf.get(creature)?.segments ?? [creature]);
   return squirmyCellOk(world, creature, own, x, y, z, false);
 }
@@ -277,6 +280,15 @@ export function stepSquirmies(world, skip = new Set()) {
     if (sq.segments.some((block) => skip.has(block))) continue;
     const own = new Set(sq.segments);
     const ok = (x, y, z, steps) => squirmyCellOk(world, head, own, x, y, z, steps === 1);
+    if (head.isControlled) {
+      // Creature controls: its head goes where the player steers it (else stays put)
+      const to = steeredCell(head, (x, y, z) => ok(x, y, z, 1));
+      if (to) {
+        moveChain(world, sq.segments, to);
+        moved++;
+      }
+      continue;
+    }
     // left to itself, a Squirmy goes for Berries it can see (and eats one next to it)
     const foraged = forage(world, head, (goal) => firstStepToward(world, head, goal, ok), (to) => moveChain(world, sq.segments, to));
     if (foraged) {
@@ -413,12 +425,12 @@ export function creatureEat(world, creature, food) {
     slot.inventory = null;
   }
   if (creature.type === BLOCK.BUZZY && wasBerry) world.growSegment(creature); // a Buzzy grows a body segment (wings and legs too)
-  if (creature.type === BLOCK.SQUIRMY && wasBerry) {
+  if (isChainCreature(creature.type) && wasBerry) {
     const body = world.clusterOf(creature);
     const cell = world._wormCell(body);
     // the newest block becomes the tail: it grows in out of the body block it's next to (the
     // old tail, if there was room there), like a Buzzy's segment
-    if (cell && world.add(...cell, BLOCK.SQUIRMY)) {
+    if (cell && world.add(...cell, creature.type, { chain: creature.chain })) {
       const [x, y, z] = cell;
       const from = body.findLast((b) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => b.x + dx === x && b.y + dy === y && b.z + dz === z));
       world.appear(world.get(x, y, z), from ?? body[body.length - 1]);
@@ -969,6 +981,28 @@ function endWalk(creature) {
   }
 }
 
+/**
+ * Creature controls (the player steering `creature`: `creature.steer`, a direction in lattice
+ * space set by the engine): of the neighbouring cells `ok(x, y, z)` allows, the one most nearly
+ * in the steer direction (within about 70° of it); null if none, or not steered. The steer is
+ * used up: the player's input since the last turn moves it one step.
+ */
+export function steeredCell(creature, ok) {
+  const s = creature.steer;
+  delete creature.steer;
+  if (!s) return null;
+  let best = null, bestDot = 0.35;
+  for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+    const dot = (dx * s[0] + dy * s[1] + dz * s[2]) / Math.hypot(dx, dy, dz);
+    if (dot <= bestDot) continue;
+    const x = creature.x + dx, y = creature.y + dy, z = creature.z + dz;
+    if (!ok(x, y, z)) continue;
+    best = { x, y, z };
+    bestDot = dot;
+  }
+  return best;
+}
+
 /** A creature trapped for this many turns in a row dies. */
 export const TRAPPED_DEATH_TURNS = 15;
 
@@ -1055,6 +1089,12 @@ export function stepSoloCreatures(world, skip = new Set()) {
     if (!checkTrapped(world, c)) continue; // trapped (or just died): no action this turn
     tickWait(c);
     if (skip.has(c)) continue;
+    if (c.isControlled) {
+      // Creature controls: it goes where the player steers it (else stays put), nothing else
+      const to = steeredCell(c, (x, y, z) => isWalkable(world, x, y, z, c));
+      if (to && world.move(c, to, world.stepSeconds)) moved++;
+      continue;
+    }
     // left to itself, a creature goes for the food it wants that it can see (and eats one next to it)
     const foraged = forage(world, c, (goal) => firstStepToward(world, c, goal), (to) => world.move(c, to, world.stepSeconds));
     if (foraged) {

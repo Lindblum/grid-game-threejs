@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RANDOM_BLOCKS } from './tools.js';
-import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature } from './blocks.js';
+import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature, isChainCreature } from './blocks.js';
 import { NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
 import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
 import { ClusterBodies } from './clusterBody.js';
@@ -146,7 +146,8 @@ export class World {
     // (`born`): the first placed is the head (it has the eyes and the behavior), the last the tail
     this.squirmyBlocks = new Set();
     this.squirmies = []; // [{ segments: [head, …, tail] }], see refreshSquirmies
-    this.squirmyOf = new Map(); // Squirmy block -> its squirmy
+    this.squirmyOf = new Map(); // chain creature block (Squirmy, Slither) -> its chain
+    this._nextChain = 1; // the next chain id (block.chain: which chain a chain creature block belongs to)
     this._born = 0;
     this.eyes = new CreatureEyes(parent);
     this.byType = new Map(); // block type -> Set of its blocks (see ofType)
@@ -157,6 +158,9 @@ export class World {
     this.idleMarks = {};
     this._refreshCells = new Map(); // cell key -> [x, y, z]: face / corner masks to redo (see _flushRefresh)
     this.clusterBodies = new ClusterBodies(parent, this.materials); // Options → Rendering: Smooth
+    // the scene clock (ms): animations (slides, growing in / shrinking away, eyes, shaders)
+    // run on it, and it only moves while the game runs (advanceTime), so pausing freezes them
+    this.time = 0;
     this.revision = 0; // bumped whenever blocks are added, removed, moved, retyped or recoloured (see _changed)
     this.stepSeconds = STEP_FRACTION; // length of per-turn animations (s); the engine sets it from the turn length
     this.fogEnabled = true; // Options → Fog (set by the engine): generateNew skips Fog steps when off
@@ -264,7 +268,7 @@ export class World {
   _reorient(creature, moveDir = null, durationS = this.stepSeconds) {
     const { front, floor } = creature;
     orientCreature(this, creature, moveDir);
-    if (creature.front !== front || creature.floor !== floor) this.eyes.track(creature, durationS);
+    if (creature.front !== front || creature.floor !== floor) this.eyes.track(creature, durationS, this.time);
     // a Buzzy turning where it is buzzes ('creatureTurned'; the engine plays it); one that
     // moved has buzzed already ('creatureMoved')
     const turned = front && creature.front && creature.front.some((v, i) => v !== front[i]);
@@ -281,27 +285,38 @@ export class World {
   }
 
   /**
-   * Re-clusters Squirmy blocks into Squirmies: touching Squirmy blocks form one chain, ordered
-   * by `born` (placement order), so the first placed is the head and the last the tail. The
-   * head carries the eyes; a block that stops being a head loses them.
+   * Re-groups chain creature blocks (Squirmy, Slither) into chains. Each block carries the id
+   * of the chain it belongs to (`block.chain`, see _chainFor), so two chains that touch stay
+   * two creatures. A chain's blocks must also touch each other: one split apart (a block taken
+   * out of its middle) becomes two chains, the part with the older head keeping the id. Each
+   * chain is ordered by `born` (placement order): the first placed is the head, the last the
+   * tail. The head carries the eyes; a block that stops being a head loses them.
    */
   refreshSquirmies() {
     const seen = new Set();
     this.squirmies = [];
     this.squirmyOf.clear();
-    for (const start of this.squirmyBlocks) {
+    const byAge = [...this.squirmyBlocks].sort((a, b) => a.born - b.born); // oldest first: the part with the head keeps the id
+    const idTaken = new Set();
+    for (const start of byAge) {
       if (seen.has(start)) continue;
       seen.add(start);
       const segments = [start];
       for (let i = 0; i < segments.length; i++) {
         for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
           const n = this.blocks.get(cellKey(segments[i].x + dx, segments[i].y + dy, segments[i].z + dz));
-          if (n && n.type === BLOCK.SQUIRMY && !seen.has(n)) {
+          if (n && n.type === start.type && n.chain === start.chain && !seen.has(n)) {
             seen.add(n);
             segments.push(n);
           }
         }
       }
+      // a second, separate part of a chain: it becomes a chain of its own
+      if (idTaken.has(start.chain)) {
+        const id = this._nextChain++;
+        for (const s of segments) s.chain = id;
+      }
+      idTaken.add(start.chain);
       segments.sort((a, b) => a.born - b.born);
       const sq = { segments };
       this.squirmies.push(sq);
@@ -321,7 +336,7 @@ export class World {
   /** Snaps every creature's orientation and eyes into place with no animation. */
   _settleCreatures() {
     for (const c of [...this.soloCreatures, ...this.squirmyBlocks]) {
-      if (c.type === BLOCK.SQUIRMY && !c.isHead) continue; // only Squirmy heads have eyes
+      if (isChainCreature(c.type) && !c.isHead) continue; // only a chain's head has eyes
       orientCreature(this, c);
       this.eyes.track(c, 0);
     }
@@ -423,7 +438,7 @@ export class World {
    * its connected Wood, listed outward from `block`).
    */
   clusterOf(block) {
-    if (block.type === BLOCK.SQUIRMY) return [...(this.squirmyOf.get(block)?.segments ?? [block])];
+    if (isChainCreature(block.type)) return [...(this.squirmyOf.get(block)?.segments ?? [block])];
     const head = block.segmentOf ?? block; // a Buzzy with body segments: head, then its segments
     if (head.segments?.length) return [head, ...head.segments];
     if (isCreature(block.type)) return [block];
@@ -633,7 +648,12 @@ export class World {
     }
   }
 
-  add(x, y, z, type) {
+  /**
+   * Adds a block of `type` in empty cell (x, y, z). Returns whether it did. `chain`: for a
+   * chain creature block, the chain it joins (e.g. a Squirmy growing); by default one of its
+   * type it touches (_chainFor).
+   */
+  add(x, y, z, type, { chain = null } = {}) {
     if (!isValidCell(x, y, z) || !BLOCK_COLORS[type]) return false;
     const k = cellKey(x, y, z);
     if (this.blocks.has(k)) return false;
@@ -659,8 +679,9 @@ export class World {
       orientCreature(this, b);
       this.eyes.track(b, 0);
     }
-    if (type === BLOCK.SQUIRMY) {
+    if (isChainCreature(type)) {
       b.born = this._born++;
+      b.chain = chain ?? this._chainFor(b);
       this._watchBehavior(b);
       b.behavior = blockProps(b.type).defaultBehavior; // Wander (the head's behavior drives the whole Squirmy)
       b.sightRadius = blockProps(b.type).sightRadius; // used while this block is the head
@@ -741,13 +762,15 @@ export class World {
     const style = this._style(block);
     style.setX(block.index, blockProps(type).style);
     style.setZ(block.index, 0);
-    if (old === BLOCK.SQUIRMY) {
+    if (isChainCreature(old)) {
       this.squirmyBlocks.delete(block);
       this.eyes.untrack(block);
       delete block.isHead;
+      delete block.chain;
       this.refreshSquirmies();
-    } else if (type === BLOCK.SQUIRMY) {
+    } else if (isChainCreature(type)) {
       block.born = this._born++;
+      block.chain = this._chainFor(block);
       this._watchBehavior(block);
       block.behavior = blockProps(block.type).defaultBehavior;
       block.sightRadius = blockProps(block.type).sightRadius;
@@ -792,7 +815,7 @@ export class World {
       this.blocks.delete(k);
       this.anims.delete(k);
     }
-    const t0 = performance.now();
+    const t0 = this.time;
     moves.forEach(([block, to], i) => {
       block.x = to.x;
       block.y = to.y;
@@ -836,12 +859,12 @@ export class World {
     this._logChange(fromPos.x, fromPos.y, fromPos.z);
     this._logChange(to.x, to.y, to.z);
     b.movedTurn = this.turn; // lets rules tell settled blocks from moving ones
-    this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), t0: performance.now(), dur: durationS * 1000 });
+    this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), t0: this.time, dur: durationS * 1000 });
     // a creature now faces the way it moved (unless it was carried, e.g. by a falling group);
     // its old and new neighbours may change floors
-    // a Buzzy or Squirmy moving under its own power (not carried): 'creatureMoved' (the
-    // engine plays its sound: buzz, slither)
-    if (turnCreature && ((b.type === BLOCK.BUZZY && !b.segmentOf) || (b.type === BLOCK.SQUIRMY && b.isHead))) {
+    // a creature moving under its own power (not carried; a one-block creature, not a body
+    // segment, or a chain's head): 'creatureMoved' (the engine plays its sound: skitter, buzz, slither)
+    if (turnCreature && ((isSingleCreature(b.type) && !b.segmentOf) || (isChainCreature(b.type) && b.isHead))) {
       this.emit('creatureMoved', b);
     }
     if (isSingleCreature(b.type) || b.isHead) {
@@ -953,8 +976,13 @@ export class World {
     this.revision++;
   }
 
-  /** Advances sliding blocks, creature eyes and the water animation; call once per frame. */
-  updateAnimations(now = performance.now()) {
+  /** Moves the scene clock on by `ms` (the engine: only while the game runs, so pause freezes every animation). */
+  advanceTime(ms) {
+    this.time += ms;
+  }
+
+  /** Advances sliding blocks, creature eyes and the shader animations to scene time `now`; call once per frame. */
+  updateAnimations(now = this.time) {
     this._flushRefresh(); // face / corner masks changed by this turn's adds, moves and removals
     this.materials.uniforms.uTime.value = now / 1000;
     const p = new THREE.Vector3();
@@ -993,7 +1021,7 @@ export class World {
     if (isTranslucent(block.type)) this._refreshTranslucentAround(block.x, block.y, block.z);
     this.anims.delete(cellKey(block.x, block.y, block.z)); // the vanish animation takes over its matrix
     this._changed(); // shrinks away on the instanced mesh, not in a cluster body
-    this.vanishing.set(block, { from: new THREE.Vector3(block.x, block.y, block.z), dir, t0: performance.now(), dur: durationS * 1000 });
+    this.vanishing.set(block, { from: new THREE.Vector3(block.x, block.y, block.z), dir, t0: this.time, dur: durationS * 1000 });
     return true;
   }
 
@@ -1006,8 +1034,8 @@ export class World {
     this.anims.delete(cellKey(block.x, block.y, block.z));
     this._logChange(block.x, block.y, block.z);
     this._changed(); // grows in on the instanced mesh, joins its cluster body once there
-    this.appearing.set(block, { from: new THREE.Vector3(from.x, from.y, from.z), t0: performance.now(), dur: durationS * 1000 });
-    this._updateAppearing(performance.now()); // start at size 0, not full size for a frame
+    this.appearing.set(block, { from: new THREE.Vector3(from.x, from.y, from.z), t0: this.time, dur: durationS * 1000 });
+    this._updateAppearing(this.time); // start at size 0, not full size for a frame
   }
 
   _updateAppearing(now) {
@@ -1108,6 +1136,21 @@ export class World {
       scale.setScalar(Math.max(1 - e, 1e-4));
       this._setMatrix(b, _m.compose(pos, noRot, scale));
     }
+  }
+
+  /**
+   * The chain a new chain creature block `block` joins: one of its own type it touches,
+   * preferring one whose tail it touches (it extends that chain); else a new chain.
+   */
+  _chainFor(block) {
+    let joined = null;
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const n = this.blocks.get(cellKey(block.x + dx, block.y + dy, block.z + dz));
+      if (!n || n === block || n.type !== block.type || n.chain == null) continue;
+      if (n.isTail) return n.chain;
+      joined ??= n.chain;
+    }
+    return joined ?? this._nextChain++;
   }
 
   clear() {
@@ -1474,12 +1517,12 @@ export class World {
   }
 
   /** One block's saved fields (creatures also save facing, behavior, and so on). */
-  _saveBlock({ x, y, z, type, front, behavior, heldBehavior, walkTarget, trappedTurns, born, isAssignedBehavior }) {
+  _saveBlock({ x, y, z, type, front, behavior, heldBehavior, walkTarget, trappedTurns, born, chain, isAssignedBehavior }) {
     // a selected creature is only waiting because it is selected: save what it will resume
     const saved = heldBehavior && behavior === 'wait' ? heldBehavior : behavior;
     // only a walk the player gave outlasts the selection (and so a reload)
     const assigned = isAssignedBehavior && saved === 'walk' ? { assigned: true } : {};
-    if (type === BLOCK.SQUIRMY) return { x, y, z, type, born, behavior: saved, ...(front && { front }), ...assigned };
+    if (isChainCreature(type)) return { x, y, z, type, born, chain, behavior: saved, ...(front && { front }), ...assigned };
     if (isSingleCreature(type)) {
       return {
         x, y, z, type, ...(front && { front }), behavior: saved,
@@ -1498,6 +1541,8 @@ export class World {
     this.clear();
     let loaded = 0, skipped = 0;
     const chains = []; // [head, saved segment cells]: linked once every block is in
+    const savedChains = new Map(); // a chain id in the file -> its id here
+    const unchained = []; // chain creature blocks saved without a chain id (older saves)
     for (const b of list) {
       const x = Number(b.x), y = Number(b.y), z = Number(b.z);
       const type = b.type ?? b.color;
@@ -1523,10 +1568,15 @@ export class World {
           if (BUFF_TYPES[bf?.type]) this.addBuff(this.get(x, y, z), bf.type, limit(bf.turns), limit(bf.charges));
         }
         if (b.assigned === true && isCreature(type)) this.get(x, y, z).isAssignedBehavior = true;
-        if (type === BLOCK.SQUIRMY) {
+        if (isChainCreature(type)) {
           // keep the saved order (head .. tail), behavior and facing
           const s = this.get(x, y, z);
           if (Number.isFinite(Number(b.born))) s.born = Number(b.born);
+          // its chain, as saved (so touching chains stay apart); older saves: grouped below
+          if (b.chain != null) {
+            if (!savedChains.has(b.chain)) savedChains.set(b.chain, this._nextChain++);
+            s.chain = savedChains.get(b.chain);
+          } else unchained.push(s);
           if (canBehave(type, b.behavior)) s.behavior = b.behavior;
           if (dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) s.front = dir;
         }
@@ -1536,6 +1586,20 @@ export class World {
       for (const c of cells) {
         const s = Array.isArray(c) && this.get(Number(c[0]), Number(c[1]), Number(c[2]));
         if (s && s !== head && s.type === head.type && !s.segmentOf && !s.segments) this._attachSegment(head, s);
+      }
+    }
+    // older saves (no chain ids): touching blocks of one type form one chain, as they used to
+    const loose = new Set(unchained);
+    for (const start of unchained) {
+      if (!loose.delete(start)) continue;
+      const id = this._nextChain++;
+      const group = [start];
+      for (let i = 0; i < group.length; i++) {
+        group[i].chain = id;
+        for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+          const n = this.blocks.get(cellKey(group[i].x + dx, group[i].y + dy, group[i].z + dz));
+          if (n && n.type === start.type && loose.delete(n)) group.push(n);
+        }
       }
     }
     this._born = Math.max(this._born, ...[...this.squirmyBlocks].map((s) => s.born + 1));

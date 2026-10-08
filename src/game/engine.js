@@ -6,7 +6,9 @@ import { STEP_FRACTION, World, isSaveData, parseTemplate } from './world.js';
 import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEatNearby, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
-import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature } from './blocks.js';
+import { claudePrompt } from './claudePrompt.js';
+import { debugSections } from './debugSections.js';
+import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
 import { faceFromNormal, isValidCell } from './lattice.js';
 import { EDGE_SHADE, EDGE_WIDTH_CM, truncatedOctahedronFaces } from './geometry.js';
@@ -28,6 +30,13 @@ const XR_RAY_LENGTH = 1.0; // 1 m
 const DESKTOP_RAY_LENGTH = 50;
 const WHEEL_TOOL_REARM_MS = 200; // horizontal-scroll tool switching: quiet gap that ends one push
 const BG = new THREE.Color('#1b2029');
+// R3: the creature's first-person view: the camera sits between its eyes (its own frame, cm:
+// x = right, y = up, z = front), and the right stick looks around by up to these angles
+const POV_EYE = new THREE.Vector3(0, 0.15, 0.95);
+const POV_MAX_PITCH = 1.3; // rad, up / down
+const _povPos = new THREE.Vector3(), _povQ = new THREE.Quaternion(), _povLook = new THREE.Quaternion();
+const _povTurn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI); // the camera looks down -z, a creature faces +z
+const _povEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 // scratch for the listener (positional sound)
 const _earPos = new THREE.Vector3(), _earFwd = new THREE.Vector3(), _earUp = new THREE.Vector3();
 const _earQuat = new THREE.Quaternion(), _earScale = new THREE.Vector3();
@@ -87,15 +96,16 @@ export class Engine {
     this.state = {
       screen: 'playing',
       paused: false, // the game opens straight into a New scene, with a countdown
-      menu: 'main', // 'main' | 'load' | 'save' | 'options'
+      menu: 'main', // 'main' | 'load' | 'save' | 'options' | 'controls' | 'video'
       soundOn: true, // Options → Sounds
+      controlSchema: 'observer', // 'observer' (default) or 'creature' (L3 with a creature selected): controls.js
       musicOn: true, // Options → Music: plays while the game is running (quieter in the pause menu)
       gameTime: -COUNTDOWN_SECONDS, // whole seconds (turns) since New / Load; negative = countdown
       background: 'passthrough', // Options → Background: 'solid', 'skybox' or 'passthrough' (XR passthrough; solid elsewhere)
       proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
       outlines: true, // Options → Outlines: darkened face edges on blocks
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
-      speed: SPEED.default, // Options → Speed: turns per minute (sets the turn and animation length)
+      speed: SPEED.default, // Options → Speed: 0x–4x (0x: stopped), where 1x is 60 turns a minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
       fog: true, // Options → Fog: Fog template steps in New scenes
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
@@ -117,7 +127,7 @@ export class Engine {
       selectPhase: 'select', // Select tool: 'select' (pick a creature) or 'target' (pick where it walks)
     };
     this._toastId = 0;
-    this.turnSeconds = 60 / SPEED.default;
+    this.turnSeconds = 60 / (SPEED.turnsPerMinute * SPEED.default);
     this.mouse = null;
     this.target = null;
     this.hands = { left: null, right: null };
@@ -151,7 +161,7 @@ export class Engine {
   };
   getState = () => this.state;
   setState(patch) {
-    const inOptions = (s) => s.paused && (s.menu === 'options' || s.menu === 'controls');
+    const inOptions = (s) => s.paused && (s.menu === 'options' || s.menu === 'controls' || s.menu === 'video');
     const wasInOptions = inOptions(this.state);
     this.state = { ...this.state, ...patch };
     if (wasInOptions && !inOptions(this.state)) this._saveOptions(); // left Options (Back, Esc, Resume, …)
@@ -164,6 +174,16 @@ export class Engine {
 
   /** The settings the Options menu controls, as saved to the options cookie. */
   static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction'];
+
+  /** Options → Debug, or ` / ~ while playing: the Debug panel (XR: the debug tablet) on / off; remembered. */
+  toggleDebug() {
+    const on = !this.state.debugMode;
+    this.setState({ debugMode: on });
+    if (!on) claudePrompt.stopDictation();
+    if (on && this.renderer.xr.isPresenting) this._placeDebugTablet();
+    this._saveOptions(); // (the menu saves on leaving Options; the key saves at once)
+    console.info(`Debug mode ${on ? 'on' : 'off'}`);
+  }
 
   _saveOptions() {
     saveOptionsCookie(Object.fromEntries(Engine.OPTION_KEYS.map((k) => [k, this.state[k]])));
@@ -203,7 +223,8 @@ export class Engine {
       this.world.materials.setRefraction(saved.refraction);
       this.setState({ refraction: saved.refraction });
     }
-    if (typeof saved.speed === 'number') this.setSpeed(saved.speed);
+    // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
+    if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
     for (const k of ['rain', 'debugMode', 'smoothRendering']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
     if (bool('fog')) this.setFog(saved.fog);
@@ -289,8 +310,8 @@ export class Engine {
     this.world.on('creatureArrived', (creature) => playCreatureDone(at(creature)));
     this.world.on('creatureTrapped', (creature) => playCreatureTrapped(at(creature)));
     this.world.on('creatureTurned', (creature) => playSfx('buzz', 150, at(creature)));
-    // a creature moving under its own power: a Buzzy buzzes, a Squirmy slithers
-    const MOVE_SOUNDS = { [BLOCK.BUZZY]: 'buzz', [BLOCK.SQUIRMY]: 'slither' };
+    // a creature moving under its own power: a Crawly skitters, a Buzzy buzzes, a Squirmy slithers
+    const MOVE_SOUNDS = { [BLOCK.CRAWLY]: 'skitter', [BLOCK.BUZZY]: 'buzz', [BLOCK.SQUIRMY]: 'slither', [BLOCK.SLITHER]: 'slither' };
     this.world.on('creatureMoved', (creature) => playSfx(MOVE_SOUNDS[creature.type], 150, at(creature)));
     this.world.on('blockConsumed', ({ sound, block }) => playSfx(sound, 90, at(block)));
     this.world.on('blockExcreted', ({ sound, block }) => playSfx(sound, 90, at(block)));
@@ -522,6 +543,7 @@ export class Engine {
     if (typing && e.key !== 'Escape') return;
     const s = this.state;
     if (s.screen !== 'playing') return;
+    if (s.paused && !typing && this._keyMenu(e)) return; // arrows / Enter / Space / Backspace in the pause menu
     if (e.key === 'Escape' || e.key === 'Enter') {
       e.preventDefault();
       if (!s.paused) this.pause();
@@ -530,6 +552,13 @@ export class Engine {
       return;
     }
     if (s.paused) return;
+    if (e.key === '`' || e.key === '~' || e.code === 'Backquote') {
+      // ` / ~: the Debug panel on / off
+      e.preventDefault();
+      this.toggleDebug();
+      playTick();
+      return;
+    }
     if (e.key === 'ArrowRight') {
       e.preventDefault();
       this.cycleTool(1);
@@ -540,6 +569,78 @@ export class Engine {
       const i = e.key === '0' ? 9 : Number(e.key) - 1; // 1–9 = tools 1–9, 0 = tool 10
       if (i < TOOLS.length) this.selectTool(i);
     }
+  }
+
+  /**
+   * Keyboard navigation of the pause menu: Up / Down (or W / S) move the focus, Left / Right (or A / D)
+   * nudge a focused slider, Enter / Space press the focused button, Backspace (or Esc) goes back.
+   * Returns true when the key was used. With nothing focused, Enter keeps its old meaning (Back / Resume).
+   */
+  _keyMenu(e) {
+    const s = this.state;
+    const items = menuModel(s).items.filter((it) => !it.disabled);
+    if (!items.length) return false;
+    const idx = items.findIndex((it) => it.id === s.menuFocus);
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const up = k === 'ArrowUp' || k === 'w', down = k === 'ArrowDown' || k === 's';
+    if (up || down) {
+      e.preventDefault();
+      const next = idx < 0 ? (down ? 0 : items.length - 1) : (idx + (down ? 1 : -1) + items.length) % items.length;
+      this.setState({ menuFocus: items[next].id });
+      playTick();
+      return true;
+    }
+    const left = k === 'ArrowLeft' || k === 'a', right = k === 'ArrowRight' || k === 'd';
+    const slider = items[idx]?.slider;
+    if (slider && (left || right)) {
+      e.preventDefault();
+      this._setSlider(items[idx].id, slider.value + (right ? 1 : -1) * slider.step); // one notch
+      playTick();
+      return true;
+    }
+    // Left: like the Back button (Resume on the main screen); Right on a button with an arrow
+    // (a submenu) opens it, and on a toggle (On / Off, Background, …) presses it
+    if (left) {
+      e.preventDefault();
+      if (s.menu !== 'main') this._keyMenuGo('back');
+      else this.resume();
+      return true;
+    }
+    if (right && (items[idx]?.submenu || items[idx]?.toggle)) {
+      e.preventDefault();
+      this._keyMenuGo(items[idx].id);
+      return true;
+    }
+    if (k === 'Escape' && idx >= 0 && s.menu !== 'main') {
+      e.preventDefault();
+      this._keyMenuGo('back'); // keyboard-driven: keep a focus on the screen we return to
+      return true;
+    }
+    if (k === 'Backspace') {
+      e.preventDefault();
+      if (s.menu !== 'main') this._keyMenuGo('back');
+      return true;
+    }
+    if ((k === 'Enter' || k === ' ') && idx >= 0) {
+      e.preventDefault();
+      if (!slider) this._keyMenuGo(items[idx].id);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Presses a menu button from the keyboard. On opening another screen it focuses that screen's first item;
+   * on going back, the button that led to the screen just left (e.g. Video →).
+   */
+  _keyMenuGo(id) {
+    const before = this.state.menu;
+    this.menuAction(id);
+    const s = this.state;
+    if (!s.paused || s.menu === before) return;
+    const items = menuModel(s).items.filter((it) => !it.disabled);
+    const focus = items.find((it) => it.id === before) ?? items.find((it) => it.id !== 'back') ?? items[0];
+    this.setState({ menuFocus: focus?.id ?? null });
   }
 
   // ---------------------------------------------------------------- game actions
@@ -572,13 +673,19 @@ export class Engine {
     playResume();
   }
 
+  /** Tools belong to the Observer: under Creature controls there are none (no using, aiming or switching them). */
+  toolsAvailable(s = this.state) {
+    return s.controlSchema !== 'creature';
+  }
+
   cycleTool(dir) {
+    if (!this.toolsAvailable()) return;
     const n = TOOLS.length;
     this.selectTool((this.state.toolIndex + dir + n) % n);
   }
 
   selectTool(i) {
-    if (i === this.state.toolIndex) return;
+    if (i === this.state.toolIndex || !this.toolsAvailable()) return;
     if (TOOLS[this.state.toolIndex].id === TOOL.SELECT) this._setSelected([]); // leaving Select drops the selection
     this.setState({ toolIndex: i });
     this._hudMessage = null;
@@ -591,7 +698,7 @@ export class Engine {
   }
 
   useTool() {
-    if (!this.toolsReady()) return false;
+    if (!this.toolsReady() || !this.toolsAvailable()) return false;
     const tool = TOOLS[this.state.toolIndex];
     const t = this.target;
     if (tool.id === TOOL.SELECT) return this._useSelect(t);
@@ -620,6 +727,11 @@ export class Engine {
 
   /** HUD label for the current tool (the Select tool shows its phase). */
   toolLabel(s = this.state) {
+    if (!this.toolsAvailable(s)) {
+      // Creature controls: no tools, just who you're controlling
+      const c = this._controlled?.[0];
+      return c ? `Controlling ${blockProps(c.type).name}` : 'Creature controls';
+    }
     const tool = TOOLS[s.toolIndex];
     if (tool.block) return `${tool.label} (x${s.blockCounts[tool.block] ?? 0})`; // e.g. "Stone (x100)"
     if (tool.id !== TOOL.SELECT) return tool.label;
@@ -662,7 +774,7 @@ export class Engine {
     if (b.type === BLOCK.WOOD || isCreature(b.type)) {
       rows.push(['Cluster slots', `${cluster.filter((x) => x.inventory).length} of ${cluster.length} full`]);
     }
-    if (b.type === BLOCK.SQUIRMY) {
+    if (isChainCreature(b.type)) {
       const segs = this.world.squirmyOf.get(b)?.segments ?? [b];
       const i = segs.indexOf(b);
       rows.push(['Segment', `${i + 1} of ${segs.length}${b.isHead ? ' (head)' : b.isTail ? ' (tail)' : ''}`]);
@@ -710,6 +822,11 @@ export class Engine {
       c.waitTurns = SELECT_WAIT_TURNS; // then it resumes heldBehavior (sim: tickWait)
     }
     this.selected = list;
+    // Creature controls follow the selection; with nothing selected, back to Observer
+    if (this.state.controlSchema === 'creature') {
+      if (list.length) this._setControlled(list);
+      else this.setControlSchema('observer');
+    }
     const phase = list.length ? 'target' : 'select';
     if (this.state.selectPhase !== phase) this.setState({ selectPhase: phase });
   }
@@ -757,6 +874,133 @@ export class Engine {
     if (behavior === BEHAVIOR.WANDER) playAssign(where);
     else playWait(where);
     return true;
+  }
+
+  // ---------------------------------------------------------------- creature view (R3)
+
+  /**
+   * R3: switches to the selected creature's first-person view (the camera between its eyes,
+   * turning with it as it moves and turns; the right stick looks around), or back to the
+   * orbiting camera where it was. Not in XR (the headset is the camera there).
+   */
+  toggleCreatureView() {
+    if (this._pov) return this._endCreatureView();
+    const creature = this.selected[0];
+    if (!creature || this.renderer.xr.isPresenting) {
+      playSfx('ineffective', 0);
+      return false;
+    }
+    this._pov = {
+      creature, yaw: 0, pitch: 0,
+      saved: { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() },
+    };
+    this.controls.enabled = false;
+    this.setState({ creatureView: true });
+    this.toast(`${blockProps(creature.type).name}'s view (R3: back)`);
+    playTick();
+    return true;
+  }
+
+  /** Back to the orbiting camera, where it was before the creature's view. */
+  _endCreatureView() {
+    const p = this._pov;
+    if (!p) return false;
+    this._pov = null;
+    const { pos, target, up } = p.saved;
+    this.camera.position.copy(pos);
+    this.camera.up.copy(up);
+    this.controls.target.copy(target);
+    this.camera.lookAt(target);
+    this._camSafe = null; // a jump: no collision sweep from the creature's head
+    this.controls.enabled = true;
+    this.controls.update();
+    this.setState({ creatureView: false });
+    playTick();
+    return true;
+  }
+
+  /** Per frame: the camera rides between the creature's eyes, facing its front (plus the look-around). */
+  _updateCreatureView(now) {
+    const { creature: c, yaw, pitch } = this._pov;
+    if (this.world.get(c.x, c.y, c.z) !== c) return this._endCreatureView(); // it's gone (died, deleted, a new world)
+    // its frame as drawn: the eyes' rotation (eased as it turns) and its sliding position
+    const q = this.world.eyes.state.get(c)?.q ?? _povQ.identity();
+    this.world.renderedPosition(c, now, _povPos);
+    _povPos.add(POV_EYE.clone().multiplyScalar(this.world.drawnScale(c, now)).applyQuaternion(q));
+    this.camera.position.copy(this.worldRoot.localToWorld(_povPos));
+    _povLook.setFromEuler(_povEuler.set(pitch, yaw, 0));
+    this.camera.quaternion.copy(this.worldRoot.getWorldQuaternion(_povQ)).multiply(q).multiply(_povTurn).multiply(_povLook);
+    this.camera.up.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+  }
+
+  /** Right stick in the creature's view: turn the head (yaw: any way round, pitch: up to POV_MAX_PITCH). */
+  _lookAround(dt, rx, ry) {
+    const p = this._pov;
+    p.yaw -= rx * 2.2 * dt;
+    p.pitch = THREE.MathUtils.clamp(p.pitch - ry * 1.6 * dt, -POV_MAX_PITCH, POV_MAX_PITCH);
+  }
+
+  // ---------------------------------------------------------------- control schemas
+
+  /** L3: Observer → Creature controls (needs a selected creature), or back. */
+  toggleControlSchema() {
+    if (this.state.controlSchema === 'creature') return this.setControlSchema('observer');
+    if (!this.selected.length) {
+      playSfx('ineffective', 0);
+      return false;
+    }
+    return this.setControlSchema('creature');
+  }
+
+  /** Switches control schema (controls.js): 'creature' puts the selected creatures under the player's control. */
+  setControlSchema(id) {
+    if (this.state.controlSchema === id) return false;
+    this._setControlled(id === 'creature' ? this.selected : []);
+    this.setState({ controlSchema: id });
+    this.toast(id === 'creature' ? 'Creature controls: the left stick moves the selected creature' : 'Observer controls');
+    playTick();
+    return true;
+  }
+
+  /** The creatures the player controls (Creature controls): flagged for the sim (isControlled, steer). */
+  _setControlled(list) {
+    for (const c of this._controlled ?? []) {
+      delete c.isControlled;
+      delete c.steer;
+    }
+    this._controlled = [...list];
+    for (const c of this._controlled) c.isControlled = true;
+  }
+
+  /**
+   * Creature controls: the left stick (`sx`, `sy`: right, down) steers each controlled
+   * creature relative to the camera: up is away from the camera, right is screen right. A
+   * walker's direction is kept along the ground (perpendicular to "up", away from the world's
+   * centre); a flyer goes straight where the camera looks. Kept (`creature.steer`) until its
+   * next turn uses it (sim: steeredCell), so a quick flick between turns still counts.
+   */
+  _steerControlled(sx, sy) {
+    if (!sx && !sy) return;
+    const toLattice = this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const look = this.camera.getWorldDirection(new THREE.Vector3()).applyQuaternion(toLattice);
+    const screenRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(toLattice);
+    const screenUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(toLattice);
+    for (const c of this._controlled ?? []) {
+      const fwd = look.clone(), right = screenRight.clone();
+      if (!canFly(c)) {
+        const up = new THREE.Vector3(c.x, c.y, c.z);
+        if (up.lengthSq() < 1e-6) up.set(0, 1, 0);
+        up.normalize();
+        fwd.addScaledVector(up, -fwd.dot(up));
+        // looking straight down at it: "forward" is the screen's up instead
+        if (fwd.lengthSq() < 0.01) fwd.copy(screenUp).addScaledVector(up, -screenUp.dot(up));
+        right.addScaledVector(up, -right.dot(up));
+      }
+      const dir = right.normalize().multiplyScalar(sx).addScaledVector(fwd.normalize(), -sy);
+      if (dir.lengthSq() < 1e-6) continue;
+      dir.normalize();
+      c.steer = [dir.x, dir.y, dir.z];
+    }
   }
 
   /**
@@ -815,14 +1059,14 @@ export class Engine {
   _creatureOf(block) {
     if (block?.segmentOf) return block.segmentOf; // a Buzzy's body segment: the Buzzy
     if (isSingleCreature(block?.type)) return block;
-    if (block?.type === BLOCK.SQUIRMY) return this.world.squirmyOf.get(block)?.segments[0] ?? block;
+    if (isChainCreature(block?.type)) return this.world.squirmyOf.get(block)?.segments[0] ?? block;
     return null;
   }
 
   /** Every block of a creature: a Squirmy's or segmented Buzzy's whole body, or the one block. */
   _bodyOf(creature) {
     if (creature.segments?.length) return [creature, ...creature.segments]; // a Buzzy with body segments
-    return creature.type === BLOCK.SQUIRMY ? this.world.squirmyOf.get(creature)?.segments ?? [creature] : [creature];
+    return isChainCreature(creature.type) ? this.world.squirmyOf.get(creature)?.segments ?? [creature] : [creature];
   }
 
   _useSelect(t) {
@@ -869,7 +1113,7 @@ export class Engine {
     p.obj.position.copy(this.targetHL.position);
     p.obj.scale.setScalar(1);
     p.obj.visible = true;
-    p.t0 = performance.now();
+    p.t0 = this.world.time;
   }
 
   /** Per frame: selection wireframes follow their (possibly sliding) creatures; pulses shrink. */
@@ -892,7 +1136,8 @@ export class Engine {
         if (b) this.world.renderedPosition(b, now, hl.position);
       });
     };
-    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
+    const watched = this._pov?.creature; // (seen from inside, its own wireframe would frame the view)
+    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)).filter((b) => b !== watched), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
     place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], '#9be8a8', SELECT_WIRE_RADIUS * 0.8, 1.04);
     for (const p of this._pulses) {
       if (!p.obj.visible) continue;
@@ -913,7 +1158,7 @@ export class Engine {
 
   /** Formats a Mean Diameter for the HUD, e.g. "Ø 23.4 cm". */
   static formatDiameter(count) {
-    return `Ø ${Engine.meanDiameter(count).toFixed(1)} cm`;
+    return `${Engine.meanDiameter(count).toFixed(1)} cm`;
   }
 
   /** Formats seconds as HH:mm:ss. */
@@ -951,21 +1196,29 @@ export class Engine {
     if (id === 'speed') this.setSpeed(value);
   }
 
-  /** Options → Speed: sets the turns per minute, and with it the turn and animation length. */
-  setSpeed(turnsPerMinute) {
-    const raw = THREE.MathUtils.clamp(Number(turnsPerMinute) || SPEED.default, SPEED.min, SPEED.max);
+  /**
+   * Options → Speed: sets the speed multiplier (1x = 60 turns a minute), and with it the turn
+   * and animation length. 0x: no turns at all (the simulation stands still; the tools still
+   * work, their animations at the 1x pace).
+   */
+  setSpeed(multiplier) {
+    const n = Number(multiplier);
+    const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : SPEED.default, SPEED.min, SPEED.max);
     const v = Math.round(raw / SPEED.step) * SPEED.step; // snap to the slider's steps
-    this.turnSeconds = 60 / v;
-    this.world.stepSeconds = STEP_FRACTION * this.turnSeconds;
+    this.turnSeconds = v > 0 ? 60 / (SPEED.turnsPerMinute * v) : Infinity;
+    this.world.stepSeconds = STEP_FRACTION * (v > 0 ? this.turnSeconds : 60 / SPEED.turnsPerMinute);
     if (v !== this.state.speed) this.setState({ speed: v });
   }
 
   _advanceClock(dt) {
     const s = this.state;
     if (s.screen !== 'playing' || s.paused) return;
+    // the countdown ticks at the 1x pace when Speed is 0x (else it would never start)
+    const turnLength = Number.isFinite(this.turnSeconds) ? this.turnSeconds : s.gameTime < 0 ? 60 / SPEED.turnsPerMinute : Infinity;
+    if (!Number.isFinite(turnLength)) return (this._clock = 0); // 0x: no turns (and none saved up for later)
     this._clock = (this._clock || 0) + dt;
-    while (this._clock >= this.turnSeconds) {
-      this._clock -= this.turnSeconds;
+    while (this._clock >= turnLength) {
+      this._clock -= turnLength;
       const turn = this.state.gameTime + 1;
       this.setState({ gameTime: turn });
       if (turn < 0) playReady(); // countdown…
@@ -982,7 +1235,7 @@ export class Engine {
         try {
           this._turn(turn);
         } finally {
-          endTurnSounds(this.turnSeconds); // …then each plays as often as it happened, spread over the turn
+          endTurnSounds(turnLength); // …then each plays as often as it happened, spread over the turn
         }
         this.turnMs = performance.now() - t0; // Debug → Performance
       }
@@ -1140,21 +1393,16 @@ export class Engine {
     }
     if (id === 'rain') return this.setState({ rain: !s.rain });
     if (id === 'fog') return this.setFog(!s.fog);
-    if (id === 'debug') {
-      const on = !s.debugMode;
-      this.setState({ debugMode: on });
-      if (on && this.renderer.xr.isPresenting) this._placeDebugTablet();
-      console.info(`Debug mode ${on ? 'on' : 'off'}`);
-      return;
-    }
+    if (id === 'debug') return this.toggleDebug();
     if (id === 'rendering') {
       this.world.setSmoothRendering(!s.smoothRendering); // Smooth: clusters drawn as merged, smoothed bodies
       return this.setState({ smoothRendering: !s.smoothRendering });
     }
     if (id === 'enterxr') return this.enterXR();
     if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
-    if (id === 'back') return this.setState({ menu: s.menu === 'controls' ? 'options' : 'main', page: 0 });
+    if (id === 'back') return this.setState({ menu: s.menu === 'controls' || s.menu === 'video' ? 'options' : 'main', page: 0 });
     if (id === 'controls') return this.setState({ menu: 'controls' });
+    if (id === 'video') return this.setState({ menu: 'video' });
     if (id === 'prev') return this.setState({ page: Math.max(0, s.page - 1) });
     if (id === 'next') {
       const pages = Math.ceil((s.saves?.length || 0) / PAGE_SIZE);
@@ -1179,6 +1427,7 @@ export class Engine {
       this.toast('Passthrough isn’t available in this browser — open the game in the Quest Browser for passthrough');
     }
     unlockAudio();
+    this._endCreatureView(); // the headset is the camera in XR
     try {
       const session = await navigator.xr.requestSession(mode, {
         requiredFeatures: ['local-floor'],
@@ -1228,6 +1477,16 @@ export class Engine {
   }
 
   // ---------------------------------------------------------------- XR debug tablet
+
+  /** The trigger on a debug tablet control (see DebugTablet.hitTest). */
+  _tabletAction(id) {
+    playTick();
+    if (id.startsWith('section:')) return debugSections.toggle(id.slice(8));
+    if (id === 'prompt') return claudePrompt.openKeyboard(); // the headset's system keyboard
+    if (id === 'clear') return claudePrompt.clear();
+    if (id === 'mic') return claudePrompt.toggleDictation(); // (disabled where there is none: the keyboard has a mic)
+    if (id === 'speak') return claudePrompt.toggleSpeech(); // read the response feed aloud
+  }
 
   /** Puts the debug tablet in front of the player, a little to the left and below eye level. */
   _placeDebugTablet() {
@@ -1464,8 +1723,10 @@ export class Engine {
   _onRightTrigger() {
     if (this._hudHover === 'menu') return this.toggleMenu();
     if (this._tabletHover) {
-      // pointing at the debug tablet: the trigger on its corner handle resizes it (held), else nothing
+      // pointing at the debug tablet: the trigger on its corner handle resizes it (held), else
+      // presses what it points at (a section header, the prompt box, a button)
       if (this._tabletHandleHover) this._tabletResizing = true;
+      else if (this._tabletHoverId) this._tabletAction(this._tabletHoverId);
       return;
     }
     if (this.isMenuOpen()) {
@@ -1553,6 +1814,7 @@ export class Engine {
     this._menuHover = null;
     this._menuPanelHover = false; // ray is on the pause panel (button or not)
     this._tabletHover = false;
+    this._tabletHoverId = null; // the tablet control under the ray (section header, prompt box, button)
     this._hudHover = null;
     let uiHit = null;
 
@@ -1567,6 +1829,7 @@ export class Engine {
         if (hit.object === this.debugTablet.mesh) {
           this._tabletHover = true; // grip now grabs it; the trigger resizes it from its corner handle
           this._tabletHandleHover = this.debugTablet.onResizeHandle(hit.uv);
+          this._tabletHoverId = this._tabletHandleHover ? null : this.debugTablet.hitTest(hit.uv);
           uiHit = hit;
           break;
         } else if (hit.object === this.leftHud.mesh) {
@@ -1596,7 +1859,7 @@ export class Engine {
     }
     if (xr && menuOpen) this.menuPanel.draw(menuModel(s), this._menuHover);
 
-    if (s.screen === 'playing' && !s.paused && !uiHit && this.toolsReady(s)) {
+    if (s.screen === 'playing' && !s.paused && !uiHit && this.toolsReady(s) && this.toolsAvailable(s)) {
       let ok = false;
       if (xr) {
         ok = this._setRayFromController();
@@ -1765,8 +2028,12 @@ export class Engine {
     if (s.screen !== 'playing') return;
     if (!s.gamepadAim) this.setState({ gamepadAim: true });
     if (edge(9)) return this.toggleMenu(); // Start
+    if (edge(10)) this.toggleControlSchema(); // L3: Observer ↔ Creature controls
+    if (edge(11)) this.toggleCreatureView(); // R3: the selected creature's first-person view, or back
+    const steering = this.state.controlSchema === 'creature'; // the left stick moves the creature, not the camera
+    if (steering) this._steerControlled(ax(0), ax(1));
     if (edge(0)) {
-      // A: use the tool (at the crosshair)
+      // A: use the tool (at the crosshair; Observer controls only)
       this._updateTarget();
       this.useTool();
     }
@@ -1775,8 +2042,10 @@ export class Engine {
     if (edge(2)) this.selectedToggleWait(); // X: selected creatures wait, or resume what they were doing
     if (edge(4)) this.cycleTool(-1); // LB
     if (edge(5)) this.cycleTool(1); // RB
+    // in the creature's view the right stick looks around (no orbiting, zooming or panning)
+    if (this._pov) return this._lookAround(dt, ax(2), ax(3));
     // left stick up / down and the triggers zoom (LT out, RT in)
-    this._padCamera(dt, ax(2), ax(3), THREE.MathUtils.clamp(ax(1) + zoom, -1, 1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
+    this._padCamera(dt, ax(2), ax(3), THREE.MathUtils.clamp((steering ? 0 : ax(1)) + zoom, -1, 1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
   }
 
   /** D-pad / left stick moves the focus, A selects, B goes back, Start closes the pause menu. */
@@ -1877,17 +2146,25 @@ export class Engine {
     const dt = Math.min(0.1, Math.max(0, (now - (this._lastTime ?? now)) / 1000));
     this._lastTime = now;
     this._countFrame(now);
-    this._updateOrbitLight(now);
+    // the scene clock only runs while the game does: pausing freezes the shaders' animation,
+    // the revolving light, sliding blocks, eyes, wings and legs (World.time)
+    const s0 = this.state;
+    if (s0.screen === 'playing' && !s0.paused) this.world.advanceTime(dt * 1000);
+    const sceneNow = this.world.time;
+    this._updateOrbitLight(sceneNow);
     this._advanceClock(dt);
     const a0 = performance.now();
-    this.world.updateAnimations(); // every 3D object's per-frame update (see World.updateAnimations)
+    this.world.updateAnimations(sceneNow); // every 3D object's per-frame update (see World.updateAnimations)
     this._animTotal += performance.now() - a0;
-    this._updateSelectionVisuals(now);
+    this._updateSelectionVisuals(sceneNow);
     const xr = this.renderer.xr.isPresenting;
     if (!xr) {
       this._pollBrowserGamepad(dt);
-      this.controls.update();
-      this._collideCamera(now, dt);
+      if (this._pov) this._updateCreatureView(sceneNow);
+      else {
+        this.controls.update();
+        this._collideCamera(now, dt);
+      }
     } else {
       this._xrFrames++;
       if (this._needsXRPlacement && this._xrFrames > 2) {
@@ -1903,8 +2180,17 @@ export class Engine {
         if (this._needsTabletPlacement !== false && this._xrFrames > 2) this._placeDebugTablet();
         this._updateTabletGrab();
         this._updateTabletResize();
-        this.debugTablet.draw(this.debugInfo(), this.performanceRows(), getLogs(120), getLogVersion(),
-          !!this._tabletGrab || this._tabletHover, this._tabletResizing || this._tabletHandleHover);
+        this.debugTablet.draw({
+          info: this.debugInfo(),
+          perf: this.performanceRows(),
+          logs: getLogs(120),
+          logVersion: getLogVersion(),
+          highlight: !!this._tabletGrab || this._tabletHover,
+          handleHot: this._tabletResizing || this._tabletHandleHover,
+          claude: { ...claudePrompt.getSnapshot(), response: claudePrompt.responseText() },
+          collapsed: debugSections.getSnapshot(),
+          hover: this._tabletHoverId,
+        });
       } else {
         this._tabletGrab = null;
         this._endTabletResize();

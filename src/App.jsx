@@ -4,9 +4,11 @@ import { TOOLS } from './game/tools.js';
 import { toolIconURL, menuIconURL } from './game/icons.js';
 import { menuModel } from './game/menu.js';
 import { menuItemIconURL } from './game/menuIcons.js';
-import { CONTROLS, CONTROL_COLUMNS } from './game/controls.js';
+import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './game/controls.js';
 import { cellURL } from './game/inputIcons.js';
 import { getLogs, getLogVersion } from './game/debugLog.js';
+import { claudePrompt } from './game/claudePrompt.js';
+import { debugSections } from './game/debugSections.js';
 
 export default function App() {
   const hostRef = useRef(null);
@@ -47,8 +49,9 @@ function blurThen(fn) {
   };
 }
 
-/** Options → Controls: one row per action, glyphs for each input device. */
-function ControlsTable() {
+/** Options → Controls: one row per action of control schema `schema` (id), glyphs for each input device. */
+function ControlsTable({ schema }) {
+  const rows = (CONTROL_SCHEMAS[schema] ?? CONTROL_SCHEMAS.observer).controls;
   return (
     <div className="controls-scroll">
       <table className="controls">
@@ -60,7 +63,7 @@ function ControlsTable() {
           </tr>
         </thead>
         <tbody>
-          {CONTROLS.map((row) => (
+          {rows.map((row) => (
             <tr key={row.action}>
               <td className="action">{row.action}</td>
               {[row.mk, row.pad, row.xr].map((binding, i) => {
@@ -93,7 +96,7 @@ function useStoredNumber(key, fallback) {
     setValue(v);
     try {
       localStorage.setItem(key, String(v));
-    } catch {}
+    } catch { }
   };
   return [value, store];
 }
@@ -161,95 +164,91 @@ function Hud({ engine, s }) {
   const labelRef = useRef(null);
   const leftRef = useRef(null);
   const rightRef = useRef(null);
-  const [labelX, setLabelX] = useState(null);
+  const [labelPos, setLabelPos] = useState(null); // the tool name's place in the bar: { left, top } (px)
   // each panel's size (drag its grip; double-click resets): left grows up / right, right up / left
   const [leftSize, leftGrip] = useHudSize('hudLeft', leftRef, +1);
   const [rightSize, rightGrip] = useHudSize('hudRight', rightRef, -1);
-  // the Debug dock stops just above the HUD panels, however big they are
   const wrapRef = useRef(null);
-  const [hudHeight, setHudHeight] = useState(0);
-  useLayoutEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return undefined;
-    const watch = new ResizeObserver(() => setHudHeight(el.offsetHeight));
-    watch.observe(el);
-    return () => watch.disconnect();
-  }, []);
   const label = engine.toolLabel(s);
   // keep the current tool visible when the bar is scrolled (e.g. switching with the keys)
   useEffect(() => {
     slotsRef.current?.querySelector('.slot.selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [s.toolIndex]);
-  // put the tool name directly above the selected slot (kept inside the panel)
+  // put the tool name directly below the selected slot, inside the scrolling bar (so it scrolls
+  // with the icons; with the panel resized the icons wrap into rows, and it goes under the
+  // selected one's row): its place in the bar's content, kept within it at the ends
   const placeLabel = () => {
     const bar = slotsRef.current, lab = labelRef.current;
     const slot = bar?.querySelector('.slot.selected');
     if (!bar || !lab || !slot) return;
-    const panel = bar.parentElement;
-    const centre = slot.getBoundingClientRect().left + slot.offsetWidth / 2 - panel.getBoundingClientRect().left;
-    const half = lab.offsetWidth / 2, pad = 8;
-    setLabelX(Math.min(Math.max(centre, half + pad), panel.clientWidth - half - pad));
+    const half = lab.offsetWidth / 2;
+    const left = Math.min(Math.max(slot.offsetLeft + slot.offsetWidth / 2, half), bar.scrollWidth - half);
+    setLabelPos({ left, top: slot.offsetTop + slot.offsetHeight + 2 });
   };
-  useLayoutEffect(placeLabel, [s.toolIndex, label, rightSize.width]);
-  useEffect(() => {
-    window.addEventListener('resize', placeLabel);
-    return () => window.removeEventListener('resize', placeLabel);
-  });
+  useLayoutEffect(placeLabel, [s.toolIndex, label, rightSize.width, rightSize.height]);
   return (
     <>
-    <div className="hud-wrap" ref={wrapRef}>
-      <div className="hud-row">
-      <div className="panel hud hud-left" ref={leftRef} style={leftSize}>
-        <ResizeGrip place="grip-top-right" title="Drag to resize (double-click: reset)" {...leftGrip} />
-        <div className="hud-label hud-time" title="Game time">{Engine.formatTime(s.gameTime)}</div>
-        <div className="hud-label hud-diameter" title="Mean Diameter: estimated from the block count">
-          {Engine.formatDiameter(s.blockCount)}
-        </div>
-        <button
-          className={`slot menu-slot${s.paused ? ' selected' : ''}`}
-          title="Menu (Esc)"
-          onClick={blurThen(() => engine.toggleMenu())}
-        >
-          <img src={menuIconURL()} alt="Menu" draggable={false} />
-        </button>
-      </div>
-      <div className="panel hud hud-right" ref={rightRef} style={rightSize}>
-        <ResizeGrip place="grip-top-left" title="Drag to resize (double-click: reset)" {...rightGrip} />
-        <div className="hud-label tool-label-row">
-          <span ref={labelRef} className="tool-label" style={labelX == null ? undefined : { left: labelX }}>
-            {label}
-          </span>
-        </div>
-        <div
-          className="slots"
-          ref={slotsRef}
-          onScroll={placeLabel}
-          onWheel={(e) => {
-            // a plain mouse wheel scrolls the bar sideways
-            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
-          }}
-        >
-          {TOOLS.map((t, i) => (
+      <div className="hud-wrap" ref={wrapRef}>
+        <div className="hud-row">
+          <div className="panel hud hud-left" ref={leftRef} style={leftSize}>
+            <ResizeGrip place="grip-top-right" title="Drag to resize (double-click: reset)" {...leftGrip} />
+            <div className="hud-header hud-header-left">Game</div>
+            {/* laid out like Debug → Performance: muted labels, monospace values, same size */}
+            <table className="debug-table hud-stats">
+              <tbody>
+                <tr><th>Time</th><td>{Engine.formatTime(s.gameTime)}</td></tr>
+                <tr><th>Diameter</th><td>{Engine.formatDiameter(s.blockCount)}</td></tr>
+              </tbody>
+            </table>
+
             <button
-              key={t.id}
-              className={`slot${i === s.toolIndex ? ' selected' : ''}`}
-              title={`${t.label} (${(i + 1) % 10})`}
-              onClick={blurThen(() => engine.selectTool(i))}
+              className={`slot menu-slot${s.paused ? ' selected' : ''}`}
+              title="Menu (Esc)"
+              onClick={blurThen(() => engine.toggleMenu())}
             >
-              <img src={toolIconURL(t, 96, { procedural: s.proceduralMaterials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
+              <img src={menuIconURL()} alt="Menu" draggable={false} />
             </button>
-          ))}
+          </div>
+          <div className="panel hud hud-right" ref={rightRef} style={rightSize}>
+            <ResizeGrip place="grip-top-left" title="Drag to resize (double-click: reset)" {...rightGrip} />
+            <div className="hud-header">{engine.toolsAvailable(s) ? 'Tools' : 'Creature'}</div>
+            {engine.toolsAvailable(s) && <div
+              className={`slots${rightSize.width ? ' wrap' : ''}`} // resized: the icons wrap into rows
+              ref={slotsRef}
+              onWheel={(e) => {
+                // a plain mouse wheel scrolls the bar sideways
+                if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
+              }}
+            >
+              {TOOLS.map((t, i) => (
+                <button
+                  key={t.id}
+                  className={`slot${i === s.toolIndex ? ' selected' : ''}`}
+                  title={`${t.label} (${(i + 1) % 10})`}
+                  onClick={blurThen(() => engine.selectTool(i))}
+                >
+                  <img src={toolIconURL(t, 96, { procedural: s.proceduralMaterials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
+                </button>
+              ))}
+              {/* the current tool's name, under its slot (scrolls with the icons) */}
+              <span ref={labelRef} className="tool-label" style={labelPos ?? undefined}>
+                {label}
+              </span>
+            </div>}
+            {/* Creature controls: no toolbar, just who you're controlling */}
+            {!engine.toolsAvailable(s) && <div className="hud-label creature-label">{label}</div>}
+          </div>
         </div>
       </div>
-      </div>
-    </div>
-    {s.debugMode && <DebugPanel engine={engine} bottom={hudHeight + 16 + 10} />}
+      {s.debugMode && <DebugPanel engine={engine} />}
     </>
   );
 }
 
-/** The Debug dock's width (px; drag its right edge), and its limits (px, and a fraction of the window). */
+/** The Debug dock's width (px; drag its bottom-right corner), and its limits (px, and a fraction of the window). */
 const DEBUG_WIDTH = { initial: 280, min: 170, max: 0.7 };
+/** …and its height (px; drag its bottom-right corner): at first, and its limits (px; the max leaves a margin of the window). */
+const DEBUG_HEIGHT = { initial: 480, min: 120, margin: 32 };
 
 /**
  * A collapsible section of the Debug dock: a header (title, a short `summary` shown while
@@ -257,10 +256,12 @@ const DEBUG_WIDTH = { initial: 280, min: 170, max: 0.7 };
  * browser. `grow`: it takes the dock's leftover height (Logging).
  */
 function DebugSection({ id, title, summary, grow = false, children }) {
-  const [collapsed, setCollapsed] = useStoredNumber(`debugCollapsed.${id}`, 0);
+  // shared with the XR debug tablet (debugSections.js)
+  const collapsed = useSyncExternalStore(debugSections.subscribe, debugSections.getSnapshot)[id];
+  const setCollapsed = () => debugSections.toggle(id);
   return (
     <section className={`debug-section-box${grow && !collapsed ? ' grow' : ''}`}>
-      <button className="debug-section-head" onClick={blurThen(() => setCollapsed(collapsed ? 0 : 1))} title={collapsed ? 'Expand' : 'Collapse'}>
+      <button className="debug-section-head" onClick={blurThen(setCollapsed)} title={collapsed ? 'Expand' : 'Collapse'}>
         <span className="debug-section">{title}</span>
         {collapsed && summary ? <span className="debug-summary">{summary}</span> : null}
         <span className="debug-arrow">{collapsed ? '▸' : '▾'}</span>
@@ -271,16 +272,16 @@ function DebugSection({ id, title, summary, grow = false, children }) {
 }
 
 /**
- * Options → Debug (browser): a dock on the left edge, from the top of the window down to just
- * above the HUD (`bottom`, px). Performance (FPS and timings), the Inspector (the selected /
- * targeted block's properties) and Logging (the recent console log) stack vertically, each
- * collapsible; Logging takes the leftover height. Resized by width only (drag its right edge;
- * double-click resets). Polls the engine a few times a second rather than every frame.
+ * Options → Debug (browser): a panel docked to the window's top-left corner. Performance (FPS and timings), the Inspector (the selected /
+ * targeted block's properties), Claude (a placeholder for now) and Logging (the recent console log) stack vertically, each
+ * collapsible; Logging takes the leftover height. Resized from its bottom-right corner (width
+ * and height; double-click resets). Polls the engine a few times a second rather than every frame.
  */
-function DebugPanel({ engine, bottom }) {
+function DebugPanel({ engine }) {
   const [, setTick] = useState(0);
   const [width, setWidth] = useStoredNumber('debugWidth', DEBUG_WIDTH.initial);
-  const startWidth = useRef(width);
+  const [height, setHeight] = useStoredNumber('debugHeight2', DEBUG_HEIGHT.initial);
+  const start = useRef({ width, height });
   const logRef = useRef(null);
   const stick = useRef(true); // keep the log scrolled to the bottom unless the user scrolled up
   useEffect(() => {
@@ -296,13 +297,19 @@ function DebugPanel({ engine, bottom }) {
   });
   const ms = (v, digits) => (v == null ? '—' : `${v.toFixed(digits)} ms`);
   return (
-    <div className="panel debug-dock" style={{ width, bottom }}>
+    <div className="panel debug-dock" style={{ width, height: Math.min(height, window.innerHeight - DEBUG_HEIGHT.margin) }}>
       <ResizeGrip
-        place="grip-right-edge"
+        place="grip-bottom-right"
         title="Drag to resize (double-click: reset)"
-        onStart={() => (startWidth.current = width)}
-        onDrag={(up, right) => setWidth(Math.round(clamp(startWidth.current + right, DEBUG_WIDTH.min, window.innerWidth * DEBUG_WIDTH.max)))}
-        onReset={() => setWidth(DEBUG_WIDTH.initial)}
+        onStart={() => (start.current = { width, height })}
+        onDrag={(up, right) => {
+          setWidth(Math.round(clamp(start.current.width + right, DEBUG_WIDTH.min, window.innerWidth * DEBUG_WIDTH.max)));
+          setHeight(Math.round(clamp(start.current.height - up, DEBUG_HEIGHT.min, window.innerHeight - DEBUG_HEIGHT.margin)));
+        }}
+        onReset={() => {
+          setWidth(DEBUG_WIDTH.initial);
+          setHeight(DEBUG_HEIGHT.initial);
+        }}
       />
       <DebugSection id="performance" title="Performance" summary={`${engine.fps.toFixed(0)} FPS`}>
         <table className="debug-table">
@@ -327,6 +334,10 @@ function DebugPanel({ engine, bottom }) {
           </tbody>
         </table>
       </DebugSection>
+      {/* Claude: a placeholder for now — not wired to the Claude bridge (claudeBridge.js) yet */}
+      <DebugSection id="claude" title="Claude" summary="Not connected">
+        <ClaudePrompt />
+      </DebugSection>
       <DebugSection id="logging" title="Logging" summary={`${logs.length} lines`} grow>
         <div
           className="debug-log"
@@ -348,6 +359,57 @@ function DebugPanel({ engine, bottom }) {
         </div>
       </DebugSection>
     </div>
+  );
+}
+
+/**
+ * Debug → Claude (browser): the reply area (placeholder) and the prompt box. The prompt (shared with
+ * the XR debug tablet: claudePrompt.js) can be typed, dictated (microphone button: appended to what's
+ * there) and cleared. Send isn't wired to the Claude bridge yet.
+ */
+function ClaudePrompt() {
+  const { prompt, listening, micSupported, speaking, speechSupported } = useSyncExternalStore(claudePrompt.subscribe, claudePrompt.getSnapshot);
+
+  return (
+    <>
+      <div className="claude-log">
+        <div className="log-empty">{claudePrompt.responseText()}</div>
+      </div>
+      <div className="claude-buttons">
+        <button
+          className={`btn icon-btn${speaking ? ' speaking' : ''}`}
+          onClick={blurThen(() => claudePrompt.toggleSpeech())}
+          disabled={!speechSupported}
+          title={speechSupported ? (speaking ? 'Stop reading' : 'Read aloud') : 'Reading aloud isn’t supported in this browser'}
+        >
+          <img src={menuItemIconURL('speak')} alt="Read aloud" draggable={false} />
+        </button>
+      </div>
+      <textarea className="claude-text" rows={2} placeholder="Ask Claude…" value={prompt} onChange={(e) => claudePrompt.setPrompt(e.target.value)} />
+      <div className="claude-buttons">
+        <button
+          className={`btn icon-btn${listening ? ' listening' : ''}`}
+          onClick={blurThen(() => claudePrompt.toggleDictation())}
+          disabled={!micSupported}
+          title={micSupported ? (listening ? 'Stop dictating' : 'Dictate') : 'No dictation in this browser: use the keyboard’s mic'}
+        >
+          <img src={menuItemIconURL('mic')} alt="Dictate" draggable={false} />
+        </button>
+        <button className="btn icon-btn" onClick={blurThen(() => claudePrompt.clear())} title="Clear">
+          <img src={menuItemIconURL('clear')} alt="Clear" draggable={false} />
+        </button>
+        <button className="btn send-btn" disabled>Send</button>
+      </div>
+      {/* XR: focusing this (from the tablet) brings up the headset's system keyboard; what it types goes to the prompt */}
+      <textarea
+        id="claude-xr-input"
+        className="xr-keyboard-field"
+        tabIndex={-1}
+        aria-hidden="true"
+        defaultValue={prompt}
+        onInput={(e) => claudePrompt.setPrompt(e.currentTarget.value)}
+      />
+    </>
   );
 }
 
@@ -389,17 +451,18 @@ function MenuScreen({ engine, s }) {
         />
       </label>
     ) : (
-    <button
-      key={it.id}
-      className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}
-      disabled={it.disabled}
-      onClick={blurThen(() => engine.menuAction(it.id))}
-    >
-      {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
-      <span className="label">{it.label}</span>
-      {it.sub && <span className="sub">{it.sub}</span>}
-    </button>
-  );
+      <button
+        key={it.id}
+        className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}
+        disabled={it.disabled}
+        onClick={blurThen(() => engine.menuAction(it.id))}
+      >
+        {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
+        <span className="label">{it.label}</span>
+        {it.sub && <span className="sub">{it.sub}</span>}
+        {it.submenu && <img className="menu-icon menu-arrow" src={menuItemIconURL('forward')} alt="" draggable={false} />}
+      </button>
+    );
   // a leading Back button goes at the very top, above the Controls table / save-name row
   const back = model.items[0]?.id === 'back' ? model.items[0] : null;
   const rest = (back ? model.items.slice(1) : model.items).filter((it) => !(s.menu === 'save' && it.id === 'savenew'));
@@ -409,7 +472,7 @@ function MenuScreen({ engine, s }) {
       <div className={`panel menu-panel${s.menu === 'controls' ? ' controls-panel' : ''}`}>
         <h2>{model.title}</h2>
         {back && <div className="menu-items menu-back">{renderItem(back)}</div>}
-        {model.table && <ControlsTable />}
+        {model.table && <ControlsTable schema={model.table} />}
         {s.menu === 'save' && !s.savesError && (
           <div className="save-row">
             <input
