@@ -17,8 +17,11 @@ import {
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
-import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE, SPEED, BACKGROUNDS } from './menu.js';
+import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet, dockAboveController } from './xrPanels.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, focusables } from './menu.js';
+import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
+import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
+import { CardboardRig, CameraFeed, enterCardboard, exitCardboard, isHeadsetBrowser, isPhone } from './cardboard.js';
 import { loadOptionsCookie, saveOptionsCookie } from './optionsCookie.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
 
@@ -27,6 +30,17 @@ const FPS_WINDOW_MS = 500; // Debug → Performance: FPS is averaged over this l
 const COUNTDOWN_SECONDS = 3; // the page, New and Load all start with a T -3 … 0 countdown before play
 const BLOCK_VOLUME_CM3 = 4; // space per block: the lattice packs two blocks into every 2 cm cube
 const XR_RAY_LENGTH = 1.0; // 1 m
+const GAZE_RAY_LENGTH = 2.0; // hands-free XR: how far the gaze reaches (tools and UI)
+const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS, m
+// hands-free XR: the HUDs (and the menu above them) float this far ahead, this far below the eyes,
+// and swing round to the front once the head has turned GAZE_DOCK_TURN away from them
+const GAZE_DOCK_DISTANCE = 0.55;
+const GAZE_DOCK_DROP = 0.2;
+const GAZE_DOCK_TURN = THREE.MathUtils.degToRad(40);
+const GAZE_DOCK_MOVE = 0.3; // m: …or once the head has moved this far
+// a phone's XR view is smaller (and in a viewer blurrier) than a headset's: a bigger menu stays readable
+const PHONE_MENU_SCALE = 1.5;
+const _sbsSize = new THREE.Vector2();
 const DESKTOP_RAY_LENGTH = 50;
 const WHEEL_TOOL_REARM_MS = 200; // horizontal-scroll tool switching: quiet gap that ends one push
 const BG = new THREE.Color('#1b2029');
@@ -115,7 +129,12 @@ export class Engine {
       savesError: null,
       page: 0,
       toolIndex: 0,
-      inXR: false,
+      inXR: false, // in an XR view (a WebXR session, or the handheld motion-sensor view)
+      screenView: 'normal', // View Mode outside XR: 'normal' or 'sbs' (see menu.js currentView)
+      views: ['normal'], // View Mode: the views this device can show (menu.js availableViews)
+      phone: false, // a phone / tablet: XR is Phone AR or Phone Viewer instead of HMD Stereo
+      phoneStereo: true, // phone XR: two lens-corrected eyes for a viewer (Phone Viewer), else one view (Phone AR)
+      handheld: false, // the motion-sensor XR view is showing (phones without WebXR AR)
       xrSupport: null, // truthy when this browser can start XR at all
       xrAR: false, // browser supports immersive-ar (passthrough), e.g. Quest Browser
       xrVR: false, // browser supports immersive-vr, e.g. PC Chrome with a headset over Link
@@ -124,6 +143,7 @@ export class Engine {
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
+      dropdown: null, // the menu dropdown whose list is open ('view' | 'background'), see menu.js
       selectPhase: 'select', // Select tool: 'select' (pick a creature) or 'target' (pick where it walks)
     };
     this._toastId = 0;
@@ -139,6 +159,11 @@ export class Engine {
     this._grab = null;
     this.selected = []; // Select tool: the selected creatures (currently at most one)
     this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
+
+    this._headset = isHeadsetBrowser();
+    const phone = isPhone();
+    this.state.phone = phone;
+    this.state.views = availableViews({ phone, headset: this._headset, xrSupported: false });
 
     this._initRenderer();
     this._initScene();
@@ -180,7 +205,7 @@ export class Engine {
     const on = !this.state.debugMode;
     this.setState({ debugMode: on });
     if (!on) claudePrompt.stopDictation();
-    if (on && this.renderer.xr.isPresenting) this._placeDebugTablet();
+    if (on && this._immersive) this._placeDebugTablet();
     this._saveOptions(); // (the menu saves on leaving Options; the key saves at once)
     console.info(`Debug mode ${on ? 'on' : 'off'}`);
   }
@@ -394,22 +419,40 @@ export class Engine {
     this._tabletHover = false;
     this._tabletHandleHover = false; // right controller ray is on the tablet
 
+    // hands-free XR (no controllers): the gaze points, a 1 s stare clicks (gaze.js); the HUDs
+    // float ahead in this group instead of riding on the controllers
+    this.gazeDwell = new GazeDwell();
+    this.reticle = new GazeReticle();
+    this.scene.add(this.reticle.group);
+    this.gazeDock = new THREE.Group();
+    this.gazeDock.name = 'xr-gaze-dock';
+    this.scene.add(this.gazeDock);
+    this._gazeDockAnchor = null; // { pos, yaw }: where the dock is heading (it eases there)
+    // View Mode → XR: Phone Viewer (two eyes on a phone AR session) and the handheld view
+    this.phoneStereo = new PhoneStereo(r, this.scene);
+    this.cardboard = new CardboardRig(r, this.camera);
+    this.cameraFeed = new CameraFeed(); // the handheld view's passthrough: the rear camera
+
     for (let i = 0; i < 2; i++) {
       const ctrl = r.xr.getController(i);
       const grip = r.xr.getControllerGrip(i);
       grip.add(factory.createControllerModel(grip));
       const slot = { ctrl, grip, source: null, gripHeld: false };
       ctrl.addEventListener('connected', (e) => {
-        if (e.data.hand) return; // ignore articulated hands
+        // articulated hands and screen taps aren't controllers: they leave the gaze in charge,
+        // and their select (pinch, tap) clicks what it is on (see selectstart)
+        if (e.data.hand || e.data.targetRayMode === 'screen' || e.data.targetRayMode === 'transient-pointer') return;
         slot.source = e.data;
         const hand = e.data.handedness === 'left' ? 'left' : 'right';
         this.hands[hand] = slot;
         if (hand === 'right') {
           ctrl.add(this.rayLine);
           grip.add(this.rightHud.mesh);
+          dockAboveController(this.rightHud.mesh);
           this.scene.add(this.rayDot);
         } else {
           grip.add(this.leftHud.mesh);
+          dockAboveController(this.leftHud.mesh);
         }
       });
       ctrl.addEventListener('disconnected', () => {
@@ -422,6 +465,7 @@ export class Engine {
       });
       ctrl.addEventListener('selectstart', () => {
         if (this.hands.right === slot) this._onRightTrigger();
+        else if (!slot.source && this._gazeMode()) this._onGazeTap();
       });
       ctrl.addEventListener('selectend', () => {
         if (this.hands.right === slot) {
@@ -455,7 +499,8 @@ export class Engine {
       }
     };
     const [ar, vr] = await Promise.all([check('immersive-ar'), check('immersive-vr')]);
-    this.setState({ xrAR: ar, xrVR: vr, xrSupport: ar || vr ? (ar ? 'immersive-ar' : 'immersive-vr') : null });
+    const views = availableViews({ phone: this.state.phone, headset: this._headset, xrSupported: ar || vr });
+    this.setState({ xrAR: ar, xrVR: vr, xrSupport: ar || vr ? (ar ? 'immersive-ar' : 'immersive-vr') : null, views });
   }
 
   _bindEvents() {
@@ -578,7 +623,7 @@ export class Engine {
    */
   _keyMenu(e) {
     const s = this.state;
-    const items = menuModel(s).items.filter((it) => !it.disabled);
+    const items = focusables(menuModel(s));
     if (!items.length) return false;
     const idx = items.findIndex((it) => it.id === s.menuFocus);
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -598,15 +643,20 @@ export class Engine {
       playTick();
       return true;
     }
-    // Left: like the Back button (Resume on the main screen); Right on a button with an arrow
-    // (a submenu) opens it, and on a toggle (On / Off, Background, …) presses it
+    // Left: closes an open dropdown, else like the Back button (Resume on the main screen); Right on a
+    // button with an arrow (a submenu) or a closed dropdown opens it, and on a toggle (On / Off, …) presses it
+    if ((left || k === 'Escape' || k === 'Backspace') && s.dropdown) {
+      e.preventDefault();
+      this._closeDropdown();
+      return true;
+    }
     if (left) {
       e.preventDefault();
       if (s.menu !== 'main') this._keyMenuGo('back');
       else this.resume();
       return true;
     }
-    if (right && (items[idx]?.submenu || items[idx]?.toggle)) {
+    if (right && (items[idx]?.submenu || items[idx]?.toggle || (items[idx]?.dropdown && !items[idx].dropdown.open))) {
       e.preventDefault();
       this._keyMenuGo(items[idx].id);
       return true;
@@ -637,8 +687,10 @@ export class Engine {
     const before = this.state.menu;
     this.menuAction(id);
     const s = this.state;
+    const pick = parsePick(id);
+    if (pick && s.paused) return this.setState({ menuFocus: pick.id }); // back on the dropdown's button
     if (!s.paused || s.menu === before) return;
-    const items = menuModel(s).items.filter((it) => !it.disabled);
+    const items = focusables(menuModel(s));
     const focus = items.find((it) => it.id === before) ?? items.find((it) => it.id !== 'back') ?? items[0];
     this.setState({ menuFocus: focus?.id ?? null });
   }
@@ -662,8 +714,8 @@ export class Engine {
 
   pause() {
     if (this.state.screen !== 'playing') return;
-    this.setState({ paused: true, menu: 'main', page: 0, menuFocus: this.state.gamepadAim ? 'resume' : null });
-    if (this.renderer.xr.isPresenting) this._placeMenuPanel();
+    this.setState({ paused: true, menu: 'main', page: 0, dropdown: null, menuFocus: this.state.gamepadAim ? 'resume' : null });
+    if (this._immersive) this._placeMenuPanel();
     playTick();
   }
 
@@ -886,7 +938,7 @@ export class Engine {
   toggleCreatureView() {
     if (this._pov) return this._endCreatureView();
     const creature = this.selected[0];
-    if (!creature || this.renderer.xr.isPresenting) {
+    if (!creature || this._immersive) {
       playSfx('ineffective', 0);
       return false;
     }
@@ -1354,6 +1406,17 @@ export class Engine {
     const s = this.state;
     // Resume, New, Load-file and Save play their own sounds; everything else ticks.
     if (!/^(resume|new|savenew|save:|load:)/.test(id)) playTick();
+    const pick = parsePick(id);
+    if (pick) {
+      // a choice from a dropdown's list, which then closes
+      this.setState({ dropdown: null });
+      if (pick.id === 'background') return this._setBackground(pick.choice);
+      if (pick.id === 'view') return this.selectView(pick.choice);
+      return;
+    }
+    // View Mode and Background open (or close) their dropdowns; any other button closes one
+    if (id === 'view' || id === 'background') return this.setState({ dropdown: s.dropdown === id ? null : id });
+    if (s.dropdown) this.setState({ dropdown: null });
     if (id === 'resume') return this.resume();
     if (id === 'new') return this.newScene();
     if (id === 'load' || id === 'save') {
@@ -1363,14 +1426,6 @@ export class Engine {
     if (id === 'options') return this.setState({ menu: 'options' });
     if (id === 'sound') return this.setSound(!s.soundOn);
     if (id === 'music') return this.setState({ musicOn: !s.musicOn });
-    if (id === 'background') {
-      const next = BACKGROUNDS[(BACKGROUNDS.indexOf(s.background) + 1) % BACKGROUNDS.length];
-      this.setState({ background: next });
-      if (s.inXR && next === 'passthrough' && this._xrMode !== 'immersive-ar') {
-        this.toast('This XR session can’t show passthrough (it was started as VR)');
-      }
-      return this._applyBackground();
-    }
     if (id === 'materials') {
       const on = !s.proceduralMaterials;
       this.world.materials.setProcedural(on);
@@ -1398,8 +1453,6 @@ export class Engine {
       this.world.setSmoothRendering(!s.smoothRendering); // Smooth: clusters drawn as merged, smoothed bodies
       return this.setState({ smoothRendering: !s.smoothRendering });
     }
-    if (id === 'enterxr') return this.enterXR();
-    if (id === 'exitxr') return this.renderer.xr.getSession()?.end();
     if (id === 'back') return this.setState({ menu: s.menu === 'controls' || s.menu === 'video' ? 'options' : 'main', page: 0 });
     if (id === 'controls') return this.setState({ menu: 'controls' });
     if (id === 'video') return this.setState({ menu: 'video' });
@@ -1413,49 +1466,163 @@ export class Engine {
     if (id.startsWith('load:')) return this.loadFile(id.slice(5));
   }
 
+  /** Closes the open menu dropdown, focusing its button again. */
+  _closeDropdown() {
+    const { dropdown } = this.state;
+    if (!dropdown) return;
+    this.setState({ dropdown: null, menuFocus: this.state.menuFocus ? dropdown : null });
+    playTick();
+  }
+
+  /** Options → Video → Background: 'solid', 'skybox' or 'passthrough'. */
+  _setBackground(next) {
+    if (!BACKGROUNDS.includes(next)) return;
+    const s = this.state;
+    this.setState({ background: next });
+    if (s.inXR && !s.handheld && next === 'passthrough' && this._xrMode !== 'immersive-ar') {
+      this.toast('This XR session can’t show passthrough (it was started as VR)');
+    }
+    this._applyBackground();
+  }
+
   // ---------------------------------------------------------------- XR
+  /** In an XR view: a WebXR session, or the handheld motion-sensor view. */
+  get _immersive() {
+    return this.renderer.xr.isPresenting || this.state.handheld;
+  }
+
+  /** Hands-free XR: no controllers (a phone, a headset used with its hands), so the gaze points and clicks. */
+  _gazeMode() {
+    return this._immersive && !this.hands.left && !this.hands.right;
+  }
+
+  /**
+   * Options → Video → View Mode (see menu.js): the windowed views switch at once; the XR views
+   * start a session (only from a click, as browsers require), and Phone AR / Phone Viewer switch
+   * live inside one.
+   */
+  selectView(next) {
+    const s = this.state;
+    if (XR_VIEWS.includes(next)) {
+      const stereo = next === 'phoneViewer';
+      if (s.inXR) return this._setPhoneStereo(stereo);
+      // if the session fails to start, the next press carries on from Normal
+      this.setState({ screenView: 'normal', phoneStereo: stereo });
+      return this.enterXR();
+    }
+    if (s.inXR) this.exitXR();
+    this.setState({ screenView: next });
+  }
+
+  /**
+   * Into XR, straight from the click. Phones: an AR session (ARCore tracking) drawn as one view
+   * or, for a viewer, two lens-corrected eyes; without WebXR AR, the handheld motion-sensor view.
+   * Otherwise (XR: HMD Stereo) an immersive-ar session where the browser offers it (Quest
+   * Browser), so every Background, Passthrough included, works and can be switched live; else VR
+   * (PC browsers driving a headset over Link).
+   */
   async enterXR() {
-    const { xrAR, xrVR } = this.state;
-    const passthrough = this.state.background === 'passthrough';
-    // Passthrough needs an immersive-ar session (Quest Browser), so that's used whenever the
-    // browser offers it, whatever the Background: Solid and Skybox draw over the room in it, and
-    // switching to Passthrough later just works. PC browsers driving a headset over Link only
-    // offer immersive-vr, which always has a background drawn.
+    const { xrAR, xrVR, phone } = this.state;
+    if (this.state.inXR) return;
+    if (phone && !xrAR) return this._enterHandheld();
     const mode = xrAR ? 'immersive-ar' : xrVR ? 'immersive-vr' : null;
-    if (!mode || this.renderer.xr.isPresenting) return;
-    if (passthrough && mode !== 'immersive-ar') {
+    if (!mode) return;
+    if (this.state.background === 'passthrough' && mode !== 'immersive-ar') {
       this.toast('Passthrough isn’t available in this browser — open the game in the Quest Browser for passthrough');
     }
     unlockAudio();
     this._endCreatureView(); // the headset is the camera in XR
     try {
-      const session = await navigator.xr.requestSession(mode, {
-        requiredFeatures: ['local-floor'],
-        optionalFeatures: ['hand-tracking'],
-      });
+      const session = await navigator.xr.requestSession(
+        mode,
+        phone ? PHONE_AR_SESSION_INIT : { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking'] },
+      );
       this._savedView = { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() };
       this.renderer.xr.setReferenceSpaceType('local-floor');
       await this.renderer.xr.setSession(session);
-      session.addEventListener('end', () => this._onXREnd());
+      session.addEventListener('end', () => this._leaveImmersive());
       this._xrMode = mode;
-      this._applyBackground();
-      this._xrFrames = 0;
-      this._needsXRPlacement = true;
-      this._needsTabletPlacement = true; // debug tablet: re-place in front of the player each session
-      this.controls.enabled = false;
-      this.setState({ inXR: true, screen: 'playing', menu: 'main' });
+      if (phone && this.state.phoneStereo) this.phoneStereo.enable();
+      this._beginImmersive();
     } catch (e) {
       console.error(e);
       this.toast(`Could not start XR: ${e.message || e}`, 'error');
     }
   }
 
-  _onXREnd() {
+  /** Out of XR (the session's end, or leaving the handheld view, tidies up: _leaveImmersive). */
+  exitXR() {
+    if (this.state.handheld) return this._exitHandheld();
+    this.renderer.xr.getSession()?.end();
+  }
+
+  /** Phone AR <-> Phone Viewer, live. */
+  _setPhoneStereo(stereo) {
+    this.setState({ phoneStereo: stereo });
+    if (this.state.handheld) {
+      this.cardboard.split = stereo;
+      // stereo wants landscape; mono can be held either way
+      if (stereo) screen.orientation?.lock?.('landscape').catch(() => {});
+      else screen.orientation?.unlock?.();
+    } else if (this.renderer.xr.isPresenting && this.state.phone) {
+      if (stereo) this.phoneStereo.enable();
+      else this.phoneStereo.disable();
+    }
+    this._applyBackground();
+  }
+
+  /** The handheld view: the camera follows the motion sensors (no walking), one view or two eyes. */
+  _enterHandheld() {
+    const stereo = this.state.phoneStereo;
+    // permission, fullscreen and the orientation lock all need this click: before anything async
+    enterCardboard({ landscape: stereo }).then((sensors) => {
+      if (!sensors) this.toast('Motion sensor access was denied: the view won’t follow the phone', 'error');
+    });
+    unlockAudio();
+    this._endCreatureView();
+    this._savedView = { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() };
+    this._xrMode = null;
+    this.cameraFeed.failed = false; // try the camera again
+    this.cardboard.start(stereo);
+    this.setState({ handheld: true });
+    this._beginImmersive();
+    // leaving fullscreen (back gesture, Esc) also leaves the handheld view
+    this._onFullscreenChange = () => {
+      if (!document.fullscreenElement) this._exitHandheld();
+    };
+    document.addEventListener('fullscreenchange', this._onFullscreenChange);
+  }
+
+  _exitHandheld() {
+    if (!this.state.handheld) return;
+    document.removeEventListener('fullscreenchange', this._onFullscreenChange);
+    exitCardboard();
+    this.cardboard.stop();
+    this.cameraFeed.stop();
+    this._leaveImmersive();
+  }
+
+  /** What every XR view starts with. */
+  _beginImmersive() {
+    this._xrFrames = 0;
+    this._needsXRPlacement = true;
+    this._needsTabletPlacement = true; // debug tablet: re-place in front of the player each session
+    this._gazeDockAnchor = null;
+    this.gazeDwell.reset();
+    this.controls.enabled = false;
+    this.setState({ inXR: true, screen: 'playing', menu: 'main' });
+    this._applyBackground();
+  }
+
+  _leaveImmersive() {
+    this.phoneStereo.disable();
     this.debugTablet.mesh.visible = false;
     this._tabletGrab = null;
     this._xrMode = null;
-    this._applyBackground();
     if (this.menuPanel.mesh.parent !== this.scene) this.scene.add(this.menuPanel.mesh);
+    this.menuPanel.mesh.scale.setScalar(1);
+    for (const hud of [this.leftHud, this.rightHud]) if (hud.mesh.parent === this.gazeDock) this.gazeDock.remove(hud.mesh);
+    this.reticle.group.visible = false;
     this.worldRoot.position.set(0, 0, 0);
     this.worldRoot.quaternion.identity();
     this.worldRoot.scale.setScalar(CM);
@@ -1473,7 +1640,67 @@ export class Engine {
     this.controls.enabled = true;
     this.controls.update();
     this._onResize();
-    this.setState({ inXR: false, paused: true, menu: 'main' });
+    this.setState({ inXR: false, handheld: false, paused: true, menu: 'main' });
+    this._applyBackground();
+  }
+
+  /**
+   * A tap on the phone screen, a pinch (hand tracking) or a viewer's button, in hands-free XR:
+   * clicks what the gaze is on (no need to wait for the stare), or uses the tool there.
+   */
+  _onGazeTap() {
+    if (this._gazeHit) this.gazeDwell.markSpent(this._gazeHit);
+    this._activateGaze();
+  }
+
+  /** The handheld view's tap (anywhere on the screen): see _onGazeTap. */
+  gazeTap() {
+    if (this.state.handheld) this._onGazeTap();
+  }
+
+  /** Clicks what the gaze is on: a menu button or slider position, the Menu button, a tool slot, a tablet control. */
+  _activateGaze() {
+    if (this._menuHover) {
+      const value = this.menuPanel.sliderValueAt(this._menuHoverUV, this._menuHover);
+      if (value != null) return this._setSlider(this._menuHover, value);
+    }
+    this._onRightTrigger();
+  }
+
+  /**
+   * Hands-free XR: lays the HUDs out in the gaze dock (tools at the bottom, the time and Menu
+   * button above them, the menu above that), which floats ahead of the head and swings round to
+   * the front once the head turns or moves well away from it.
+   */
+  _updateGazeDock(dt) {
+    if (!this._gazeMode()) return;
+    const dock = this.gazeDock;
+    const left = this.leftHud.mesh, right = this.rightHud.mesh;
+    if (left.parent !== dock || right.parent !== dock) {
+      dock.add(left, right);
+      left.rotation.set(0, 0, 0);
+      right.rotation.set(0, 0, 0);
+      const leftH = left.geometry.parameters.height, rightH = right.geometry.parameters.height;
+      left.position.set(0, 0, 0);
+      right.position.set(0, -(leftH + rightH) / 2 - 0.006, 0);
+      if (this.isMenuOpen()) this._placeMenuPanel();
+    }
+    const { pos, dir } = this._headPose();
+    const yaw = Math.atan2(-dir.x, -dir.z);
+    const turn = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b)); // signed, -π…π
+    const anchor = this._gazeDockAnchor;
+    if (!anchor) this._gazeDockShown = { pos: pos.clone(), yaw }; // first frame: no easing in
+    if (!anchor || Math.abs(turn(yaw, anchor.yaw)) > GAZE_DOCK_TURN || anchor.pos.distanceTo(pos) > GAZE_DOCK_MOVE) {
+      this._gazeDockAnchor = { pos: pos.clone(), yaw };
+    }
+    // ease toward the anchor
+    const target = this._gazeDockAnchor, shown = this._gazeDockShown;
+    const k = 1 - Math.exp(-dt * 4);
+    shown.pos.lerp(target.pos, k);
+    shown.yaw += turn(target.yaw, shown.yaw) * k;
+    dock.position.set(-Math.sin(shown.yaw), 0, -Math.cos(shown.yaw)).multiplyScalar(GAZE_DOCK_DISTANCE).add(shown.pos);
+    dock.position.y -= GAZE_DOCK_DROP;
+    dock.lookAt(shown.pos); // panels face +z: toward the eyes, tilted up to them
   }
 
   // ---------------------------------------------------------------- XR debug tablet
@@ -1612,7 +1839,7 @@ export class Engine {
    * XR: the build is reset to life size / upright and its origin placed 50 cm in front of the eyes.
    */
   _resetPlayerView() {
-    if (this.renderer.xr.isPresenting) {
+    if (this._immersive) {
       this._grab = null;
       this.worldRoot.quaternion.identity();
       this.worldRoot.scale.setScalar(CM);
@@ -1644,10 +1871,11 @@ export class Engine {
   _placeMenuPanel() {
     const m = this.menuPanel.mesh;
     const hud = this.leftHud.mesh;
+    m.scale.setScalar(this.state.phone ? PHONE_MENU_SCALE : 1);
     if (hud.parent) {
       if (m.parent !== hud) hud.add(m);
       const hudH = hud.geometry.parameters.height;
-      const menuH = m.geometry.parameters.height;
+      const menuH = m.geometry.parameters.height * m.scale.y;
       m.position.set(0, hudH / 2 + 0.008 + menuH / 2, 0);
       m.rotation.set(0, 0, 0);
       this.menuPanel.anchorBottom = true;
@@ -1672,7 +1900,20 @@ export class Engine {
     // in a passthrough (immersive-ar) session three.js always clears to transparent, so a plain
     // colour background would show the room: draw the colour as a texture there instead
     const solid = ar ? this._solidTexture() : BG;
+    // the handheld view has no AR session: its passthrough is the rear camera (solid until it shows)
+    const rearCamera = this.state.handheld && mode === 'passthrough';
+    if (rearCamera && !this.cameraFeed.failed) {
+      this.cameraFeed.start(
+        () => this._applyBackground(),
+        (e) => {
+          console.warn('[grid-game] camera unavailable for passthrough:', e?.message ?? e);
+          this.toast('Couldn’t open the camera for passthrough', 'error');
+          this._applyBackground();
+        },
+      );
+    } else if (!rearCamera) this.cameraFeed.stop();
     if (mode === 'passthrough' && ar) this.scene.background = null;
+    else if (rearCamera && this.cameraFeed.texture) this.scene.background = this.cameraFeed.texture;
     else if (mode === 'skybox') this.scene.background = this._skybox() ?? solid; // the colour until it has loaded
     else this.scene.background = solid;
   }
@@ -1722,6 +1963,7 @@ export class Engine {
 
   _onRightTrigger() {
     if (this._hudHover === 'menu') return this.toggleMenu();
+    if (this._toolHover != null) return this.selectTool(this._toolHover); // hands-free XR: a tool slot
     if (this._tabletHover) {
       // pointing at the debug tablet: the trigger on its corner handle resizes it (held), else
       // presses what it points at (a section header, the prompt box, a button)
@@ -1798,6 +2040,20 @@ export class Engine {
     return true;
   }
 
+  /** Hands-free XR: the ray along the gaze (the centre of view). */
+  _setRayFromHead() {
+    const { pos, dir } = this._headPose();
+    this.raycaster.set(pos, dir);
+    return true;
+  }
+
+  /** The pointer in the view's own terms: in 3D: SBS each half of the screen shows the whole view. */
+  _viewMouse() {
+    if (this.state.screenView !== 'sbs') return this.mouse;
+    const u = (this.mouse.x + 1) / 2;
+    return new THREE.Vector2((u < 0.5 ? u * 2 : u * 2 - 1) * 2 - 1, this.mouse.y);
+  }
+
   _updateTarget() {
     this.placeHL.visible = false;
     this.deleteHL.visible = false;
@@ -1806,7 +2062,8 @@ export class Engine {
     this.world.setDithered(null);
     this.target = null;
     const s = this.state;
-    const xr = this.renderer.xr.isPresenting;
+    const xr = this._immersive;
+    const gaze = xr && this._gazeMode();
     let rayLen = XR_RAY_LENGTH;
     this.rayDot.visible = false;
 
@@ -1816,19 +2073,22 @@ export class Engine {
     this._tabletHover = false;
     this._tabletHoverId = null; // the tablet control under the ray (section header, prompt box, button)
     this._hudHover = null;
+    this._toolHover = null; // hands-free XR: the tool slot under the gaze
+    this._gazeHit = null; // hands-free XR: the control under the gaze ({ key, point, distance })
     let uiHit = null;
 
-    if (xr && this._setRayFromController()) {
-      // UI first: the left HUD's Menu button and the start/pause panel.
+    if (xr && (gaze ? this._setRayFromHead() : this._setRayFromController())) {
+      // UI first: the left HUD's Menu button and the start/pause panel (and for the gaze, the tool slots).
       this.raycaster.far = 3;
       const targets = [];
       if (this.leftHud.mesh.visible && this.leftHud.mesh.parent) targets.push(this.leftHud.mesh);
+      if (gaze && this.rightHud.mesh.visible && this.rightHud.mesh.parent) targets.push(this.rightHud.mesh);
       if (menuOpen) targets.push(this.menuPanel.mesh);
       if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
       for (const hit of this.raycaster.intersectObjects(targets, false)) {
         if (hit.object === this.debugTablet.mesh) {
           this._tabletHover = true; // grip now grabs it; the trigger resizes it from its corner handle
-          this._tabletHandleHover = this.debugTablet.onResizeHandle(hit.uv);
+          this._tabletHandleHover = !gaze && this.debugTablet.onResizeHandle(hit.uv); // (resizing needs a held trigger)
           this._tabletHoverId = this._tabletHandleHover ? null : this.debugTablet.hitTest(hit.uv);
           uiHit = hit;
           break;
@@ -1838,10 +2098,20 @@ export class Engine {
             uiHit = hit;
             break;
           }
+        } else if (hit.object === this.rightHud.mesh) {
+          const slot = this.rightHud.hitTest(hit.uv);
+          if (slot != null) {
+            this._toolHover = slot;
+            uiHit = hit;
+            break;
+          }
         } else if (this.menuPanel.contains(hit.uv)) {
           // only the visible panel counts; its transparent margin is "outside"
           this._menuHover = this.menuPanel.hitTest(hit.uv);
           this._menuHoverUV = hit.uv;
+          // the gaze sets a slider only from its track (its label would mean the minimum)
+          if (gaze && this._menuHover && this.menuPanel.sliderValueAt(hit.uv, this._menuHover) != null &&
+            !this.menuPanel.onSliderTrack(hit.uv, this._menuHover)) this._menuHover = null;
           // dragging a slider: follow the ray along its track while the trigger is held
           if (this._sliderDrag && this._menuHover === this._sliderDrag) {
             this._setSlider(this._sliderDrag, this.menuPanel.sliderValueAt(hit.uv, this._sliderDrag));
@@ -1851,7 +2121,17 @@ export class Engine {
           break;
         }
       }
-      if (uiHit) {
+      if (gaze && uiHit) {
+        // what a stare (or a tap) would press; a slider's key includes the value it would set
+        let key = null;
+        if (this._menuHover) {
+          const value = this.menuPanel.sliderValueAt(uiHit.uv, this._menuHover);
+          key = `menu:${this._menuHover}${value != null ? `@${value}` : ''}`;
+        } else if (this._hudHover) key = 'hud:menu';
+        else if (this._toolHover != null) key = `tool:${this._toolHover}`;
+        else if (this._tabletHoverId) key = `tablet:${this._tabletHoverId}`;
+        if (key) this._gazeHit = { key, point: uiHit.point, distance: uiHit.distance };
+      } else if (uiHit) {
         rayLen = uiHit.distance;
         this.rayDot.position.copy(uiHit.point);
         this.rayDot.visible = true;
@@ -1862,14 +2142,14 @@ export class Engine {
     if (s.screen === 'playing' && !s.paused && !uiHit && this.toolsReady(s) && this.toolsAvailable(s)) {
       let ok = false;
       if (xr) {
-        ok = this._setRayFromController();
-        this.raycaster.far = XR_RAY_LENGTH;
+        ok = gaze ? this._setRayFromHead() : this._setRayFromController();
+        this.raycaster.far = gaze ? GAZE_RAY_LENGTH : XR_RAY_LENGTH;
       } else if (s.gamepadAim) {
         this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
         this.raycaster.far = DESKTOP_RAY_LENGTH;
         ok = true;
       } else if (this.mouse) {
-        this.raycaster.setFromCamera(this.mouse, this.camera);
+        this.raycaster.setFromCamera(this._viewMouse(), this.camera);
         this.raycaster.far = DESKTOP_RAY_LENGTH;
         ok = true;
       }
@@ -1877,7 +2157,7 @@ export class Engine {
         this.target = this._pick();
         if (this.target?.distance != null) {
           rayLen = Math.min(this.target.distance, XR_RAY_LENGTH);
-          if (xr) {
+          if (xr && !gaze) {
             this.rayDot.position.copy(this.target.point);
             this.rayDot.visible = true;
           }
@@ -1888,6 +2168,50 @@ export class Engine {
 
     this.rayLine.scale.z = rayLen;
     this.rayLine.visible = xr && (s.screen === 'playing' || menuOpen);
+
+    // hands-free XR: the reticle, and the stare that clicks
+    this.reticle.group.visible = gaze;
+    if (gaze) {
+      const fire = this.gazeDwell.step(this._dt ?? 0, this._gazeHit);
+      const { pos, dir } = this._headPose();
+      const distance = uiHit?.distance ?? this.target?.distance ?? IDLE_DISTANCE;
+      this.reticle.update(pos, dir, this.camera.getWorldQuaternion(new THREE.Quaternion()), distance, this.gazeDwell.progress);
+      if (fire) this._activateGaze();
+    }
+  }
+
+  /** View Mode → 3D: SBS (half side-by-side, for 3D TVs): each eye squeezed into half the screen. */
+  _renderSideBySide() {
+    const r = this.renderer, cam = this.camera;
+    this._sbs ??= Object.assign(new THREE.StereoCamera(), { eyeSep: SBS_EYE_SEPARATION });
+    cam.updateMatrixWorld();
+    this._sbs.update(cam);
+    r.getSize(_sbsSize);
+    const half = _sbsSize.x / 2;
+    r.setScissorTest(true);
+    [this._sbs.cameraL, this._sbs.cameraR].forEach((eye, i) => {
+      r.setViewport(i * half, 0, half, _sbsSize.y);
+      r.setScissor(i * half, 0, half, _sbsSize.y);
+      r.render(this.scene, eye);
+    });
+    r.setScissorTest(false);
+    r.setViewport(0, 0, _sbsSize.x, _sbsSize.y);
+  }
+
+  /** Draws the frame in the current View Mode. */
+  _render(dt) {
+    const s = this.state;
+    if (s.handheld) {
+      if (this.cameraFeed.texture) {
+        this.renderer.getDrawingBufferSize(_sbsSize);
+        this.cameraFeed.fit(((this.cardboard.split ? 0.5 : 1) * _sbsSize.x) / _sbsSize.y);
+      }
+      this.cardboard.render(this.scene);
+    } else if (this.renderer.xr.isPresenting) {
+      this.phoneStereo.update(dt, s.background === 'passthrough');
+      this.phoneStereo.render(this.scene, this.camera); // a plain render unless Phone Viewer
+    } else if (s.screenView === 'sbs') this._renderSideBySide();
+    else this.renderer.render(this.scene, this.camera);
   }
 
   _pick() {
@@ -2051,7 +2375,7 @@ export class Engine {
   /** D-pad / left stick moves the focus, A selects, B goes back, Start closes the pause menu. */
   _padMenu(edge, ax) {
     const s = this.state;
-    const items = menuModel(s).items.filter((it) => !it.disabled);
+    const items = focusables(menuModel(s));
     if (!items.length) return;
     let idx = items.findIndex((it) => it.id === s.menuFocus);
     const ly = ax(1);
@@ -2075,10 +2399,11 @@ export class Engine {
       return;
     }
     if (slider && edge(0)) return; // A on a slider: nothing to press
-    if (edge(0)) return this.menuAction(items[idx].id); // A
+    if (edge(0)) return this._keyMenuGo(items[idx].id); // A
     if (edge(1)) {
-      // B
-      if (s.menu !== 'main') this.menuAction('back');
+      // B: closes an open dropdown, else goes back
+      if (s.dropdown) this._closeDropdown();
+      else if (s.menu !== 'main') this.menuAction('back');
       else if (s.paused) this.resume();
       return;
     }
@@ -2157,7 +2482,8 @@ export class Engine {
     this.world.updateAnimations(sceneNow); // every 3D object's per-frame update (see World.updateAnimations)
     this._animTotal += performance.now() - a0;
     this._updateSelectionVisuals(sceneNow);
-    const xr = this.renderer.xr.isPresenting;
+    if (this.state.handheld) this.cardboard.update(); // the camera follows the phone
+    const xr = this._immersive;
     if (!xr) {
       this._pollBrowserGamepad(dt);
       if (this._pov) this._updateCreatureView(sceneNow);
@@ -2174,6 +2500,7 @@ export class Engine {
       }
       this._pollGamepads();
       this._updateGrab();
+      this._updateGazeDock(dt);
       const dbg = this.state.debugMode;
       this.debugTablet.mesh.visible = dbg;
       if (dbg) {
@@ -2198,7 +2525,7 @@ export class Engine {
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
       const playing = this.state.screen === 'playing';
-      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel(), { procedural: this.state.proceduralMaterials, smooth: this.state.smoothRendering });
+      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel(), { procedural: this.state.proceduralMaterials, smooth: this.state.smoothRendering }, this._toolHover);
       this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime), Engine.formatDiameter(this.state.blockCount));
       this.rightHud.mesh.visible = playing;
       this.leftHud.mesh.visible = playing;
@@ -2209,10 +2536,11 @@ export class Engine {
       }
       this.menuPanel.mesh.visible = open;
     }
+    this._dt = dt;
     this._updateTarget();
     this._updateListener();
     const r0 = performance.now();
-    this.renderer.render(this.scene, this.camera);
+    this._render(dt);
     this._renderTotal += performance.now() - r0;
   };
 
@@ -2232,6 +2560,7 @@ export class Engine {
 
   dispose() {
     this.renderer.setAnimationLoop(null);
+    if (this.state.handheld) this._exitHandheld();
     setMusicLevel(0); // fades out
     this._ro?.disconnect();
     const el = this.renderer.domElement;

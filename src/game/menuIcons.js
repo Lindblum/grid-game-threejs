@@ -146,6 +146,17 @@ const DRAW = {
     line(ctx, P, [[0.2, 0.5], [0.78, 0.5]]);
     line(ctx, P, [[0.56, 0.28], [0.78, 0.5], [0.56, 0.72]]);
   },
+  dropdown(ctx, P) {
+    // a chevron: marks a button that opens a list of choices beneath it
+    line(ctx, P, [[0.26, 0.38], [0.5, 0.62], [0.74, 0.38]]);
+  },
+  dropdownOpen(ctx, P) {
+    line(ctx, P, [[0.26, 0.62], [0.5, 0.38], [0.74, 0.62]]);
+  },
+  check(ctx, P) {
+    // the chosen option in a dropdown's list
+    line(ctx, P, [[0.22, 0.52], [0.42, 0.72], [0.8, 0.3]]);
+  },
   mic(ctx, P, s) {
     // microphone: capsule head, a cradle arc under it, stem and base
     roundedRect(ctx, P, 0.37, 0.12, 0.26, 0.44, 0.13, s);
@@ -216,6 +227,32 @@ const DRAW = {
     ctx.arcTo(x, y, x + w, y, r);
     ctx.closePath();
     ctx.stroke();
+  },
+  // View Mode (drawn to match 4d-viewer-threejs): a screen, the screen split in two, a phone,
+  // and a phone turned sideways in a viewer (two lenses); XR: HMD Stereo uses the headset above
+  monitor(ctx, P, s) {
+    roundedRect(ctx, P, 0.115, 0.177, 0.77, 0.5, 0.073, s);
+    ctx.stroke();
+    line(ctx, P, [[0.5, 0.677], [0.5, 0.823]]);
+    line(ctx, P, [[0.354, 0.823], [0.646, 0.823]]);
+  },
+  monitorSbs(ctx, P, s) {
+    DRAW.monitor(ctx, P, s);
+    line(ctx, P, [[0.5, 0.25], [0.5, 0.604]]);
+    circle(ctx, P, 0.308, 0.427, 0.058, s, { fill: true });
+    circle(ctx, P, 0.692, 0.427, 0.058, s, { fill: true });
+  },
+  phone(ctx, P, s) {
+    roundedRect(ctx, P, 0.281, 0.115, 0.438, 0.77, 0.083, s);
+    ctx.stroke();
+    line(ctx, P, [[0.448, 0.76], [0.552, 0.76]]);
+  },
+  phoneViewer(ctx, P, s) {
+    roundedRect(ctx, P, 0.115, 0.281, 0.77, 0.438, 0.083, s);
+    ctx.stroke();
+    line(ctx, P, [[0.5, 0.281], [0.5, 0.719]]);
+    circle(ctx, P, 0.308, 0.5, 0.0875, s);
+    circle(ctx, P, 0.692, 0.5, 0.0875, s);
   },
   controls(ctx, P, s) {
     // gamepad outline, D-pad cross and two buttons

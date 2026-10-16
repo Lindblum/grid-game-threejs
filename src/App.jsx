@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, useSyncExternalStore, useLayoutEffect } from 'react';
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore, useLayoutEffect } from 'react';
 import { Engine } from './game/engine.js';
 import { TOOLS } from './game/tools.js';
 import { toolIconURL, menuIconURL } from './game/icons.js';
-import { menuModel } from './game/menu.js';
+import { menuModel, splitLabel } from './game/menu.js';
 import { menuItemIconURL } from './game/menuIcons.js';
 import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './game/controls.js';
 import { cellURL } from './game/inputIcons.js';
@@ -36,10 +36,48 @@ function Overlay({ engine }) {
       {s.screen === 'playing' && !s.inXR && <Hud engine={engine} s={s} />}
       {s.screen === 'playing' && !s.inXR && !s.paused && s.gamepadAim && <div className="crosshair" />}
       {engine.isMenuOpen(s) && !s.inXR && <MenuScreen engine={engine} s={s} />}
-      {s.inXR && <div className="xr-note">In XR — take off the headset view to return here.</div>}
+      {s.inXR && !s.handheld && <div className="xr-note">In XR — take off the headset view to return here.</div>}
+      {s.handheld && <CardboardOverlay split={s.phoneStereo} onTap={() => engine.gazeTap()} onExit={() => engine.exitXR()} />}
       <Toast toast={s.toast} />
     </>
   );
+}
+
+/** The handheld XR view (phones without WebXR AR): the viewer's divider, tap to click, and a way out. */
+function CardboardOverlay({ split, onTap, onExit }) {
+  return (
+    <div className="cardboard" onClick={onTap}>
+      {split && <div className="cardboard-divider" />}
+      <button
+        className="cardboard-exit"
+        aria-label="Exit XR view"
+        onClick={(e) => {
+          e.stopPropagation();
+          onExit();
+        }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+/** "Name: Value": the name on the left, the value against the right edge. */
+function MenuLabel({ text }) {
+  const { name, value } = splitLabel(text);
+  return (
+    <span className="label">
+      <span className="name">{name}</span>
+      {value && <span className="value">{value}</span>}
+    </span>
+  );
+}
+
+/** What a menu button's right edge shows: an arrow to a submenu, or a dropdown's chevron. */
+function trailingIcon(it) {
+  if (it.submenu) return 'forward';
+  if (it.dropdown) return it.dropdown.open ? 'dropdownOpen' : 'dropdown';
+  return null;
 }
 
 function blurThen(fn) {
@@ -440,7 +478,7 @@ function MenuScreen({ engine, s }) {
     it.slider ? (
       <label key={it.id} className={`btn menu-btn menu-slider${s.menuFocus === it.id ? ' focused' : ''}`}>
         {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
-        <span className="label">{it.label}</span>
+        <MenuLabel text={it.label} />
         <input
           type="range"
           min={it.slider.min}
@@ -455,13 +493,40 @@ function MenuScreen({ engine, s }) {
         key={it.id}
         className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}
         disabled={it.disabled}
+        aria-expanded={it.dropdown ? it.dropdown.open : undefined}
         onClick={blurThen(() => engine.menuAction(it.id))}
       >
         {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
-        <span className="label">{it.label}</span>
+        <MenuLabel text={it.label} />
         {it.sub && <span className="sub">{it.sub}</span>}
-        {it.submenu && <img className="menu-icon menu-arrow" src={menuItemIconURL('forward')} alt="" draggable={false} />}
+        {trailingIcon(it) && <img className="menu-icon menu-arrow" src={menuItemIconURL(trailingIcon(it))} alt="" draggable={false} />}
       </button>
+    );
+  // a dropdown's button, then (when open) its choices, two to a row beneath it
+  const renderEntry = (it) =>
+    it.dropdown ? (
+      <Fragment key={it.id}>
+        {renderItem(it)}
+        {it.dropdown.open && (
+          <div className="menu-options" role="listbox">
+            {it.dropdown.options.map((option) => (
+              <button
+                key={option.id}
+                className={`btn menu-option${option.selected ? ' selected' : ''}${s.menuFocus === option.id ? ' focused' : ''}`}
+                role="option"
+                aria-selected={option.selected}
+                onClick={blurThen(() => engine.menuAction(option.id))}
+              >
+                {option.icon && <img className="menu-icon" src={menuItemIconURL(option.icon)} alt="" draggable={false} />}
+                <span className="option-label">{option.label}</span>
+                {option.selected && <img className="menu-icon" src={menuItemIconURL('check')} alt="" draggable={false} />}
+              </button>
+            ))}
+          </div>
+        )}
+      </Fragment>
+    ) : (
+      renderItem(it)
     );
   // a leading Back button goes at the very top, above the Controls table / save-name row
   const back = model.items[0]?.id === 'back' ? model.items[0] : null;
@@ -490,7 +555,7 @@ function MenuScreen({ engine, s }) {
             </button>
           </div>
         )}
-        {rest.length > 0 && <div className="menu-items">{rest.map(renderItem)}</div>}
+        {rest.length > 0 && <div className="menu-items">{rest.map(renderEntry)}</div>}
         {s.savesError && (s.menu === 'load' || s.menu === 'save') && (
           <div className="fallback">
             <p>The saves folder is only reachable when running with <code>npm run dev</code>. You can still use a file on this computer:</p>

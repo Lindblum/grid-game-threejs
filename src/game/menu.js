@@ -25,25 +25,105 @@ export const GAME_TITLE = 'Grid Game';
 /** Options → Speed: a multiplier, 0x (the simulation stands still) to 4x in steps of 0.25x; 1x is 60 turns a minute. */
 export const SPEED = Object.freeze({ min: 0, max: 4, step: 0.25, default: 1, turnsPerMinute: 60 });
 
-/** Options → Background, in the order the option cycles through them (passthrough last). */
+/** Options → Background, in the order its dropdown lists them (passthrough last). */
 export const BACKGROUNDS = ['solid', 'skybox', 'passthrough'];
 const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Passthrough (XR Only)' };
 const BACKGROUND_ICONS = { solid: 'bgSolid', skybox: 'bgSky', passthrough: 'bgPass' };
 
-/** Options → Video → XR: enter / exit XR, or greyed out when the browser has no XR. */
-function xrItem(state) {
-  if (state.inXR) return { id: 'exitxr', label: 'XR: On', icon: 'xr' };
-  if (state.xrSupport) return { id: 'enterxr', label: 'XR: Off', icon: 'xr' };
-  return { id: 'noop', label: 'XR: Unavailable', icon: 'xr', disabled: true };
+/**
+ * Options → Video → View Mode, in dropdown order (from 4d-viewer-threejs). Normal and 3D: SBS
+ * (half side-by-side, for 3D TVs) are windowed; the rest are XR sessions. Phones get the phone
+ * views, headsets and PCs with a headset the HMD one.
+ */
+export const VIEWS = ['normal', 'sbs', 'hmd', 'phoneAR', 'phoneViewer'];
+export const XR_VIEWS = ['hmd', 'phoneAR', 'phoneViewer'];
+const VIEW_LABELS = {
+  normal: 'Normal',
+  sbs: '3D: SBS',
+  hmd: 'XR: HMD Stereo',
+  phoneAR: 'XR: Phone AR',
+  phoneViewer: 'XR: Phone Viewer',
+};
+const VIEW_ICONS = { normal: 'monitor', sbs: 'monitorSbs', hmd: 'xr', phoneAR: 'phone', phoneViewer: 'phoneViewer' };
+
+/**
+ * The views this device can show. `env`: { phone, headset, xrSupported }.
+ * A headset browser's own window can't show side-by-side usefully, so no SBS there.
+ */
+export function availableViews(env) {
+  return VIEWS.filter((view) => {
+    if (view === 'sbs') return !env.headset;
+    if (view === 'hmd') return !env.phone && env.xrSupported;
+    if (view === 'phoneAR' || view === 'phoneViewer') return env.phone;
+    return true;
+  });
+}
+
+/** The view showing now: derived from the session, so the menu can never disagree with it. */
+export function currentView(state) {
+  if (!state.inXR) return state.screenView;
+  return state.phone ? (state.phoneStereo ? 'phoneViewer' : 'phoneAR') : 'hmd';
+}
+
+/**
+ * A label's setting name and its value, split at the first ": ". The menus draw the name on the
+ * left and the value against the right edge.
+ */
+export function splitLabel(label) {
+  const at = label.indexOf(': ');
+  return at < 0 ? { name: label, value: '' } : { name: label.slice(0, at + 1), value: label.slice(at + 2) };
+}
+
+export const PICK_PREFIX = 'pick:';
+
+/**
+ * A dropdown: the button shows the current choice and, when it is the open one
+ * (`state.dropdown`), lists every choice beneath it (from xr-music-threejs). Choosing
+ * one sends "pick:<id>:<choice>".
+ */
+function dropdown(state, id, choices, current, labels, icons) {
+  return {
+    open: state.dropdown === id,
+    options: choices.map((choice) => ({ id: `${PICK_PREFIX}${id}:${choice}`, label: labels[choice], icon: icons[choice], selected: choice === current })),
+  };
+}
+
+/** "pick:<id>:<choice>" -> { id, choice }, else null. */
+export function parsePick(id) {
+  if (!id.startsWith(PICK_PREFIX)) return null;
+  const [dropdownId, choice] = id.slice(PICK_PREFIX.length).split(':');
+  return { id: dropdownId, choice };
+}
+
+/**
+ * The menu's focusable entries in order: its enabled items, each followed by its open
+ * dropdown's choices (for keyboard and gamepad navigation).
+ */
+export function focusables(model) {
+  return model.items.flatMap((it) => (it.disabled ? [] : [it, ...(it.dropdown?.open ? it.dropdown.options : [])]));
+}
+
+/** Options → Video → View Mode: a dropdown of the views this device can show. */
+function viewItem(state) {
+  const view = currentView(state);
+  const views = state.views ?? [view];
+  return {
+    id: 'view',
+    label: `View Mode: ${VIEW_LABELS[view]}`,
+    icon: VIEW_ICONS[view],
+    disabled: views.length < 2,
+    dropdown: dropdown(state, 'view', views, view, VIEW_LABELS, VIEW_ICONS),
+  };
 }
 
 /** Options → Video → Background: a solid colour, the sky panorama, or passthrough (see-through in XR). */
 function background(state) {
+  const current = BACKGROUNDS.includes(state.background) ? state.background : 'solid';
   return {
     id: 'background',
-    label: `Background: ${BACKGROUND_LABELS[state.background] ?? 'Solid'}`,
-    icon: BACKGROUND_ICONS[state.background] ?? 'bgSolid',
-    toggle: true,
+    label: `Background: ${BACKGROUND_LABELS[current]}`,
+    icon: BACKGROUND_ICONS[current],
+    dropdown: dropdown(state, 'background', BACKGROUNDS, current, BACKGROUND_LABELS, BACKGROUND_ICONS),
   };
 }
 
@@ -52,8 +132,10 @@ const BACK = { id: 'back', label: 'Back', icon: 'back' };
 
 
 /**
- * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent?, slider?, submenu?, toggle? }] } for the current
+ * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent?, slider?, submenu?, toggle?, dropdown? }] } for the current
  * menu screen. `submenu`: the button opens another menu screen (drawn with a right arrow at its far right).
+ * `dropdown`: { open, options: [{ id, label, icon, selected }] }: the button opens or closes a list of
+ * choices beneath it (drawn with a chevron at its far right).
  * `toggle`: the button switches a setting (On / Off, or the next choice); Right on the keyboard presses it too.
  * Every submenu lists Back first; renderers draw it at the very top of the panel
  * (above the Controls table / save-name row).
@@ -71,7 +153,7 @@ export function menuModel(state) {
       title: 'Video',
       items: [
         BACK,
-        xrItem(state),
+        viewItem(state),
         background(state),
         {
           id: 'materials',

@@ -3,6 +3,7 @@ import { TOOLS } from './tools.js';
 import { drawToolIcon, drawMenuIcon, roundRect } from './icons.js';
 import { drawMenuItemIcon } from './menuIcons.js';
 import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './controls.js';
+import { splitLabel } from './menu.js';
 /** The rows of the Controls table for menu model `model` (its `table`: a control schema id). */
 const tableRows = (model) => (CONTROL_SCHEMAS[model.table] ?? CONTROL_SCHEMAS.observer).controls;
 import { drawCell, cellWidth } from './inputIcons.js';
@@ -29,7 +30,7 @@ const PX_TO_M = 0.17 / 1000; // shared pixel density for the controller HUDs
 function hudBackground(ctx, W, H) {
   ctx.clearRect(0, 0, W, H);
   roundRect(ctx, 4, 4, W - 8, H - 8, 34);
-  ctx.fillStyle = 'rgba(18, 22, 30, 0.86)';
+  ctx.fillStyle = 'rgba(18, 22, 30, 0.6)';
   ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.18)';
   ctx.lineWidth = 3;
@@ -51,7 +52,7 @@ export const HUD_DOCK = {
   tilt: -Math.PI / 2, // tilted back so the face points up toward the eyes (0 = upright)
 };
 
-function dockAboveController(mesh) {
+export function dockAboveController(mesh) {
   mesh.position.set(0, HUD_DOCK.up, -HUD_DOCK.forward);
   mesh.rotation.set(HUD_DOCK.tilt, 0, 0);
 }
@@ -114,9 +115,9 @@ export class RightHudPanel extends CanvasPanel {
     this._last = '';
   }
 
-  /** `style`: the icons' look ({ procedural, smooth }, see drawToolIcon). */
-  draw(toolIndex, message, label = TOOLS[toolIndex].label, style = {}) {
-    const sig = `${toolIndex}|${message || ''}|${label}|${!!style.procedural}|${!!style.smooth}`;
+  /** `style`: the icons' look ({ procedural, smooth }, see drawToolIcon). `hover`: the slot under the gaze, if any. */
+  draw(toolIndex, message, label = TOOLS[toolIndex].label, style = {}, hover = null) {
+    const sig = `${toolIndex}|${message || ''}|${label}|${!!style.procedural}|${!!style.smooth}|${hover}`;
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
@@ -136,21 +137,47 @@ export class RightHudPanel extends CanvasPanel {
     TOOLS.forEach((t, i) => {
       const x = x0 + i * (SLOT + SLOT_GAP);
       roundRect(ctx, x, SLOT_Y, SLOT, SLOT, 16);
-      ctx.fillStyle = i === toolIndex ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
+      ctx.fillStyle = i === hover ? 'rgba(90, 160, 255, 0.55)' : i === toolIndex ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
       ctx.fill();
       drawToolIcon(ctx, t, x + SLOT / 2, SLOT_Y + SLOT / 2, SLOT * 0.78, style);
-      if (i === toolIndex) {
+      if (i === toolIndex || i === hover) {
         roundRect(ctx, x - 3, SLOT_Y - 3, SLOT + 6, SLOT + 6, 18);
-        ctx.strokeStyle = '#ffffff';
+        ctx.strokeStyle = i === hover ? '#9cc8ff' : '#ffffff';
         ctx.lineWidth = 7;
         ctx.stroke();
       }
     });
     this.texture.needsUpdate = true;
   }
+
+  /** uv from a raycast hit -> the index of the tool slot under it, or null. */
+  hitTest(uv) {
+    const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
+    const x0 = (this.canvas.width - (TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP)) / 2;
+    if (py < SLOT_Y - 6 || py > SLOT_Y + SLOT + 6) return null;
+    const i = Math.floor((px - x0 + SLOT_GAP / 2) / (SLOT + SLOT_GAP));
+    return i >= 0 && i < TOOLS.length ? i : null;
+  }
 }
 
 const MENU_WIDTH_M = 0.31; // wide enough for the longer Options labels
+// an open dropdown's choices: two to a row beneath its button, indented (from xr-music-threejs)
+const OPTION_H = 52, OPTION_GAP = 12, OPTION_INDENT = 54, OPTION_ICON = 32, CHECK = 30;
+const OPTION_FONT = '400 28px system-ui, -apple-system, Segoe UI, sans-serif';
+
+/** Two choices to a row, or one when a label wouldn't fit in half the width `w`. */
+function optionColumns(ctx, options, w) {
+  ctx.font = OPTION_FONT;
+  const room = (w - OPTION_GAP) / 2 - 36 - CHECK - 10;
+  return options.every((o) => ctx.measureText(o.label).width + (o.icon ? OPTION_ICON + 14 : 0) <= room) ? 2 : 1;
+}
+
+/** What a menu button's right edge shows: an arrow to a submenu, or a dropdown's chevron. */
+function trailingIcon(it) {
+  if (it.submenu) return 'forward';
+  if (it.dropdown) return it.dropdown.open ? 'dropdownOpen' : 'dropdown';
+  return null;
+}
 
 /** Menu panel for XR: docked above the Left HUD (or floating in front of the face if there is no left controller). */
 export class MenuPanel extends CanvasPanel {
@@ -174,14 +201,20 @@ export class MenuPanel extends CanvasPanel {
     // Panel is sized to its content (the rest of the canvas stays transparent).
     const TABLE_ROW = 66, TABLE_HEAD = 44;
     const tableH = model.table ? TABLE_HEAD + tableRows(model).length * TABLE_ROW + 16 : 0;
-    const contentH = Math.min(H - 12, 150 + tableH + model.items.length * 82 + 40);
+    const optionsW = W - 140 - OPTION_INDENT; // the buttons' width (bw below), indented
+    const optionsH = model.items.reduce((sum, it) => {
+      if (!it.dropdown?.open) return sum;
+      const { options } = it.dropdown;
+      return sum + Math.ceil(options.length / optionColumns(ctx, options, optionsW)) * (OPTION_H + OPTION_GAP);
+    }, 0);
+    const contentH = Math.min(H - 12, 150 + tableH + model.items.length * 82 + optionsH + 40);
     // When docked above the Left HUD the panel grows upward from its bottom edge.
     const offY = this.anchorBottom ? H - 12 - contentH : 0;
     this.content = { x: 6, y: 6 + offY, w: W - 12, h: contentH }; // visible panel box (canvas px)
     ctx.save();
     ctx.translate(0, offY);
     roundRect(ctx, 6, 6, W - 12, contentH, 48);
-    ctx.fillStyle = 'rgba(18, 22, 30, 0.92)';
+    ctx.fillStyle = 'rgba(18, 22, 30, 0.62)';
     ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.22)';
     ctx.lineWidth = 4;
@@ -220,9 +253,10 @@ export class MenuPanel extends CanvasPanel {
       drawMenuItemIcon(ctx, it.icon, bx + 22 + iconSize / 2, y + bh / 2, iconSize, { alpha: it.disabled ? 0.45 : 1 });
       const tx = bx + 22 + iconSize + 18;
       let right = bx + bw - 28;
-      if (it.submenu) {
-        // opens another menu screen: Back's arrow, mirrored, at the far right (same size as the icons)
-        drawMenuItemIcon(ctx, 'forward', bx + bw - 22 - iconSize / 2, y + bh / 2, iconSize, { alpha: it.disabled ? 0.45 : 1 });
+      const trailing = trailingIcon(it);
+      if (trailing) {
+        // a submenu: Back's arrow, mirrored; a dropdown: a chevron. At the far right, the icons' size
+        drawMenuItemIcon(ctx, trailing, bx + bw - 22 - iconSize / 2, y + bh / 2, iconSize, { alpha: it.disabled ? 0.45 : 1 });
         right = bx + bw - 22 - iconSize - 18;
       }
       ctx.textBaseline = 'middle';
@@ -254,14 +288,51 @@ export class MenuPanel extends CanvasPanel {
       ctx.font = '500 34px system-ui, -apple-system, Segoe UI, sans-serif';
       ctx.textAlign = 'left';
       ctx.fillStyle = it.disabled ? 'rgba(255,255,255,0.4)' : '#ffffff';
-      ctx.fillText(fit(ctx, it.label, right - tx), tx, y + bh / 2);
+      // "Name: Value": the name on the left, the value against the right edge
+      const { name, value } = splitLabel(it.label);
+      ctx.fillText(fit(ctx, name, right - tx), tx, y + bh / 2);
+      if (value) {
+        const room = right - tx - ctx.measureText(name).width - 30;
+        ctx.textAlign = 'right';
+        ctx.fillText(fit(ctx, value, room), right, y + bh / 2);
+      }
       ctx.textAlign = 'center';
       if (!it.disabled) this.rects.push({ id: it.id, x: bx, y: y + offY, w: bw, h: bh, track });
       y += bh + gap;
+      if (it.dropdown?.open) y = this._drawOptions(ctx, it.dropdown.options, bx + OPTION_INDENT, y, bw - OPTION_INDENT, hoverId, offY);
     });
     if (model.table && lead >= model.items.length) this._drawControlsTable(ctx, W, y - 22, TABLE_HEAD, TABLE_ROW, tableRows(model));
     ctx.restore();
     this.texture.needsUpdate = true;
+  }
+
+  /** An open dropdown's choices, two to a row from (x, y): the current one lit and ticked. Returns the next y. */
+  _drawOptions(ctx, options, x, y, w, hoverId, offY) {
+    const cols = optionColumns(ctx, options, w);
+    const ow = (w - (cols - 1) * OPTION_GAP) / cols;
+    options.forEach((option, i) => {
+      const ox = x + (i % cols) * (ow + OPTION_GAP), oy = y + Math.floor(i / cols) * (OPTION_H + OPTION_GAP);
+      const hover = option.id === hoverId;
+      roundRect(ctx, ox, oy, ow, OPTION_H, 14);
+      ctx.fillStyle = hover ? 'rgba(90, 160, 255, 0.55)' : option.selected ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.05)';
+      ctx.fill();
+      ctx.strokeStyle = hover ? '#9cc8ff' : option.selected ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = hover ? 4 : 2;
+      ctx.stroke();
+      let tx = ox + 18;
+      if (option.icon) {
+        drawMenuItemIcon(ctx, option.icon, tx + OPTION_ICON / 2, oy + OPTION_H / 2, OPTION_ICON);
+        tx += OPTION_ICON + 14;
+      }
+      if (option.selected) drawMenuItemIcon(ctx, 'check', ox + ow - 18 - CHECK / 2, oy + OPTION_H / 2, CHECK);
+      ctx.font = OPTION_FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(fit(ctx, option.label, ox + ow - 18 - tx - (option.selected ? CHECK + 10 : 0)), tx, oy + OPTION_H / 2);
+      this.rects.push({ id: option.id, x: ox, y: oy + offY, w: ow, h: OPTION_H });
+    });
+    return y + Math.ceil(options.length / cols) * (OPTION_H + OPTION_GAP);
   }
 
   /** Options → Controls table: Action | Mouse/Keyboard | Gamepad | XR Controller. Returns bottom y. */
@@ -310,6 +381,12 @@ export class MenuPanel extends CanvasPanel {
     const { x0, x1, min, max, step } = r.track;
     const t = Math.min(1, Math.max(0, (uv.x * this.canvas.width - x0) / (x1 - x0)));
     return Math.round((min + t * (max - min)) / step) * step;
+  }
+
+  /** Whether `uv` is over slider item `id`'s track (not its label): what the gaze can set. */
+  onSliderTrack(uv, id) {
+    const r = this.rects.find((q) => q.id === id);
+    return !!r?.track && uv.x * this.canvas.width >= r.track.x0 - 30;
   }
 
   /** True when `uv` is on the visible panel (not the transparent rest of the canvas). */
@@ -427,7 +504,7 @@ export class DebugTablet extends CanvasPanel {
     const W = this.canvas.width, H = this.canvas.height;
     ctx.clearRect(0, 0, W, H);
     roundRect(ctx, 4, 4, W - 8, H - 8, 30);
-    ctx.fillStyle = 'rgba(12, 15, 22, 0.94)';
+    ctx.fillStyle = 'rgba(12, 15, 22, 0.66)';
     ctx.fill();
     ctx.strokeStyle = highlight ? '#9cc8ff' : 'rgba(255,255,255,0.22)';
     ctx.lineWidth = highlight ? 6 : 3;

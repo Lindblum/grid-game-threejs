@@ -1,5 +1,5 @@
 :root {
-  --panel-bg: rgba(18, 22, 30, 0.86);
+  --panel-bg: rgba(18, 22, 30, 0.55);
   --panel-border: rgba(255, 255, 255, 0.16);
   --text: #e8ecf2;
   --muted: rgba(232, 236, 242, 0.6);
@@ -30,7 +30,8 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   background: rgba(255, 255, 255, 0.09);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
-  padding: 11px 18px;
+  min-height: 34px;
+  padding: 4px 10px;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
@@ -87,11 +88,31 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 /* slider items (Options → Speed) */
 .menu-slider { cursor: default; flex-wrap: wrap; }
 .menu-slider input[type='range'] { flex: 1 1 140px; min-width: 120px; accent-color: var(--accent); cursor: pointer; }
+/* a dropdown's choices (Options → Video → View Mode, Background), two to a row beneath its button */
+.menu-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: -3px 0 0 24px; }
+.menu-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+  text-align: left;
+  font-size: 13.5px;
+}
+.menu-option .menu-icon { width: 20px; height: 20px; flex: none; }
+.menu-option.selected { background: rgba(255, 255, 255, 0.16); border-color: rgba(255, 255, 255, 0.45); }
+.menu-option .option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .save-new-btn { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .save-new-btn .menu-icon { width: 22px; height: 22px; }
 .menu-btn:disabled .menu-icon { opacity: 0.5; }
 .menu-btn .sub { color: var(--muted); font-size: 13px; white-space: nowrap; }
-.menu-btn .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-btn .label { flex: 1; min-width: 0; display: flex; gap: 18px; justify-content: space-between; white-space: nowrap; }
+.menu-btn .label .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.menu-btn .label .value { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; text-align: right; }
 .save-row { display: flex; gap: 8px; margin-bottom: 12px; }
 .save-row input {
   flex: 1; min-width: 0; font: inherit; color: var(--text);
@@ -236,6 +257,18 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   max-width: calc(100% - 32px); pointer-events: none;
 }
 .toast.error { border-color: #ff6b6b; color: #ffd0d0; }
+
+/* the handheld XR view (phones without WebXR AR): tap anywhere to click, ✕ to leave */
+.cardboard { position: fixed; inset: 0; cursor: pointer; z-index: 5; }
+.cardboard-divider {
+  position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px;
+  background: rgba(255, 255, 255, 0.25); pointer-events: none;
+}
+.cardboard-exit {
+  position: absolute; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+  width: 40px; height: 40px; padding: 0; border-radius: 50%;
+  color: var(--text); background: rgba(10, 14, 28, 0.6); border: 1px solid var(--panel-border); font-size: 18px;
+}
 
 .xr-note {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
