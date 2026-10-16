@@ -1544,10 +1544,32 @@ export class Engine {
       this._xrMode = mode;
       if (phone && this.state.phoneStereo) this.phoneStereo.enable();
       this._beginImmersive();
+      this._trapBackButton();
     } catch (e) {
       console.error(e);
       this.toast(`Could not start XR: ${e.message || e}`, 'error');
     }
+  }
+
+  /**
+   * The Quest Browser turns the left controller's Menu (≡) button into the browser's Back, so a
+   * history entry pushed on entering XR catches it: Back pops the entry, and that leaves XR.
+   */
+  _trapBackButton() {
+    history.pushState({ gridGameXR: true }, '');
+    this._onPopState = () => {
+      this._releaseBackButton(false); // Back already took the entry
+      this.exitXR();
+    };
+    window.addEventListener('popstate', this._onPopState);
+  }
+
+  /** Drops the Back trap; leaving XR some other way also removes the entry it pushed. */
+  _releaseBackButton(popEntry = true) {
+    if (!this._onPopState) return;
+    window.removeEventListener('popstate', this._onPopState);
+    this._onPopState = null;
+    if (popEntry && history.state?.gridGameXR) history.back();
   }
 
   /** Out of XR (the session's end, or leaving the handheld view, tidies up: _leaveImmersive). */
@@ -1615,6 +1637,7 @@ export class Engine {
   }
 
   _leaveImmersive() {
+    this._releaseBackButton();
     this.phoneStereo.disable();
     this.debugTablet.mesh.visible = false;
     this._tabletGrab = null;
@@ -2010,8 +2033,8 @@ export class Engine {
       if (b && !this._rightBWas && playing) this.selectedExcrete();
       this._rightBWas = b;
     }
-    // The Quest Browser uses the left Menu (≡) button as "Back", so the menu is opened
-    // with the Menu button on the left HUD; the Y button is a shortcut for it.
+    // The Quest Browser uses the left Menu (≡) button as "Back" (it leaves XR: _trapBackButton),
+    // so the menu is opened with the Menu button on the left HUD; the Y button is a shortcut for it.
     // Left Y: with a creature selected (while playing), puts it in Wander; otherwise it opens
     // the menu. Left X puts a selected creature back in Wait.
     const lgp = this.hands.left?.source?.gamepad;
