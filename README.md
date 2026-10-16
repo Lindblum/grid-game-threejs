@@ -1,7 +1,8 @@
 # Grid Game
 
-A small living world built from **truncated octahedra** (6 squares + 8 hexagons) on a
-body-centred cubic lattice, so every cell has 14 neighbours. Place blocks and creatures,
+A small living world built from space-filling blocks: **truncated octahedra** (14
+neighbours), **rhombic dodecahedra** (12) or **cubes** (6), picked per world (see
+[Grid modes](#grid-modes)). Place blocks and creatures,
 then watch Water flow, trees grow Berries, and Crawlies, Buzzies, Squirmies and Slithers
 roam and eat. React + Three.js; plays in a desktop browser, in WebXR with passthrough
 (Meta Quest), or on a phone as a Cardboard-style stereo view.
