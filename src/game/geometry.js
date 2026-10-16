@@ -1,82 +1,49 @@
 import * as THREE from 'three';
 import { BLOCK_STYLE, BLOCK_TYPES, BUFF_TYPES } from './blocks.js';
+import { GRID, NEIGHBOR_DIRS } from './lattice.js';
 import { PERLIN_PERIOD, VORONOI_BORDER_MAX, VORONOI_PERIOD, createNoiseTexture } from './noiseTexture.js';
 
 /**
- * Regular truncated octahedron whose square faces have an inscribed radius of 1
- * (i.e. square faces lie on the planes x,y,z = ±1). Hexagon faces lie on
- * |x|+|y|+|z| = 1.5 (distance √3/2 from the centre). Units: cm.
- * Vertices are all permutations of (0, ±½, ±1).
+ * The block's shape is the active grid mode's cell (grids.js, lattice.js GRID): a truncated
+ * octahedron, rhombic dodecahedron or cube, always with an inradius of 1 cm. GRID.faces are
+ * in lattice units; cellFaces gives them in cm.
  */
 
-function buildVertices() {
-  const out = [];
-  const seen = new Set();
-  const perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
-  for (const a of [-0.5, 0.5]) {
-    for (const b of [-1, 1]) {
-      const base = [0, a, b];
-      for (const p of perms) {
-        const v = [base[p[0]], base[p[1]], base[p[2]]];
-        const k = v.join(',');
-        if (!seen.has(k)) {
-          seen.add(k);
-          out.push(new THREE.Vector3(...v));
-        }
-      }
-    }
-  }
-  return out; // 24 vertices
-}
-
-/** Returns the 14 faces: { type, normal, verts: Vector3[] (CCW seen from outside), inradius } */
-export function truncatedOctahedronFaces() {
-  const V = buildVertices();
-  const faces = [];
-  const addFace = (type, normal, planeDist) => {
-    const verts = V.filter((v) => Math.abs(v.dot(normal) - planeDist) < 1e-6);
-    const c = verts.reduce((acc, v) => acc.add(v), new THREE.Vector3()).multiplyScalar(1 / verts.length);
-    // basis (u, w, n) right-handed -> ascending angle is CCW seen from outside
-    const u = verts[0].clone().sub(c).normalize();
-    const w = new THREE.Vector3().crossVectors(normal, u);
-    verts.sort((p, q) => {
-      const dp = p.clone().sub(c), dq = q.clone().sub(c);
-      return Math.atan2(dp.dot(w), dp.dot(u)) - Math.atan2(dq.dot(w), dq.dot(u));
-    });
-    // distance from face centre to an edge
-    const mid = verts[0].clone().add(verts[1]).multiplyScalar(0.5);
-    faces.push({ type, normal: normal.clone(), verts, center: c, inradius: mid.distanceTo(c) });
-  };
-  for (let axis = 0; axis < 3; axis++) {
-    for (const s of [1, -1]) {
-      const n = new THREE.Vector3();
-      n.setComponent(axis, s);
-      addFace('square', n, 1);
-    }
-  }
-  for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) {
-    const n = new THREE.Vector3(x, y, z).normalize();
-    addFace('hexagon', n, 1.5 / Math.sqrt(3));
+const facesCm = new Map(); // grid id -> its faces in cm
+/** The active grid's cell faces in cm (GRID.faces scaled by GRID.scale): { type, name, offset, normal, verts, center, inradius }. */
+export function cellFaces() {
+  let faces = facesCm.get(GRID.id);
+  if (!faces) {
+    const s = GRID.scale;
+    faces = GRID.faces.map((f) => ({
+      ...f,
+      verts: f.verts.map((v) => v.clone().multiplyScalar(s)),
+      center: f.center.clone().multiplyScalar(s),
+      inradius: f.inradius * s,
+    }));
+    facesCm.set(GRID.id, faces);
   }
   return faces;
 }
 
 /**
- * Lattice offset to the neighbouring cell across each face, in the face order of
- * truncatedOctahedronFaces() (= the `faceIndex` vertex attribute).
+ * Lattice offset to the neighbouring cell across each face, in face order (= the
+ * `faceIndex` vertex attribute): the active grid's NEIGHBOR_DIRS (a live binding).
  */
-export const FACE_DIRS = truncatedOctahedronFaces().map(({ type, normal: n }) =>
-  type === 'square' ? [Math.round(n.x) * 2, Math.round(n.y) * 2, Math.round(n.z) * 2] : [Math.sign(n.x), Math.sign(n.y), Math.sign(n.z)]
-);
+export { NEIGHBOR_DIRS as FACE_DIRS };
+
+/** Most neighbouring cells sharing one corner of a block (a rhombic dodecahedron's 4-face corners). */
+const AO_SLOTS = 4;
 
 /**
- * For a corner of the block (a vertex of the truncated octahedron), the FACE_DIRS indices
- * of the 3 neighbouring cells that share it (4 cells meet at every vertex of this
- * honeycomb). Used for ambient occlusion: the more of them are filled, the darker the corner.
+ * For a corner of the block (lattice units), the FACE_DIRS indices of the neighbouring cells
+ * across a face that share it (3 in the truncated octahedron and the cube, 3 or 4 in the
+ * rhombic dodecahedron). Used for ambient occlusion: the more of them are filled, the darker
+ * the corner.
  */
 function cornerNeighbours(v, verts) {
   const out = [];
-  FACE_DIRS.forEach(([dx, dy, dz], i) => {
+  NEIGHBOR_DIRS.forEach(([dx, dy, dz], i) => {
     // the neighbour's own copy of the shape contains v if v - d is one of our vertices
     if (verts.some((u) => Math.abs(u.x - (v.x - dx)) + Math.abs(u.y - (v.y - dy)) + Math.abs(u.z - (v.z - dz)) < 1e-6)) out.push(i);
   });
@@ -84,30 +51,30 @@ function cornerNeighbours(v, verts) {
 }
 
 /**
- * Flat-shaded, indexed BufferGeometry. Each face is fanned from its centre so we can store,
- * per vertex, the distance to the face's outer edge ("edgeDist") — used by the
- * block shader to draw crisp dark outlines on every face — which face it belongs to
- * ("faceIndex", see FACE_DIRS), and for corners the 3 neighbours sharing that corner
- * ("aoFaces", FACE_DIRS indices; -1 for face centres) for ambient occlusion.
+ * Flat-shaded, indexed BufferGeometry of the active grid's cell, in cm. Each face is fanned
+ * from its centre so we can store, per vertex, the distance to the face's outer edge
+ * ("edgeDist") — used by the block shader to draw crisp dark outlines on every face — which
+ * face it belongs to ("faceIndex", see FACE_DIRS), and for corners the neighbours sharing that
+ * corner ("aoFaces", up to AO_SLOTS FACE_DIRS indices; -1 for none) for ambient occlusion.
  * Within a face every vertex's data is the same wherever it's used, so each face stores its
- * centre and corners once (5 or 7 vertices) and its triangles index them: 86 vertices
- * instead of 216, so the vertex shader runs about 2.5x less often per block (faces can't
+ * centre and corners once and its triangles index them (a truncated octahedron: 86 vertices
+ * instead of 216, so the vertex shader runs about 2.5x less often per block; faces can't
  * share vertices with each other: their normals and face numbers differ).
  */
 export function createBlockGeometry() {
-  const faces = truncatedOctahedronFaces();
-  const allVerts = faces.flatMap((f) => f.verts);
+  const s = GRID.scale;
+  const latticeVerts = GRID.faces.flatMap((f) => f.verts);
   const pos = [], nor = [], edge = [], face = [], ao = [], index = [];
   const vertex = (point, edgeDist, faceNo, normal, corner) => {
-    pos.push(point.x, point.y, point.z);
+    pos.push(point.x * s, point.y * s, point.z * s);
     nor.push(normal.x, normal.y, normal.z);
-    edge.push(edgeDist);
+    edge.push(edgeDist * s);
     face.push(faceNo);
-    const cn = corner ? cornerNeighbours(point, allVerts) : [];
-    ao.push(cn[0] ?? -1, cn[1] ?? -1, cn[2] ?? -1);
+    const cn = corner ? cornerNeighbours(point, latticeVerts) : [];
+    for (let i = 0; i < AO_SLOTS; i++) ao.push(cn[i] ?? -1);
     return pos.length / 3 - 1;
   };
-  faces.forEach((f, fi) => {
+  GRID.faces.forEach((f, fi) => {
     const centre = vertex(f.center, f.inradius, fi, f.normal, false);
     const ring = f.verts.map((corner) => vertex(corner, 0, fi, f.normal, true));
     for (let i = 0; i < ring.length; i++) index.push(centre, ring[i], ring[(i + 1) % ring.length]); // same fan, same winding
@@ -118,15 +85,15 @@ export function createBlockGeometry() {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   g.setAttribute('edgeDist', new THREE.Float32BufferAttribute(edge, 1));
   g.setAttribute('faceIndex', new THREE.Float32BufferAttribute(face, 1));
-  g.setAttribute('aoFaces', new THREE.Float32BufferAttribute(ao, 3));
+  g.setAttribute('aoFaces', new THREE.Float32BufferAttribute(ao, AO_SLOTS));
   g.computeBoundingSphere();
   g.computeBoundingBox();
   return g;
 }
 
-/** Line segments along the 36 edges of the truncated octahedron. */
+/** Line segments along the edges of the active grid's cell (cm). */
 export function createEdgesGeometry() {
-  const faces = truncatedOctahedronFaces();
+  const faces = cellFaces();
   const seen = new Set();
   const pts = [];
   for (const f of faces) {
@@ -147,7 +114,7 @@ export function createEdgesGeometry() {
 export const EDGE_SHADE = 0.725;
 /** Width of those face outlines, in cm (each face's dark band along its edges). */
 export const EDGE_WIDTH_CM = 0.045;
-/** Ambient occlusion: a corner with all 3 sharing neighbours filled is darkened by this much. */
+/** Ambient occlusion: a corner with all its sharing neighbours filled is darkened by this much. */
 export const AO_STRENGTH = 0.45;
 
 export { BLOCK_STYLE }; // defined in blocks.js, with the rest of the block properties
@@ -336,7 +303,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         `#include <common>
         attribute float edgeDist;
         attribute float faceIndex;
-        attribute vec3 aoFaces;
+        attribute vec4 aoFaces;
         attribute vec4 blockStyle;
         varying float vAO;
         varying float vEdgeDist;
@@ -385,15 +352,18 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           mat3 m = mat3(modelViewMatrix);
           vLocalToView = mat3(normalize(m[0]), normalize(m[1]), normalize(m[2]));
         }
-        // ambient occlusion: fraction of the 3 cells sharing this corner that are filled
-        // (blockStyle.w = neighbour mask, bit i = FACE_DIRS[i]); face centres stay 0
+        // ambient occlusion: fraction of the cells sharing this corner (3, or 4 at a rhombic
+        // dodecahedron's 4-face corners) that are filled (blockStyle.w = neighbour mask,
+        // bit i = FACE_DIRS[i]); face centres stay 0
         {
           int occ = int(blockStyle.w + 0.5);
-          float n = 0.0;
-          for (int i = 0; i < 3; i++) {
-            if (aoFaces[i] >= 0.0 && ((occ >> int(aoFaces[i] + 0.5)) & 1) == 1) n += 1.0;
+          float n = 0.0, total = 0.0;
+          for (int i = 0; i < 4; i++) {
+            if (aoFaces[i] < 0.0) continue;
+            total += 1.0;
+            if (((occ >> int(aoFaces[i] + 0.5)) & 1) == 1) n += 1.0;
           }
-          vAO = n / 3.0;
+          vAO = total > 0.0 ? n / total : 0.0;
         }`
       )
       .replace(

@@ -1,4 +1,5 @@
 import { CONTROL_SCHEMAS } from './controls.js';
+import { GRIDS, GRID_IDS } from './grids.js';
 // Start/pause-menu model shared by the DOM menu (desktop) and the canvas panel (XR).
 
 export const PAGE_SIZE = 5;
@@ -129,6 +130,14 @@ function background(state) {
 
 const BACK = { id: 'back', label: 'Back', icon: 'back' };
 
+const GRID_LABELS = Object.fromEntries(GRID_IDS.map((id) => [id, GRIDS[id].name]));
+const GRID_ICONS = { to: 'gridTo', rd: 'gridRd', cube: 'gridCube' };
+
+/** Main menu → New: a dropdown of the grid modes (grids.js); picking one starts a new world in it. */
+function newItem(state) {
+  return { id: 'new', label: 'New', icon: 'new', dropdown: dropdown(state, 'new', GRID_IDS, state.gridMode, GRID_LABELS, GRID_ICONS) };
+}
+
 
 
 /**
@@ -199,7 +208,7 @@ export function menuModel(state) {
       title: GAME_TITLE,
       items: [
         { id: 'resume', label: 'Resume', icon: 'resume', accent: true },
-        { id: 'new', label: 'New', icon: 'new' },
+        newItem(state),
         { id: 'load', label: 'Load', icon: 'load', submenu: true },
         { id: 'save', label: 'Save', icon: 'save', submenu: true },
         { id: 'options', label: 'Options', icon: 'options', submenu: true },

@@ -21,6 +21,20 @@ npm run dev:xr    # HTTPS on your LAN, for Quest or phone
 On a Quest, open the `dev:xr` address in the Quest Browser, accept the certificate warning,
 and turn on **Options → XR**.
 
+## Grid modes
+
+**New** in the menu picks one of three space-filling grids:
+
+| Mode | Cells (integer x, y, z) | Neighbours |
+|---|---|---|
+| Truncated Octahedron | all even or all odd | 14: `+X` … and `+X+Y+Z` … |
+| Rhombic Dodecahedron | x + y + z even | 12: `+X+Y`, `+X-Z`, … |
+| Cube | all even | 6: `+X`, `-X`, … |
+
+Every block has an inradius of 1 cm. Directions are named by their axis signs and work the
+same in every mode. Saves record their grid (`"grid": "to" | "rd" | "cube"`); older saves open
+as Truncated Octahedron. See `src/game/grids.js`.
+
 ## Controls
 
 | Action | Mouse / Keyboard | Gamepad | Quest Touch |

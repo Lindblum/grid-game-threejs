@@ -6,14 +6,18 @@
 import * as THREE from 'three';
 import { World } from './world.js';
 import { isCreature } from './blocks.js';
+import { GRID, gridMode } from './lattice.js';
 
 const SIZE = 160; // px, rendered square; icons are drawn scaled from this
 /** The icon's view direction (from the upper right front), and its field of view. */
 const VIEW_DIR = new THREE.Vector3(0.55, 0.62, 1).normalize();
 const FOV = 30;
-/** How far the drawn thing reaches from the block centre, cm (creatures: legs and wings too). */
-const RADIUS_BLOCK = 1.2;
-const RADIUS_CREATURE = 1.75;
+/**
+ * How far the drawn thing reaches from the block centre, cm: the block's farthest corner (the
+ * grid mode's cell) with a little room, and creatures' legs and wings beyond it.
+ */
+const blockRadius = () => 1.07 * GRID.scale * Math.max(...GRID.vertices.map((v) => v.length()));
+const CREATURE_EXTRA = 0.55;
 /** A fixed moment for the shaders' animations (Water, clouds, wings), so icons don't vary. */
 const ICON_TIME_MS = 4200;
 
@@ -58,7 +62,7 @@ class IconRenderer {
     }
     w.turn = 1;
     w.updateAnimations(ICON_TIME_MS); // shader time, eyes, wings, legs, Smooth bodies
-    const radius = isCreature(type) ? RADIUS_CREATURE : RADIUS_BLOCK;
+    const radius = blockRadius() + (isCreature(type) ? CREATURE_EXTRA : 0);
     const dist = radius / Math.sin(THREE.MathUtils.degToRad(FOV / 2));
     this.camera.position.copy(VIEW_DIR).multiplyScalar(dist);
     this.camera.lookAt(0, 0, 0);
@@ -82,7 +86,7 @@ const cache = new Map();
  */
 export function renderedBlockIcon(type, style = {}) {
   if (failed || typeof document === 'undefined') return null;
-  const key = `${type}:${style.procedural ? 'p' : 's'}${style.smooth ? 'r' : 'b'}`;
+  const key = `${type}:${style.procedural ? 'p' : 's'}${style.smooth ? 'r' : 'b'}:${gridMode()}`; // (its World follows the grid mode)
   if (cache.has(key)) return cache.get(key);
   try {
     instance ??= new IconRenderer();

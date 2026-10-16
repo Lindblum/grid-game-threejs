@@ -21,7 +21,7 @@ function shuffle(a) {
 }
 
 /**
- * Splits blocks into connected groups (blocks touching through any of the 14 faces).
+ * Splits blocks into connected groups (blocks touching through any of their faces).
  * Only blocks passing `include` are grouped, and a block only joins through a neighbour
  * `b` it is `linked(b, n)` to (e.g. same type); by default any two included blocks link.
  * `starts` (default: every block) is where groups can begin: pass World.ofType(type) when
@@ -69,7 +69,7 @@ export function updateClusters(world) {
   return clusters;
 }
 
-/** The lattice direction (one of the 14) pointing most nearly along (x, y, z); ties at random. */
+/** The lattice direction (one of NEIGHBOR_DIRS) pointing most nearly along (x, y, z); ties at random. */
 function closestDir(x, y, z) {
   const len = Math.hypot(x, y, z);
   let best = [], bestCos = -Infinity;
@@ -85,7 +85,7 @@ function closestDir(x, y, z) {
 
 /**
  * Gravity toward the origin. Blocks are bucketed into connected groups; every group except
- * the largest shifts one step as a whole, in whichever of the 14 lattice directions points
+ * the largest shifts one step as a whole, in whichever of the grid's neighbour directions points
  * most nearly at the origin from the group's average centre. The largest group is the
  * anchor: it stays put, and detached chunks fall onto it and merge. (It used to be the group
  * holding the origin block, but then clearing the centre cell made the whole world rock
@@ -303,8 +303,9 @@ export function stepSquirmies(world, skip = new Set()) {
         const x = head.x + dx, y = head.y + dy, z = head.z + dz;
         if (ok(x, y, z, 1)) cells.push({ x, y, z });
       }
-      if (!cells.length) {
+      if (!cells.length && isSupported(world, sq.segments, own)) {
         // nowhere that follows the rules: squeeze into any empty neighbouring cell instead
+        // (only while something holds it up: one adrift, e.g. on Fog, stays put and falls)
         for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
           const x = head.x + dx, y = head.y + dy, z = head.z + dz;
           if (!world.blocks.has(cellKey(x, y, z))) cells.push({ x, y, z });
@@ -349,6 +350,19 @@ function hasEmptyNeighbor(world, block) {
 }
 
 /** Moves a Squirmy's head to `to`; each following segment takes the cell the one ahead of it just left. */
+/**
+ * Whether a chain creature is held up: some segment touches a block it can walk on (other than
+ * its own body; Fog and Nimbus aren't walkable), or it flies.
+ */
+function isSupported(world, segments, own) {
+  const head = segments[0];
+  if (canFly(head)) return true;
+  return segments.some((seg) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => {
+    const n = world.blocks.get(cellKey(seg.x + dx, seg.y + dy, seg.z + dz));
+    return n && !own.has(n) && canWalkOn(head.type, n.type);
+  }));
+}
+
 function moveChain(world, segments, to) {
   let prev = to;
   for (const seg of segments) {
@@ -870,7 +884,7 @@ function isAirborneBuzzy(world, creature) {
 
 /**
  * Wander: with WANDER_MOVE_CHANCE the creature steps to a random walkable adjacent cell
- * (any of its 14 neighbours); a Buzzy in mid-air (isAirborneBuzzy) always does, it can't
+ * (any of its neighbours); a Buzzy in mid-air (isAirborneBuzzy) always does, it can't
  * hover. Returns whether it moved.
  */
 function wander(world, creature) {

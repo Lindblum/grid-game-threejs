@@ -104,6 +104,12 @@ export class BlockBatch {
     delete block.batch;
   }
 
+  /** A new block shape (another grid mode): the mesh is rebuilt around it. Call with no blocks in. */
+  setBaseGeometry(baseGeometry) {
+    this.baseGeometry = baseGeometry;
+    this._allocate(this.capacity);
+  }
+
   clear() {
     this.blocks.length = 0;
     this.mesh.count = 0;

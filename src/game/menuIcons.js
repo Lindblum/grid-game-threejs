@@ -1,6 +1,9 @@
 // Clean monochrome line glyphs shown to the left of each menu button (DOM and XR panels).
 // Every icon is drawn with a single ink colour on a 1×1 grid (P(u, v) maps to pixels).
 
+import * as THREE from 'three';
+import { GRIDS } from './grids.js';
+
 const INK = '#e8ecf2';
 
 function line(ctx, P, pts) {
@@ -89,6 +92,22 @@ function musicNote(ctx, P, s) {
   ctx.lineWidth /= 2;
 }
 
+const SHAPE_VIEW = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(0.42, -0.62, 0, 'XYZ'));
+
+/** Grid mode `id`'s cell as a line drawing: the outlines of its front faces, seen from above right. */
+function cellGlyph(ctx, P, id) {
+  const { faces, vertices } = GRIDS[id];
+  const r = Math.max(...vertices.map((v) => v.length()));
+  ctx.lineWidth *= 0.6; // many small faces: finer lines than the other glyphs
+  for (const f of faces) {
+    if (f.normal.clone().applyMatrix4(SHAPE_VIEW).z <= 1e-4) continue; // back face
+    poly(ctx, P, f.verts.map((v) => {
+      const q = v.clone().applyMatrix4(SHAPE_VIEW);
+      return [0.5 + (q.x / r) * 0.4, 0.5 - (q.y / r) * 0.4];
+    }));
+  }
+}
+
 const DRAW = {
   resume(ctx, P) {
     ctx.fillStyle = INK;
@@ -96,6 +115,16 @@ const DRAW = {
   },
   new(ctx, P) {
     plus(ctx, P, 0.5, 0.5, 0.3);
+  },
+  // New's grid modes (grids.js)
+  gridTo(ctx, P) {
+    cellGlyph(ctx, P, 'to');
+  },
+  gridRd(ctx, P) {
+    cellGlyph(ctx, P, 'rd');
+  },
+  gridCube(ctx, P) {
+    cellGlyph(ctx, P, 'cube');
   },
   load(ctx, P) {
     // open folder

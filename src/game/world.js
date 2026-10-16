@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { RANDOM_BLOCKS } from './tools.js';
 import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature, isChainCreature } from './blocks.js';
-import { NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
+import { GRID, NEIGHBOR_DIRS, cellKey, gridMode, isValidCell, onGridChange, randomCellOnSphere, setGridMode } from './lattice.js';
+import { GRIDS, DEFAULT_GRID, dirName } from './grids.js';
 import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
 import { ClusterBodies } from './clusterBody.js';
 import { BlockBatch } from './blockBatch.js';
@@ -26,12 +27,10 @@ export const STEP_FRACTION = 1;
  * `deleteAll: true` adds nothing: it deletes every block of its `type` from the board (other
  * properties are ignored). See generateNew.
  */
-//shellSize(i) = 14 + 24*i + 12*i^2
-//shellSize(0) = 1, cumulativeSize(0) = 1
-//shellSize(1) = 14, cumulativeSize(1) = 15
-//shellSize(2) = 50, cumulativeSize(2) = 65
-//shellSize(3) = 110, cumulativeSize(3) = 175
-//shellSize(4) = 194, cumulativeSize(4) = 369
+//Cells in shell i (i steps from the origin), per grid mode (grids.js):
+//Truncated Octahedron: shellSize(i) = 14 + 24*(i-1) + 12*(i-1)^2 for i >= 1: 1, 14, 50, 110, 194 (cumulative 1, 15, 65, 175, 369)
+//Rhombic Dodecahedron: shellSize(i) = 10*i^2 + 2 for i >= 1: 1, 12, 42, 92, 162 (cumulative 1, 13, 55, 147, 309)
+//Cube: shellSize(i) = 4*i^2 + 2 for i >= 1: 1, 6, 18, 38, 66 (cumulative 1, 7, 25, 63, 129)
 //If clusters=1, sizeDistribution doesn't matter
 //TODO: a "branching" growth rule
 /** Template `addTo: "sky"`: seeds go at random on the sphere this far from the origin (like rain). */
@@ -92,8 +91,9 @@ function templateType(name) {
 /**
  * Reads a world template from parsed JSON: an array of lines like NEW_SCENE_TEMPLATE, or an
  * object holding one as `template` (or `lines`). Block types may be written as ids, keys or
- * names (see templateType). Returns { template } (lines ready for generateNew), or { error }
- * when it doesn't look like a template or names an unknown block type.
+ * names (see templateType). Returns { template, grid } (lines ready for generateNew, and the
+ * object's `grid` mode if it names one), or { error } when it doesn't look like a template or
+ * names an unknown block type or grid mode.
  */
 export function parseTemplate(data) {
   const lines = Array.isArray(data) ? data : Array.isArray(data?.template) ? data.template : Array.isArray(data?.lines) ? data.lines : null;
@@ -111,7 +111,10 @@ export function parseTemplate(data) {
     if ('distribution' in l && !('sizeDistribution' in l)) line.sizeDistribution = l.distribution;
     template.push(line);
   }
-  return { template };
+  // an object template may name its grid mode (grids.js), e.g. { "grid": "rd", "template": [ … ] }
+  const grid = Array.isArray(data) ? undefined : data.grid;
+  if (grid !== undefined && !GRIDS[grid]) return { error: `unknown grid mode "${grid}"` };
+  return { template, grid };
 }
 
 /** Whether parsed JSON looks like a save file (World.toJSON): the save format, or a list of blocks with x, y, z and type. */
@@ -119,6 +122,17 @@ export function isSaveData(data) {
   if (data?.format === 'grid-game-save') return true;
   const list = Array.isArray(data) ? data : data?.blocks;
   return Array.isArray(list) && list.length > 0 && list.every((block) => block && Number.isFinite(block.x) && Number.isFinite(block.y) && Number.isFinite(block.z) && typeof block.type === 'string');
+}
+
+/**
+ * A saved facing as one of the active grid's neighbour offsets, or null: a direction name
+ * ("+X-Y", grids.js) or, in older saves, the offset itself.
+ */
+function savedDir(front) {
+  if (typeof front === 'string') return GRID.dirByName.get(front)?.offset ?? null;
+  if (!Array.isArray(front)) return null;
+  const o = front.map(Number);
+  return NEIGHBOR_DIRS.find((d) => d.every((v, i) => v === o[i])) ?? null;
 }
 
 const _m = new THREE.Matrix4();
@@ -129,7 +143,8 @@ const _c = new THREE.Color();
  * Stores the blocks and renders them with one InstancedMesh (used for raycasting), plus
  * a translucent mesh that shares its instance buffers and draws only the see-through
  * blocks (Water, Crystal).
- * Coordinates are integer cm on the BCC lattice; the parent group scales cm -> m.
+ * Coordinates are integer lattice units on the active grid (lattice.js GRID; cm times
+ * GRID.scale); blocks are drawn in cm, and the parent group scales cm -> m.
  */
 export class World {
   constructor(parent) {
@@ -189,6 +204,27 @@ export class World {
       [this.batches.crystal, [this.materials.crystal, this.materials.bodyCrystal]],
       [this.batches.water, [this.materials.translucent, this.materials.bodyTranslucent]],
     ]);
+    onGridChange(() => this._rebuildShape());
+  }
+
+  /**
+   * Starts over in grid mode `id` (grids.js; unknown: the default): the world is cleared first,
+   * since its cells only mean something in their own grid. Every World rebuilds its block shape
+   * (_rebuildShape). Returns whether the mode changed.
+   */
+  setGridMode(id) {
+    this.clear();
+    return setGridMode(id);
+  }
+
+  /** After a switch of grid mode (lattice.js onGridChange): the new block shape everywhere. */
+  _rebuildShape() {
+    this.clear();
+    this.clusterBodies.clear();
+    const old = this.geometry;
+    this.geometry = createBlockGeometry();
+    for (const batch of this._batchList) batch.setBaseGeometry(this.geometry);
+    old.dispose();
   }
 
   /** The batch (drawing pass) blocks of `type` go in. */
@@ -198,8 +234,10 @@ export class World {
     return isTranslucent(type) ? this.batches.water : this.batches.opaque;
   }
 
-  /** Block `block`'s instance matrix (where and how big it's drawn). */
+  /** Block `block`'s instance matrix (where and how big it's drawn): `m` places it in lattice units, drawn in cm. */
   _setMatrix(block, m) {
+    const s = GRID.scale, e = m.elements;
+    if (s !== 1) e[12] *= s, e[13] *= s, e[14] *= s;
     block.batch.mesh.setMatrixAt(block.index, m);
   }
 
@@ -618,6 +656,11 @@ export class World {
 
   /** Where `block` is drawn right now (mid-slide while it is moving), in cm. */
   renderedPosition(block, now, out) {
+    return this._slidePosition(block, now, out).multiplyScalar(GRID.scale);
+  }
+
+  /** Where `block` is right now (mid-slide while it is moving), in lattice units. */
+  _slidePosition(block, now, out) {
     const a = this.anims.get(cellKey(block.x, block.y, block.z));
     if (!a) return out.set(block.x, block.y, block.z);
     const t = Math.min(1, (now - a.t0) / a.dur);
@@ -751,7 +794,7 @@ export class World {
       const seed = this._style(block).getY(block.index);
       block.batch.remove(block);
       target.add(block);
-      this._setMatrix(block, _m);
+      block.batch.mesh.setMatrixAt(block.index, _m); // (already in cm: not through _setMatrix)
       this._style(block).setXYZW(block.index, 0, seed, 0, 0);
       block.batch.attr('blockMerged').setX(block.index, 0);
       this._writeSmooth(block);
@@ -995,7 +1038,7 @@ export class World {
         this.anims.delete(k);
         continue;
       }
-      this.renderedPosition(b, now, p);
+      this._slidePosition(b, now, p);
       this._setMatrix(b, _m.makeTranslation(p.x, p.y, p.z));
       if (now - a.t0 >= a.dur) this.anims.delete(k);
     }
@@ -1241,7 +1284,7 @@ export class World {
 
   /**
    * "up" growth: the empty cell next to the group's most recently added block that is nearest
-   * to the point directly "up" from it, one block (2 cm) away from the origin (gravity pulls
+   * to the point directly "up" from it, one neighbour away from the origin (gravity pulls
    * toward the origin; a block at the origin uses +y). Ties are broken at random. If the
    * newest block has no empty neighbour, the one before it is tried, and so on back; null if
    * the group can't grow.
@@ -1251,7 +1294,8 @@ export class World {
       const b = members[k];
       const len = Math.hypot(b.x, b.y, b.z);
       const [ux, uy, uz] = len > 0 ? [b.x / len, b.y / len, b.z / len] : [0, 1, 0];
-      const tx = b.x + 2 * ux, ty = b.y + 2 * uy, tz = b.z + 2 * uz; // the cell straight up
+      const step = 2 / GRID.scale; // centre to centre across a face, lattice units
+      const tx = b.x + step * ux, ty = b.y + step * uy, tz = b.z + step * uz; // the cell straight up
       let best = [], bestD = Infinity;
       for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
         const x = b.x + dx, y = b.y + dy, z = b.z + dz;
@@ -1501,7 +1545,8 @@ export class World {
   toJSON() {
     return {
       format: 'grid-game-save',
-      version: 1,
+      version: 2,
+      grid: gridMode(), // grids.js: the cells (x, y, z) are lattice units of this grid mode
       units: 'cm',
       savedAt: new Date().toISOString(),
       blocks: [...this.blocks.values()]
@@ -1522,10 +1567,11 @@ export class World {
     const saved = heldBehavior && behavior === 'wait' ? heldBehavior : behavior;
     // only a walk the player gave outlasts the selection (and so a reload)
     const assigned = isAssignedBehavior && saved === 'walk' ? { assigned: true } : {};
-    if (isChainCreature(type)) return { x, y, z, type, born, chain, behavior: saved, ...(front && { front }), ...assigned };
+    // facing as a direction name (grids.js dirName), e.g. "+X-Y"
+    if (isChainCreature(type)) return { x, y, z, type, born, chain, behavior: saved, ...(front && { front: dirName(front) }), ...assigned };
     if (isSingleCreature(type)) {
       return {
-        x, y, z, type, ...(front && { front }), behavior: saved,
+        x, y, z, type, ...(front && { front: dirName(front) }), behavior: saved,
         ...(walkTarget && { walkTarget: { ...walkTarget } }),
         ...(trappedTurns && { trappedTurns }),
         ...assigned,
@@ -1534,11 +1580,16 @@ export class World {
     return { x, y, z, type };
   }
 
-  /** Clears the scene and loads blocks. Returns { loaded, skipped }. */
+  /**
+   * Clears the scene and loads blocks, switching to the save's grid mode (`grid`; saves from
+   * before grid modes: the truncated octahedron). Returns { loaded, skipped }.
+   */
   fromJSON(data) {
     const list = Array.isArray(data) ? data : data?.blocks;
     if (!Array.isArray(list)) throw new Error('Save file has no "blocks" array');
-    this.clear();
+    const grid = Array.isArray(data) ? DEFAULT_GRID : data.grid ?? DEFAULT_GRID;
+    if (!GRIDS[grid]) throw new Error(`Unknown grid mode "${grid}"`);
+    this.setGridMode(grid); // (clears the scene)
     let loaded = 0, skipped = 0;
     const chains = []; // [head, saved segment cells]: linked once every block is in
     const savedChains = new Map(); // a chain id in the file -> its id here
@@ -1549,10 +1600,8 @@ export class World {
       if (this.add(x, y, z, type)) {
         loaded++;
         // restore which way a creature was facing (its floor is re-derived below) and its behavior
-        const dir = Array.isArray(b.front) && b.front.map(Number);
-        if (isSingleCreature(type) && dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) {
-          this.get(x, y, z).front = dir;
-        }
+        const dir = savedDir(b.front);
+        if (isSingleCreature(type) && dir) this.get(x, y, z).front = dir;
         if (isSingleCreature(type) && canBehave(type, b.behavior)) this.get(x, y, z).behavior = b.behavior;
         const wt = b.walkTarget;
         if (isSingleCreature(type) && wt && isValidCell(Number(wt.x), Number(wt.y), Number(wt.z))) {
@@ -1578,7 +1627,7 @@ export class World {
             s.chain = savedChains.get(b.chain);
           } else unchained.push(s);
           if (canBehave(type, b.behavior)) s.behavior = b.behavior;
-          if (dir && NEIGHBOR_DIRS.some((d) => d.every((v, i) => v === dir[i]))) s.front = dir;
+          if (dir) s.front = dir;
         }
       } else skipped++;
     }

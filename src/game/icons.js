@@ -1,14 +1,14 @@
 import * as THREE from 'three';
-import { truncatedOctahedronFaces } from './geometry.js';
+import { cellFaces } from './geometry.js';
+import { gridMode } from './lattice.js';
 import { BLOCK, BLOCK_COLORS, TOOL } from './tools.js';
 import { renderedBlockIcon } from './iconRenderer.js';
 
-const FACES = truncatedOctahedronFaces();
 const ROT = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(0.42, -0.62, 0, 'XYZ'));
 const LIGHT = new THREE.Vector3(-0.45, 0.75, 0.6).normalize();
 
 /**
- * Draws a small shaded truncated octahedron icon centred at (cx, cy). `faceColor(normal)`
+ * Draws a small shaded block (the grid mode's cell) icon centred at (cx, cy). `faceColor(normal)`
  * (block-local face normal -> THREE.Color) can give each face its own colour.
  */
 export function drawBlockIcon(ctx, cx, cy, size, color, { alpha = 1, stroke = 'rgba(0,0,0,0.45)', faceColor = null } = {}) {
@@ -18,7 +18,7 @@ export function drawBlockIcon(ctx, cx, cy, size, color, { alpha = 1, stroke = 'r
   ctx.globalAlpha = alpha;
   ctx.lineJoin = 'round';
   ctx.lineWidth = Math.max(1, size / 48);
-  for (const f of FACES) {
+  for (const f of cellFaces()) {
     const n = f.normal.clone().applyMatrix4(ROT);
     if (n.z <= 1e-4) continue; // back face
     const shade = 0.42 + 0.58 * Math.max(0, n.dot(LIGHT));
@@ -192,7 +192,7 @@ export function drawToolIcon(ctx, tool, cx, cy, size, style = {}) {
 const cache = new Map();
 /** PNG data URL of a tool icon (for the DOM HUD), in `style` (see drawToolIcon). */
 export function toolIconURL(tool, size = 96, style = {}) {
-  const k = `${tool.id}:${size}:${style.procedural ? 'p' : 's'}${style.smooth ? 'r' : 'b'}`;
+  const k = `${tool.id}:${size}:${style.procedural ? 'p' : 's'}${style.smooth ? 'r' : 'b'}:${gridMode()}`;
   if (!cache.has(k)) {
     const cv = document.createElement('canvas');
     cv.width = cv.height = size;

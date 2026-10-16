@@ -1,21 +1,38 @@
-// Body-centred cubic lattice of truncated octahedra (bitruncated cubic honeycomb).
-// Cell centres (in cm) are (2i, 2j, 2k) or (2i+1, 2j+1, 2k+1).
-// Each cell touches 14 neighbours: 6 through square faces, 8 through hexagon faces.
+// The active grid mode (grids.js): which integer points are cells, and each cell's neighbours
+// (one per face). NEIGHBOR_DIRS and GRID are live bindings: setGridMode swaps them, so every
+// rule that loops over a cell's neighbours works in any mode. Switch only with an empty world
+// (World.setGridMode does that, and rebuilds what depends on the shape).
+import { DEFAULT_GRID, GRIDS } from './grids.js';
 
-export const SQUARE_DIRS = [
-  [2, 0, 0], [-2, 0, 0],
-  [0, 2, 0], [0, -2, 0],
-  [0, 0, 2], [0, 0, -2],
-];
+/** The active grid (see grids.js): id, name, scale (lattice -> cm), faces, dirs, … */
+export let GRID = GRIDS[DEFAULT_GRID];
+/** Offsets to a cell's neighbours, in face order (GRID.faces). */
+export let NEIGHBOR_DIRS = GRID.offsets;
 
-export const HEX_DIRS = [];
-for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) HEX_DIRS.push([x, y, z]);
+const listeners = new Set();
 
-export const NEIGHBOR_DIRS = [...SQUARE_DIRS, ...HEX_DIRS];
+/** Calls `fn(grid)` after every switch of grid mode. Returns a function that stops it. */
+export function onGridChange(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+/** The active grid mode's id ('to', 'rd', 'cube'). */
+export const gridMode = () => GRID.id;
+
+/** Switches to grid mode `id` (unknown ids: the default). Returns whether it changed. */
+export function setGridMode(id) {
+  const next = GRIDS[id] ?? GRIDS[DEFAULT_GRID];
+  if (next === GRID) return false;
+  GRID = next;
+  NEIGHBOR_DIRS = next.offsets;
+  for (const fn of listeners) fn(next);
+  return true;
+}
 
 /**
  * Map key of cell (x, y, z): one number packing the three coordinates (each within
- * ±KEY_HALF cm), much faster to build and look up than a string, and no garbage.
+ * ±KEY_HALF), much faster to build and look up than a string, and no garbage.
  */
 const KEY_SPAN = 1 << 17;
 const KEY_HALF = KEY_SPAN / 2;
@@ -27,42 +44,35 @@ export function parseKey(k) {
   return { x: Math.floor(rest / KEY_SPAN) - KEY_HALF, y: (rest % KEY_SPAN) - KEY_HALF, z };
 }
 
-/** True when (x,y,z) is a valid cell centre: integers that are all even or all odd. */
+/** True when (x, y, z) is a cell of the active grid. */
 export function isValidCell(x, y, z) {
   if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)) return false;
-  const px = Math.abs(x) % 2, py = Math.abs(y) % 2, pz = Math.abs(z) % 2;
-  return px === py && py === pz;
+  return GRID.isValid(x, y, z);
 }
 
 /**
- * Given an outward face normal of a cell (unit vector, cell-local),
- * return the face type and the offset to the neighbouring cell across that face.
+ * Given an outward face normal of a cell (unit vector, cell-local), the face it belongs to:
+ * { type (face / edge / corner), name, offset to the neighbouring cell across it }.
  */
 export function faceFromNormal(n) {
-  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-  const m = Math.max(ax, ay, az);
-  if (m > 0.8) {
-    // square face: normal along an axis
-    if (m === ax) return { type: 'square', offset: [Math.sign(n.x) * 2, 0, 0] };
-    if (m === ay) return { type: 'square', offset: [0, Math.sign(n.y) * 2, 0] };
-    return { type: 'square', offset: [0, 0, Math.sign(n.z) * 2] };
+  let best = GRID.faces[0], bestDot = -Infinity;
+  for (const f of GRID.faces) {
+    const d = f.normal.x * n.x + f.normal.y * n.y + f.normal.z * n.z;
+    if (d > bestDot) bestDot = d, best = f;
   }
-  // hexagon face: normal along a body diagonal (±1,±1,±1)/√3
-  return { type: 'hexagon', offset: [Math.sign(n.x), Math.sign(n.y), Math.sign(n.z)] };
+  return { type: best.type, name: best.name, offset: best.offset };
 }
 
-/** The lattice cell (all-even or all-odd coordinates) whose centre is nearest (x, y, z). */
+/** The cell whose centre is nearest lattice point (x, y, z). */
 export function nearestCell(x, y, z) {
-  const even = [x, y, z].map((v) => 2 * Math.round(v / 2));
-  const odd = [x, y, z].map((v) => 2 * Math.round((v - 1) / 2) + 1);
-  const d2 = (cell) => (cell[0] - x) ** 2 + (cell[1] - y) ** 2 + (cell[2] - z) ** 2;
-  const [cx, cy, cz] = d2(even) <= d2(odd) ? even : odd;
+  const [cx, cy, cz] = GRID.nearest(x, y, z);
   return { x: cx, y: cy, z: cz };
 }
 
-/** The lattice cell nearest a uniformly random point on the sphere of radius `radiusCm` around the origin. */
+/** The cell nearest a uniformly random point on the sphere of radius `radiusCm` around the origin. */
 export function randomCellOnSphere(radiusCm) {
   // uniform direction: z uniform in [-1, 1], angle uniform around the z axis
   const z = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - z * z);
-  return nearestCell(r * Math.cos(a) * radiusCm, r * Math.sin(a) * radiusCm, z * radiusCm);
+  const R = radiusCm / GRID.scale;
+  return nearestCell(r * Math.cos(a) * R, r * Math.sin(a) * R, z * R);
 }

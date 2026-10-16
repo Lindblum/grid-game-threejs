@@ -7,11 +7,10 @@
 // drawn instead. Blocks growing in or shrinking away (appear / vanish) aren't merged, so
 // their animations still play on the instanced mesh.
 import * as THREE from 'three';
-import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
-import { FACE_DIRS, truncatedOctahedronFaces } from './geometry.js';
+import { GRID, NEIGHBOR_DIRS, cellKey } from './lattice.js';
+import { FACE_DIRS } from './geometry.js';
 import { BLOCK, blockProps, isChainCreature, isCreature, isTranslucent } from './blocks.js';
 
-const FACES = truncatedOctahedronFaces();
 /** Taubin smoothing (shrink, then inflate) passes over a welded body: rounds its edges off. */
 const SMOOTH_PASSES = 4;
 const SMOOTH_LAMBDA = 0.5;
@@ -21,18 +20,18 @@ const _c = new THREE.Color();
 const _p = new THREE.Vector3();
 
 /**
- * Corners of the blocks sit on a half-cm grid, so a corner's welding key packs (2x, 2y, 2z)
+ * Corners of the blocks sit on a half-unit grid of lattice coordinates (every grid mode), so a corner's welding key packs (2x, 2y, 2z)
  * into one number (like lattice.js cellKey): no string per corner, and fast Map lookups.
  */
 const WELD_SPAN = 1 << 17; // 17 bits per axis: 51 in all, within the 53 a JS number holds exactly
 const WELD_HALF = WELD_SPAN / 2;
 const weldKey = (x, y, z) => ((2 * x + WELD_HALF) * WELD_SPAN + (2 * y + WELD_HALF)) * WELD_SPAN + (2 * z + WELD_HALF);
-/** A welded corner belongs to at most 4 blocks (cells meet 4 at a corner in this honeycomb). */
-const MAX_OWNERS = 4;
+/** A welded corner belongs to at most 8 blocks (cubes meet 8 at a corner; truncated octahedra 4, rhombic dodecahedra 4 or 6). */
+const MAX_OWNERS = 8;
 
 /**
  * Topology of a cluster's body from its blocks' cells, all in flat typed arrays: welded
- * vertices (`smooth`: cell space, then smoothed), the blocks each one moves with
+ * vertices (`smooth`: cm, then smoothed), the blocks each one moves with
  * (`ownerIdx` / `ownerCount`: up to MAX_OWNERS indices into `blocks` per vertex), triangles
  * over the welded vertices (`tris`, for normals), and the render vertices: every outer face
  * fanned from its centre (3 per edge), each knowing its block (`rBlock`), face (`rFace`),
@@ -43,6 +42,8 @@ const MAX_OWNERS = 4;
  * and share no corners, so the smoothing rounds them apart instead of fusing them.
  */
 export function buildBody(blocks, flat = false, linked = null) {
+  // the cell shape in lattice units (corners weld on lattice coordinates), drawn in cm
+  const FACES = GRID.faces, scale = GRID.scale;
   const at = new Map();
   blocks.forEach((block, i) => at.set(cellKey(block.x, block.y, block.z), i));
   const joined = (i, j) => i === j || !linked || linked(i, j);
@@ -110,9 +111,9 @@ export function buildBody(blocks, flat = false, linked = null) {
     if (c < MAX_OWNERS) ownerIdx[o + c] = i, ownerCount[w] = c + 1;
   };
   const newVertex = (x, y, z) => {
-    rest[n * 3] = x;
-    rest[n * 3 + 1] = y;
-    rest[n * 3 + 2] = z;
+    rest[n * 3] = x * scale;
+    rest[n * 3 + 1] = y * scale;
+    rest[n * 3 + 2] = z * scale;
     return n++;
   };
   const ring = new Int32Array(6);
@@ -139,9 +140,9 @@ export function buildBody(blocks, flat = false, linked = null) {
           const lv = j === 0 ? f.center : verts[j === 1 ? k : k2];
           rBlock[nr] = i;
           rFace[nr] = fi;
-          rLocal[nr * 3] = lv.x;
-          rLocal[nr * 3 + 1] = lv.y;
-          rLocal[nr * 3 + 2] = lv.z;
+          rLocal[nr * 3] = lv.x * scale;
+          rLocal[nr * 3 + 1] = lv.y * scale;
+          rLocal[nr * 3 + 2] = lv.z * scale;
           rWeld[nr] = j === 0 ? centre : ring[j === 1 ? k : k2];
           nr++;
         }
@@ -376,7 +377,7 @@ export class ClusterBodies {
     g.setAttribute('faceIndex', new THREE.BufferAttribute(topo.rFace, 1));
     // smooth bodies: no face outlines, no corner darkening
     g.setAttribute('edgeDist', new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
-    g.setAttribute('aoFaces', new THREE.BufferAttribute(new Float32Array(n * 3).fill(-1), 3));
+    g.setAttribute('aoFaces', new THREE.BufferAttribute(new Float32Array(n * 4).fill(-1), 4));
     g.setAttribute('blockStyle', new THREE.BufferAttribute(new Float32Array(n * 4), 4));
     g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
     g.setAttribute('blockIndex', new THREE.BufferAttribute(new Float32Array(n), 1));
@@ -435,11 +436,12 @@ export class ClusterBodies {
   _pose(world, body, now) {
     const { smooth, ownerIdx, ownerCount, tris, rWeld, vertexCount } = body.topo;
     const offsets = body.offsets;
+    const s = GRID.scale; // (rendered positions are in cm)
     body.blocks.forEach((block, i) => {
       world.renderedPosition(block, now, _p);
-      offsets[i * 3] = _p.x - block.x;
-      offsets[i * 3 + 1] = _p.y - block.y;
-      offsets[i * 3 + 2] = _p.z - block.z;
+      offsets[i * 3] = _p.x - block.x * s;
+      offsets[i * 3 + 1] = _p.y - block.y * s;
+      offsets[i * 3 + 2] = _p.z - block.z * s;
     });
     const W = body.welded, N = body.normals;
     for (let v = 0; v < vertexCount; v++) {

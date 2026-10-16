@@ -4,6 +4,7 @@ import { drawToolIcon, drawMenuIcon, roundRect } from './icons.js';
 import { drawMenuItemIcon } from './menuIcons.js';
 import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './controls.js';
 import { splitLabel } from './menu.js';
+import { gridMode } from './lattice.js';
 /** The rows of the Controls table for menu model `model` (its `table`: a control schema id). */
 const tableRows = (model) => (CONTROL_SCHEMAS[model.table] ?? CONTROL_SCHEMAS.observer).controls;
 import { drawCell, cellWidth } from './inputIcons.js';
@@ -117,7 +118,7 @@ export class RightHudPanel extends CanvasPanel {
 
   /** `style`: the icons' look ({ procedural, smooth }, see drawToolIcon). `hover`: the slot under the gaze, if any. */
   draw(toolIndex, message, label = TOOLS[toolIndex].label, style = {}, hover = null) {
-    const sig = `${toolIndex}|${message || ''}|${label}|${!!style.procedural}|${!!style.smooth}|${hover}`;
+    const sig = `${toolIndex}|${message || ''}|${label}|${!!style.procedural}|${!!style.smooth}|${hover}|${gridMode()}`; // (icons show the grid's block shape)
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;

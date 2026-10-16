@@ -10,8 +10,8 @@ import { claudePrompt } from './claudePrompt.js';
 import { debugSections } from './debugSections.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
-import { faceFromNormal, isValidCell } from './lattice.js';
-import { EDGE_SHADE, EDGE_WIDTH_CM, truncatedOctahedronFaces } from './geometry.js';
+import { GRID, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
+import { EDGE_SHADE, EDGE_WIDTH_CM, cellFaces } from './geometry.js';
 import {
   playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
@@ -28,7 +28,6 @@ import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from
 const CM = 0.01; // world units are metres; lattice units are cm
 const FPS_WINDOW_MS = 500; // Debug → Performance: FPS is averaged over this long
 const COUNTDOWN_SECONDS = 3; // the page, New and Load all start with a T -3 … 0 countdown before play
-const BLOCK_VOLUME_CM3 = 4; // space per block: the lattice packs two blocks into every 2 cm cube
 const XR_RAY_LENGTH = 1.0; // 1 m
 const GAZE_RAY_LENGTH = 2.0; // hands-free XR: how far the gaze reaches (tools and UI)
 const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS, m
@@ -68,17 +67,29 @@ const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's left stick flies up to 8 c
 const SELECT_WIRE_RADIUS = EDGE_WIDTH_CM / 2;
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
 
-/** Thick wireframe of a truncated octahedron made from thin cylinders (visible in XR too). */
+/** Thick wireframe of a block (the grid mode's cell) made from thin cylinders (visible in XR too). */
 function makeWireframe(color, radiusCm) {
   const group = new THREE.Group();
-  const mat = new THREE.MeshBasicMaterial({ color, toneMapped: false });
-  group.userData.material = mat;
+  group.userData.material = new THREE.MeshBasicMaterial({ color, toneMapped: false });
+  group.userData.radius = radiusCm;
+  buildWireframe(group);
+  group.visible = false;
+  return group;
+}
+
+/** (Re)builds wireframe `group`'s tubes and corner balls around the active grid's cell. */
+function buildWireframe(group) {
+  for (const c of [...group.children]) {
+    group.remove(c);
+    c.geometry.dispose();
+  }
+  const { material: mat, radius: radiusCm } = group.userData;
   const seen = new Set();
   const up = new THREE.Vector3(0, 1, 0);
   const cyl = new THREE.CylinderGeometry(radiusCm, radiusCm, 1, 6, 1, true);
   const ball = new THREE.SphereGeometry(radiusCm, 8, 6);
   const verts = new Map();
-  for (const f of truncatedOctahedronFaces()) {
+  for (const f of cellFaces()) {
     for (let i = 0; i < f.verts.length; i++) {
       const a = f.verts[i], b = f.verts[(i + 1) % f.verts.length];
       const ka = a.toArray().join(','), kb = b.toArray().join(',');
@@ -99,8 +110,6 @@ function makeWireframe(color, radiusCm) {
     s.position.copy(v);
     group.add(s);
   }
-  group.visible = false;
-  return group;
 }
 
 export class Engine {
@@ -111,6 +120,7 @@ export class Engine {
       screen: 'playing',
       paused: false, // the game opens straight into a New scene, with a countdown
       menu: 'main', // 'main' | 'load' | 'save' | 'options' | 'controls' | 'video'
+      gridMode: gridMode(), // the world's grid mode (grids.js): chosen from New's dropdown, or by the save loaded
       soundOn: true, // Options → Sounds
       controlSchema: 'observer', // 'observer' (default) or 'creature' (L3 with a creature selected): controls.js
       musicOn: true, // Options → Music: plays while the game is running (quieter in the pause menu)
@@ -379,6 +389,12 @@ export class Engine {
     this._hoverCreature = null;
     this.targetHL = makeWireframe(SELECT_GREEN, SELECT_WIRE_RADIUS);
     root.add(this.targetHL);
+    // a new grid mode (World.setGridMode): every wireframe takes the new block shape
+    onGridChange(() => {
+      for (const hl of [this.placeHL, this.deleteHL, this.targetHL, ...this.selectHLs, ...this.hoverHLs, ...this._pulses.map((p) => p.obj)]) buildWireframe(hl);
+      // (after every other listener: the tool icons' own World must have its new shape first)
+      queueMicrotask(() => this.setState({ gridMode: gridMode() }));
+    });
 
     // Small origin marker so an empty world still has a reference point.
     const originDot = new THREE.Mesh(
@@ -1201,11 +1217,11 @@ export class Engine {
 
   /**
    * Left HUD "Mean Diameter": the diameter of a solid ball holding `count` blocks. Each
-   * block takes up BLOCK_VOLUME_CM3 of space, so the ball's volume is count * 4 cm³ and
+   * block takes up its grid's cell volume (GRID.volumeCm3), so the ball's volume is count * that and
    * d = 2 * (3 * V / 4π)^(1/3). Returns cm.
    */
   static meanDiameter(count) {
-    return 2 * Math.cbrt((3 * BLOCK_VOLUME_CM3 * count) / (4 * Math.PI));
+    return 2 * Math.cbrt((3 * GRID.volumeCm3 * count) / (4 * Math.PI));
   }
 
   /** Formats a Mean Diameter for the HUD, e.g. "Ø 23.4 cm". */
@@ -1315,15 +1331,19 @@ export class Engine {
     if (this.targetHL.visible) this._pulseTarget(); // Select tool: a turn tick on the pointed-at target
   }
 
-  /** A new world from `template` (default: NEW_SCENE_TEMPLATE); `name`: where it came from, for the message. */
-  newScene(template = undefined, name = null) {
+  /**
+   * A new world from `template` (default: NEW_SCENE_TEMPLATE) in grid mode `grid` (grids.js;
+   * default: the current one); `name`: where it came from, for the message.
+   */
+  newScene(template = undefined, name = null, grid = gridMode()) {
     this._resetClock();
+    this.world.setGridMode(grid);
     this._resetPlayerView();
     this.world.generateNew(template);
     this._syncCount();
     this._startPlaying();
     playLoad();
-    this.toast(name ? `New world from template "${name}"` : 'New scene created');
+    if (name) this.toast(`New world from template "${name}"`);
   }
 
   /**
@@ -1338,8 +1358,8 @@ export class Engine {
       return this.toast(`"${file.name}" isn't a JSON file`, 'error');
     }
     if (isSaveData(data)) return this.importJSON(data, file.name);
-    const { template, error } = parseTemplate(data);
-    if (template) return this.newScene(template, file.name);
+    const { template, grid, error } = parseTemplate(data);
+    if (template) return this.newScene(template, file.name, grid ?? gridMode());
     this.toast(`"${file.name}" isn't a save file or a template (${error})`, 'error');
   }
 
@@ -1405,20 +1425,20 @@ export class Engine {
   menuAction(id, arg) {
     const s = this.state;
     // Resume, New, Load-file and Save play their own sounds; everything else ticks.
-    if (!/^(resume|new|savenew|save:|load:)/.test(id)) playTick();
+    if (!/^(resume|savenew|save:|load:|pick:new:)/.test(id)) playTick();
     const pick = parsePick(id);
     if (pick) {
       // a choice from a dropdown's list, which then closes
       this.setState({ dropdown: null });
       if (pick.id === 'background') return this._setBackground(pick.choice);
       if (pick.id === 'view') return this.selectView(pick.choice);
+      if (pick.id === 'new') return this.newScene(undefined, null, pick.choice); // New: a world in the grid mode picked
       return;
     }
-    // View Mode and Background open (or close) their dropdowns; any other button closes one
-    if (id === 'view' || id === 'background') return this.setState({ dropdown: s.dropdown === id ? null : id });
+    // New, View Mode and Background open (or close) their dropdowns; any other button closes one
+    if (id === 'new' || id === 'view' || id === 'background') return this.setState({ dropdown: s.dropdown === id ? null : id });
     if (s.dropdown) this.setState({ dropdown: null });
     if (id === 'resume') return this.resume();
-    if (id === 'new') return this.newScene();
     if (id === 'load' || id === 'save') {
       this.setState({ menu: id, page: 0 });
       return this.refreshSaves();
@@ -2270,20 +2290,20 @@ export class Engine {
       if (creature && !this.selected.includes(creature)) {
         this._hoverCreature = creature; // a creature you could select: drawn in _updateSelectionVisuals
       } else if (this.selected.length && this._isSelectTarget(t)) {
-        this.targetHL.position.set(...t.place);
+        this.targetHL.position.set(...t.place).multiplyScalar(GRID.scale); // (lattice units -> cm)
         this.targetHL.visible = true;
         // its shrinking pulses move with it (same frame), staying centred in it
         for (const p of this._pulses) if (p.obj.visible) p.obj.position.copy(this.targetHL.position);
       }
     } else if (tool.block) {
       if (t.place && t.placeFree) {
-        this.placeHL.position.set(...t.place);
+        this.placeHL.position.set(...t.place).multiplyScalar(GRID.scale);
         // same colour as the outlines of the block that would be placed
         this.placeHL.userData.material.color.set(BLOCK_COLORS[tool.block]).multiplyScalar(EDGE_SHADE);
         this.placeHL.visible = true;
       }
     } else if (t.block) {
-      this.deleteHL.position.set(t.block.x, t.block.y, t.block.z);
+      this.deleteHL.position.set(t.block.x, t.block.y, t.block.z).multiplyScalar(GRID.scale);
       this.deleteHL.visible = true;
     }
   }
@@ -2567,11 +2587,11 @@ export class Engine {
     this._renderTotal += performance.now() - r0;
   };
 
-  /** Where lattice cell `cell` ({x, y, z}, cm) is in the scene (metres), for positional sound; null without one. */
+  /** Where lattice cell `cell` ({x, y, z}) is in the scene (metres), for positional sound; null without one. */
   _soundAt(cell) {
     if (!cell) return null;
     this.worldRoot.updateWorldMatrix(true, false);
-    return this.worldRoot.localToWorld(new THREE.Vector3(cell.x, cell.y, cell.z));
+    return this.worldRoot.localToWorld(new THREE.Vector3(cell.x, cell.y, cell.z).multiplyScalar(GRID.scale));
   }
 
   /** Scene sounds are heard from the camera (the headset in XR). */
