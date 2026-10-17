@@ -62,8 +62,7 @@ const GRAB_MIN_SCALE = 0.1; // two-hand zoom limits, relative to life size (1 la
 const GRAB_MAX_SCALE = 20;
 const FLY_M_PER_WHEEL_PX = 0.00005; // zoomed all the way in, scrolling flies forward: ~0.5 cm per wheel notch
 const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's left stick flies up to 8 cm/s
-// Select tool wireframes (selected / pointed-at creatures, the target cell and its pulses): tubes
-// no thicker than the blocks' own face outlines.
+// Select tool wireframes (selected / pointed-at creatures, the target cell and its pulses): thin tubes.
 const SELECT_WIRE_RADIUS = EDGE_WIDTH_CM / 2;
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
 
@@ -127,7 +126,6 @@ export class Engine {
       gameTime: -COUNTDOWN_SECONDS, // whole seconds (turns) since New / Load; negative = countdown
       background: 'passthrough', // Options → Background: 'solid', 'skybox' or 'passthrough' (XR passthrough; solid elsewhere)
       proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
-      outlines: true, // Options → Outlines: darkened face edges on blocks
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
       speed: SPEED.default, // Options → Speed: 0x–4x (0x: stopped), where 1x is 60 turns a minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
@@ -208,7 +206,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'proceduralMaterials', 'outlines', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction'];
+  static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'proceduralMaterials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction'];
 
   /** Options → Debug, or ` / ~ while playing: the Debug panel (XR: the debug tablet) on / off; remembered. */
   toggleDebug() {
@@ -245,10 +243,6 @@ export class Engine {
     if (bool('proceduralMaterials')) {
       this.world.materials.setProcedural(saved.proceduralMaterials);
       this.setState({ proceduralMaterials: saved.proceduralMaterials });
-    }
-    if (bool('outlines')) {
-      this.world.materials.uniforms.uOutlines.value = saved.outlines ? 1 : 0;
-      this.setState({ outlines: saved.outlines });
     }
     if (bool('ambientOcclusion')) {
       this.world.materials.uniforms.uAO.value = saved.ambientOcclusion ? 1 : 0;
@@ -1451,11 +1445,6 @@ export class Engine {
       this.world.materials.setProcedural(on);
       return this.setState({ proceduralMaterials: on });
     }
-    if (id === 'outlines') {
-      const on = !s.outlines;
-      this.world.materials.uniforms.uOutlines.value = on ? 1 : 0;
-      return this.setState({ outlines: on });
-    }
     if (id === 'ao') {
       const on = !s.ambientOcclusion;
       this.world.materials.uniforms.uAO.value = on ? 1 : 0;
@@ -2298,7 +2287,7 @@ export class Engine {
     } else if (tool.block) {
       if (t.place && t.placeFree) {
         this.placeHL.position.set(...t.place).multiplyScalar(GRID.scale);
-        // same colour as the outlines of the block that would be placed
+        // a darker shade of the block that would be placed
         this.placeHL.userData.material.color.set(BLOCK_COLORS[tool.block]).multiplyScalar(EDGE_SHADE);
         this.placeHL.visible = true;
       }

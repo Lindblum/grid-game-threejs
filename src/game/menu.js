@@ -176,7 +176,6 @@ export function menuModel(state) {
           icon: state.smoothRendering ? 'renderSmooth' : 'renderBlocky',
           toggle: true,
         },
-        { id: 'outlines', label: `Outlines: ${state.outlines ? 'On' : 'Off'}`, icon: state.outlines ? 'outlinesOn' : 'outlinesOff', toggle: true },
         { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff', toggle: true },
         { id: 'refraction', label: `Refraction: ${state.refraction ? 'On' : 'Off'}`, icon: state.refraction ? 'refractionOn' : 'refractionOff', toggle: true },
         { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff', toggle: true },

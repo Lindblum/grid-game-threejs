@@ -375,8 +375,7 @@ export class ClusterBodies {
     g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('localPos', new THREE.BufferAttribute(topo.rLocal, 3));
     g.setAttribute('faceIndex', new THREE.BufferAttribute(topo.rFace, 1));
-    // smooth bodies: no face outlines, no corner darkening
-    g.setAttribute('edgeDist', new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
+    // smooth bodies: no corner darkening
     g.setAttribute('aoFaces', new THREE.BufferAttribute(new Float32Array(n * 4).fill(-1), 4));
     g.setAttribute('blockStyle', new THREE.BufferAttribute(new Float32Array(n * 4), 4));
     g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));

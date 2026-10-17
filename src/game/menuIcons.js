@@ -344,22 +344,6 @@ const DRAW = {
     ctx.globalAlpha /= 0.35;
     poly(ctx, P, HEX);
   },
-  outlinesOn(ctx, P, s) {
-    // hexagon face with a bold rim and a lighter inner face
-    ctx.fillStyle = INK;
-    ctx.globalAlpha *= 0.25;
-    poly(ctx, P, HEX, { fill: true });
-    ctx.globalAlpha /= 0.25;
-    ctx.lineWidth *= 1.8;
-    poly(ctx, P, HEX);
-  },
-  outlinesOff(ctx, P) {
-    // same face, no rim: just the flat fill
-    ctx.fillStyle = INK;
-    ctx.strokeStyle = 'rgba(0,0,0,0)';
-    ctx.globalAlpha *= 0.45;
-    poly(ctx, P, HEX, { fill: true });
-  },
   aoOn(ctx, P) {
     // two blocks meeting in a corner, with a shadow wedge where they meet
     poly(ctx, P, [[0.14, 0.2], [0.44, 0.2], [0.44, 0.82], [0.14, 0.82]]);

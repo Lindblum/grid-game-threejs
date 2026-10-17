@@ -52,10 +52,8 @@ function cornerNeighbours(v, verts) {
 
 /**
  * Flat-shaded, indexed BufferGeometry of the active grid's cell, in cm. Each face is fanned
- * from its centre so we can store, per vertex, the distance to the face's outer edge
- * ("edgeDist") — used by the block shader to draw crisp dark outlines on every face — which
- * face it belongs to ("faceIndex", see FACE_DIRS), and for corners the neighbours sharing that
- * corner ("aoFaces", up to AO_SLOTS FACE_DIRS indices; -1 for none) for ambient occlusion.
+ * from its centre, and every vertex stores which face it belongs to ("faceIndex", see
+ * FACE_DIRS) and, for corners, the neighbours sharing that corner ("aoFaces", up to AO_SLOTS FACE_DIRS indices; -1 for none) for ambient occlusion.
  * Within a face every vertex's data is the same wherever it's used, so each face stores its
  * centre and corners once and its triangles index them (a truncated octahedron: 86 vertices
  * instead of 216, so the vertex shader runs about 2.5x less often per block; faces can't
@@ -64,26 +62,24 @@ function cornerNeighbours(v, verts) {
 export function createBlockGeometry() {
   const s = GRID.scale;
   const latticeVerts = GRID.faces.flatMap((f) => f.verts);
-  const pos = [], nor = [], edge = [], face = [], ao = [], index = [];
-  const vertex = (point, edgeDist, faceNo, normal, corner) => {
+  const pos = [], nor = [], face = [], ao = [], index = [];
+  const vertex = (point, faceNo, normal, corner) => {
     pos.push(point.x * s, point.y * s, point.z * s);
     nor.push(normal.x, normal.y, normal.z);
-    edge.push(edgeDist * s);
     face.push(faceNo);
     const cn = corner ? cornerNeighbours(point, latticeVerts) : [];
     for (let i = 0; i < AO_SLOTS; i++) ao.push(cn[i] ?? -1);
     return pos.length / 3 - 1;
   };
   GRID.faces.forEach((f, fi) => {
-    const centre = vertex(f.center, f.inradius, fi, f.normal, false);
-    const ring = f.verts.map((corner) => vertex(corner, 0, fi, f.normal, true));
+    const centre = vertex(f.center, fi, f.normal, false);
+    const ring = f.verts.map((corner) => vertex(corner, fi, f.normal, true));
     for (let i = 0; i < ring.length; i++) index.push(centre, ring[i], ring[(i + 1) % ring.length]); // same fan, same winding
   });
   const g = new THREE.BufferGeometry();
   g.setIndex(index);
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  g.setAttribute('edgeDist', new THREE.Float32BufferAttribute(edge, 1));
   g.setAttribute('faceIndex', new THREE.Float32BufferAttribute(face, 1));
   g.setAttribute('aoFaces', new THREE.Float32BufferAttribute(ao, AO_SLOTS));
   g.computeBoundingSphere();
@@ -110,9 +106,9 @@ export function createEdgesGeometry() {
   return g;
 }
 
-/** Face outlines are drawn at this fraction of the face colour (block shader + place highlight). */
+/** The place highlight is drawn in this fraction of the colour of the block to be placed. */
 export const EDGE_SHADE = 0.725;
-/** Width of those face outlines, in cm (each face's dark band along its edges). */
+/** Thickness of the thin highlight lines (the Select tool's wireframes are half this), cm. */
 export const EDGE_WIDTH_CM = 0.045;
 /** Ambient occlusion: a corner with all its sharing neighbours filled is darkened by this much. */
 export const AO_STRENGTH = 0.45;
@@ -189,7 +185,7 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * ones), `cloud` (Fog, Nimbus), `crystal` (refractive) and `translucent` (Water), plus the
  * `body…` versions for Rendering: Smooth. Each pass draws its own InstancedMesh holding only
  * its blocks (World batches, blockBatch.js); the vertex shader still drops other styles as a
- * safeguard. All have per-instance colour and soft face outlines.
+ * safeguard. All have per-instance colour.
  * `material.userData.dither.value` = instance index (in that material's pass) to draw 50 %
  * see-through with a checkerboard dither (the block targeted by Delete); -1 = none.
  * `uniforms.uTime.value` = seconds, drives the water animation.
@@ -204,8 +200,8 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * Crystal) looks like one body.
  * `blockStyle.w` = bit mask of neighbours (bit i = FACE_DIRS[i]) holding an opaque block,
  * for ambient occlusion (`uniforms.uAO.value` 1 = on, 0 = off).
- * `setProcedural(false)` switches both materials to plain instance colours (plus outlines
- * and Water / Crystal translucency): the procedural code is compiled out, for slower GPUs.
+ * `setProcedural(false)` switches both materials to plain instance colours (plus Water /
+ * Crystal translucency): the procedural code is compiled out, for slower GPUs.
  */
 /** Crystal refraction (see createBlockMaterials): how much light passes through, its index of refraction, and how thick a gem the light crosses (cm). */
 export const CRYSTAL_TRANSMISSION = 0.85;
@@ -216,7 +212,6 @@ export function createBlockMaterials() {
   const uniforms = {
     uTime: { value: 0 },
     uNoiseTex: { value: createNoiseTexture() },
-    uOutlines: { value: 1 }, // Options → Outlines: 1 = draw face outlines, 0 = hide them
     uAO: { value: 1 }, // Options → Ambient Occlusion: 1 = on, 0 = off
     uSmoothRendering: { value: 0 }, // Options → Rendering: Smooth = 1: blocks flagged blockMerged are hidden here and drawn as cluster bodies
   };
@@ -301,12 +296,10 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       .replace(
         '#include <common>',
         `#include <common>
-        attribute float edgeDist;
         attribute float faceIndex;
         attribute vec4 aoFaces;
         attribute vec4 blockStyle;
         varying float vAO;
-        varying float vEdgeDist;
         uniform float uDitherIndex;
         uniform float uSmoothRendering;
         #ifdef MERGED_BODY
@@ -329,7 +322,6 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-        vEdgeDist = edgeDist;
         #ifdef MERGED_BODY
         vDither = abs(blockIndex - uDitherIndex) < 0.5 ? 1.0 : 0.0;
         vec3 blockPos = localPos;
@@ -402,7 +394,6 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       .replace(
         '#include <common>',
         `#include <common>
-        varying float vEdgeDist;
         varying float vSmooth;
         varying float vDither;
         varying float vStyle;
@@ -413,7 +404,6 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         varying float vSeed;
         varying mat3 vLocalToView;
         uniform float uTime;
-        uniform float uOutlines;
         uniform float uAO;
         uniform float uSmoothRendering;
         varying float vAO;
@@ -451,8 +441,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         // Fog / Nimbus: purely diffuse, no specular highlights or reflections (any Materials mode)
         float specDim = 1.0;     // scales specular light (highlights, reflections); matte styles lower it
         float isCloud = vStyle > ${(BLOCK_STYLE.fog - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.nimbus + 0.5).toFixed(1)} ? 1.0 : 0.0;
-        // Rendering: Smooth (or a block smoothed on its own): soft, rounded bodies skip face outlines
-        // and corner shading; Blocky: every block has them, creatures and clouds too
+        // Rendering: Smooth (or a block smoothed on its own): soft, rounded bodies (noOutline) skip
+        // corner shading; Blocky: every block has it, creatures and clouds too
         #ifdef MERGED_BODY
         #define ROUND_LOOK 1.0
         #else
@@ -687,7 +677,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           surfaceRough = mix(0.14, 0.5, max(seed, pit * 0.5));           // glossy red, matte seeds
         } else if ((vStyle > 5.5 && vStyle < 6.5) || (vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.buzzy + 0.5).toFixed(1)})) {
           // Crawly and Buzzy (Buzzy = the pearlescent variant): with Rendering: Smooth, rounded
-          // shading like a Squirmy (the normal points out from the block centre, no outlines)
+          // shading like a Squirmy (the normal points out from the block centre, no dark corners)
           isPearl = vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} ? 1.0 : 0.0;
           cloudNormal = BODY_DIR;
           noOutline = ROUND_LOOK;
@@ -801,12 +791,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           noOutline = ROUND_LOOK;
         }
         #endif
-        if (vSmooth > 0.5) noOutline = 1.0; // smooth-shaded blocks: a rounded look, no face outlines
-        float fw = max(fwidth(vEdgeDist), 1e-4);
-        float edgeW = ${EDGE_WIDTH_CM.toFixed(4)};
-        float edgeMix = smoothstep(edgeW - fw, edgeW + fw, vEdgeDist);
-        // (clouds skip both: hard outlines and dark corners make them look like tiles)
-        diffuseColor.rgb *= mix(${EDGE_SHADE.toFixed(4)}, 1.0, max(max(edgeMix, 1.0 - uOutlines), noOutline));
+        if (vSmooth > 0.5) noOutline = 1.0; // smooth-shaded blocks: a rounded look, no dark corners
+        // (rounded clouds skip it too: dark corners make them look like tiles)
         diffuseColor.rgb *= 1.0 - uAO * ${AO_STRENGTH.toFixed(3)} * vAO * (1.0 - noOutline); // corners hemmed in by neighbours go darker`
       )
       .replace(
@@ -850,7 +836,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float rim = 1.0 - ndv;
           vec3 pearl = shellBase * 1.1 + (irid * 0.35 + 0.1) * rim + vec3(0.55, 0.6, 0.58) * pow(rim, 2.5);
           shell = mix(shell, pearl, isPearl);
-          diffuseColor.rgb *= shell; // keeps the soft shading and face outlines
+          diffuseColor.rgb *= shell; // keeps the soft shading
           metalnessFactor = mix(0.35, 0.15, isPearl); // tints highlights with the shell colour (pearl: softer)
           // a buff with a colour (e.g. Rockbiter gold) leaves the shell as it is and adds a layer
           // of glowing ripples in that colour: bands that travel up over the body, warped by

@@ -999,7 +999,7 @@ export class World {
 
   /**
    * Smooth shading for `block` (`block.shadeSmooth`): rounded normals (out from the block
-   * centre) and no face outlines, like a creature, while Options → Rendering is Smooth
+   * centre) and no dark corners, like a creature, while Options → Rendering is Smooth
    * (Blocky draws it flat like any block). Ignored for shadeFlat types (Crystal).
    */
   setSmooth(block, on) {
