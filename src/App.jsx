@@ -73,10 +73,11 @@ function MenuLabel({ text }) {
   );
 }
 
-/** What a menu button's right edge shows: an arrow to a submenu, or a dropdown's chevron. */
+/** What a menu button's right edge shows: an arrow to a submenu, or a dropdown's (or section's) chevron. */
 function trailingIcon(it) {
   if (it.submenu) return 'forward';
-  if (it.dropdown) return it.dropdown.open ? 'dropdownOpen' : 'dropdown';
+  const open = (it.dropdown ?? it.section)?.open;
+  if (open !== undefined) return open ? 'dropdownOpen' : 'dropdown';
   return null;
 }
 
@@ -493,7 +494,7 @@ function MenuScreen({ engine, s }) {
         key={it.id}
         className={`btn menu-btn${it.accent ? ' accent' : ''}${s.menuFocus === it.id ? ' focused' : ''}`}
         disabled={it.disabled}
-        aria-expanded={it.dropdown ? it.dropdown.open : undefined}
+        aria-expanded={(it.dropdown ?? it.section)?.open}
         onClick={blurThen(() => engine.menuAction(it.id))}
       >
         {it.icon && <img className="menu-icon" src={menuItemIconURL(it.icon)} alt="" draggable={false} />}
@@ -502,9 +503,20 @@ function MenuScreen({ engine, s }) {
         {trailingIcon(it) && <img className="menu-icon menu-arrow" src={menuItemIconURL(trailingIcon(it))} alt="" draggable={false} />}
       </button>
     );
-  // a dropdown's button, then (when open) its choices, two to a row beneath it
+  // a dropdown's button, then (when open) its choices, two to a row beneath it; a section's button,
+  // then (when open) its Controls table or its entries, indented beneath it
   const renderEntry = (it) =>
-    it.dropdown ? (
+    it.section ? (
+      <Fragment key={it.id}>
+        {renderItem(it)}
+        {it.section.open && (
+          <div className="menu-section">
+            {it.section.table && <ControlsTable schema={it.section.table} />}
+            {it.section.items.map(renderEntry)}
+          </div>
+        )}
+      </Fragment>
+    ) : it.dropdown ? (
       <Fragment key={it.id}>
         {renderItem(it)}
         {it.dropdown.open && (
@@ -515,6 +527,8 @@ function MenuScreen({ engine, s }) {
                 className={`btn menu-option${option.selected ? ' selected' : ''}${s.menuFocus === option.id ? ' focused' : ''}`}
                 role="option"
                 aria-selected={option.selected}
+                disabled={option.disabled}
+                title={option.title}
                 onClick={blurThen(() => engine.menuAction(option.id))}
               >
                 {option.icon && <img className="menu-icon" src={menuItemIconURL(option.icon)} alt="" draggable={false} />}
@@ -528,16 +542,15 @@ function MenuScreen({ engine, s }) {
     ) : (
       renderItem(it)
     );
-  // a leading Back button goes at the very top, above the Controls table / save-name row
+  // a leading Back button goes at the very top, above the save-name row
   const back = model.items[0]?.id === 'back' ? model.items[0] : null;
   const rest = (back ? model.items.slice(1) : model.items).filter((it) => !(s.menu === 'save' && it.id === 'savenew'));
 
   return (
     <div className={`screen-center${s.screen === 'playing' ? ' dim' : ''}`}>
-      <div className={`panel menu-panel${s.menu === 'controls' ? ' controls-panel' : ''}`}>
+      <div className={`panel menu-panel${s.menu === 'options' && s.section === 'controls' ? ' controls-panel' : ''}`}>
         <h2>{model.title}</h2>
         {back && <div className="menu-items menu-back">{renderItem(back)}</div>}
-        {model.table && <ControlsTable schema={model.table} />}
         {s.menu === 'save' && !s.savesError && (
           <div className="save-row">
             <input

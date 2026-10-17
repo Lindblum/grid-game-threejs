@@ -271,6 +271,15 @@ const DRAW = {
     circle(ctx, P, 0.308, 0.427, 0.058, s, { fill: true });
     circle(ctx, P, 0.692, 0.427, 0.058, s, { fill: true });
   },
+  // Interlaced: the screen's rows, alternate ones solid and dashed
+  monitorInterlaced(ctx, P, s) {
+    DRAW.monitor(ctx, P, s);
+    line(ctx, P, [[0.25, 0.323], [0.75, 0.323]]);
+    line(ctx, P, [[0.25, 0.531], [0.75, 0.531]]);
+    ctx.setLineDash([0.083 * s, 0.104 * s]);
+    line(ctx, P, [[0.25, 0.427], [0.75, 0.427]]);
+    ctx.setLineDash([]);
+  },
   phone(ctx, P, s) {
     roundedRect(ctx, P, 0.281, 0.115, 0.438, 0.77, 0.083, s);
     ctx.stroke();

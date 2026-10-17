@@ -90,6 +90,9 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .menu-slider input[type='range'] { flex: 1 1 140px; min-width: 120px; accent-color: var(--accent); cursor: pointer; }
 /* a dropdown's choices (Options → Video → View Mode, Background), two to a row beneath its button */
 .menu-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: -3px 0 0 24px; }
+/* an open section's entries (Options → Controls, Video), indented beneath its button */
+.menu-section { display: flex; flex-direction: column; gap: 9px; margin: -3px 0 0 24px; }
+.menu-section > .controls-scroll { margin-bottom: 0; flex: none; }
 .menu-option {
   display: flex;
   align-items: center;

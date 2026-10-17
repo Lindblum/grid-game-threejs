@@ -18,9 +18,10 @@ import {
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet, dockAboveController } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE, SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, focusables } from './menu.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
+import { Interlaced } from './interlaced.js';
 import { CardboardRig, CameraFeed, enterCardboard, exitCardboard, isHeadsetBrowser, isPhone } from './cardboard.js';
 import { loadOptionsCookie, saveOptionsCookie } from './optionsCookie.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
@@ -30,7 +31,7 @@ const FPS_WINDOW_MS = 500; // Debug → Performance: FPS is averaged over this l
 const COUNTDOWN_SECONDS = 3; // the page, New and Load all start with a T -3 … 0 countdown before play
 const XR_RAY_LENGTH = 1.0; // 1 m
 const GAZE_RAY_LENGTH = 2.0; // hands-free XR: how far the gaze reaches (tools and UI)
-const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS, m
+const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS and 3D: Interlaced, m
 // hands-free XR: the HUDs (and the menu above them) float this far ahead, this far below the eyes,
 // and swing round to the front once the head has turned GAZE_DOCK_TURN away from them
 const GAZE_DOCK_DISTANCE = 0.55;
@@ -118,7 +119,7 @@ export class Engine {
     this.state = {
       screen: 'playing',
       paused: false, // the game opens straight into a New scene, with a countdown
-      menu: 'main', // 'main' | 'load' | 'save' | 'options' | 'controls' | 'video'
+      menu: 'main', // 'main' | 'load' | 'save' | 'options'
       gridMode: gridMode(), // the world's grid mode (grids.js): chosen from New's dropdown, or by the save loaded
       soundOn: true, // Options → Sounds
       controlSchema: 'observer', // 'observer' (default) or 'creature' (L3 with a creature selected): controls.js
@@ -138,7 +139,7 @@ export class Engine {
       page: 0,
       toolIndex: 0,
       inXR: false, // in an XR view (a WebXR session, or the handheld motion-sensor view)
-      screenView: 'normal', // View Mode outside XR: 'normal' or 'sbs' (see menu.js currentView)
+      screenView: 'normal', // View Mode outside XR: 'normal', 'sbs' or 'interlaced' (see menu.js currentView)
       views: ['normal'], // View Mode: the views this device can show (menu.js availableViews)
       phone: false, // a phone / tablet: XR is Phone AR or Phone Viewer instead of HMD Stereo
       phoneStereo: true, // phone XR: two lens-corrected eyes for a viewer (Phone Viewer), else one view (Phone AR)
@@ -151,7 +152,8 @@ export class Engine {
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
-      dropdown: null, // the menu dropdown whose list is open ('view' | 'background'), see menu.js
+      dropdown: null, // the menu dropdown whose list is open ('new' | 'view' | 'background'), see menu.js
+      section: null, // the Options section open beneath its button ('controls' | 'video'), see menu.js
       selectPhase: 'select', // Select tool: 'select' (pick a creature) or 'target' (pick where it walks)
     };
     this._toastId = 0;
@@ -194,7 +196,7 @@ export class Engine {
   };
   getState = () => this.state;
   setState(patch) {
-    const inOptions = (s) => s.paused && (s.menu === 'options' || s.menu === 'controls' || s.menu === 'video');
+    const inOptions = (s) => s.paused && s.menu === 'options';
     const wasInOptions = inOptions(this.state);
     this.state = { ...this.state, ...patch };
     if (wasInOptions && !inOptions(this.state)) this._saveOptions(); // left Options (Back, Esc, Resume, …)
@@ -633,7 +635,8 @@ export class Engine {
    */
   _keyMenu(e) {
     const s = this.state;
-    const items = focusables(menuModel(s));
+    const model = menuModel(s);
+    const items = focusables(model);
     if (!items.length) return false;
     const idx = items.findIndex((it) => it.id === s.menuFocus);
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -653,11 +656,17 @@ export class Engine {
       playTick();
       return true;
     }
-    // Left: closes an open dropdown, else like the Back button (Resume on the main screen); Right on a
-    // button with an arrow (a submenu) or a closed dropdown opens it, and on a toggle (On / Off, …) presses it
+    // Left: closes an open dropdown, else the open section the focus is in, else like the Back button
+    // (Resume on the main screen); Right on a button with an arrow (a submenu) or a closed dropdown or
+    // section opens it, and on a toggle (On / Off, …) presses it
     if ((left || k === 'Escape' || k === 'Backspace') && s.dropdown) {
       e.preventDefault();
       this._closeDropdown();
+      return true;
+    }
+    if ((left || k === 'Escape' || k === 'Backspace') && sectionOf(model, s.menuFocus)) {
+      e.preventDefault();
+      this._closeSection();
       return true;
     }
     if (left) {
@@ -666,7 +675,8 @@ export class Engine {
       else this.resume();
       return true;
     }
-    if (right && (items[idx]?.submenu || items[idx]?.toggle || (items[idx]?.dropdown && !items[idx].dropdown.open))) {
+    const it = items[idx];
+    if (right && (it?.submenu || it?.toggle || (it?.dropdown && !it.dropdown.open) || (it?.section && !it.section.open))) {
       e.preventDefault();
       this._keyMenuGo(items[idx].id);
       return true;
@@ -1422,6 +1432,7 @@ export class Engine {
     if (!/^(resume|savenew|save:|load:|pick:new:)/.test(id)) playTick();
     const pick = parsePick(id);
     if (pick) {
+      if (isDisabledChoice(menuModel(s), id)) return; // a choice this device can't use
       // a choice from a dropdown's list, which then closes
       this.setState({ dropdown: null });
       if (pick.id === 'background') return this._setBackground(pick.choice);
@@ -1437,7 +1448,9 @@ export class Engine {
       this.setState({ menu: id, page: 0 });
       return this.refreshSaves();
     }
-    if (id === 'options') return this.setState({ menu: 'options' });
+    if (id === 'options') return this.setState({ menu: 'options', section: null });
+    // Controls and Video open (or close) their sections, closing the other one
+    if (id === 'controls' || id === 'video') return this.setState({ section: s.section === id ? null : id });
     if (id === 'sound') return this.setSound(!s.soundOn);
     if (id === 'music') return this.setState({ musicOn: !s.musicOn });
     if (id === 'materials') {
@@ -1462,9 +1475,7 @@ export class Engine {
       this.world.setSmoothRendering(!s.smoothRendering); // Smooth: clusters drawn as merged, smoothed bodies
       return this.setState({ smoothRendering: !s.smoothRendering });
     }
-    if (id === 'back') return this.setState({ menu: s.menu === 'controls' || s.menu === 'video' ? 'options' : 'main', page: 0 });
-    if (id === 'controls') return this.setState({ menu: 'controls' });
-    if (id === 'video') return this.setState({ menu: 'video' });
+    if (id === 'back') return this.setState({ menu: 'main', page: 0 });
     if (id === 'prev') return this.setState({ page: Math.max(0, s.page - 1) });
     if (id === 'next') {
       const pages = Math.ceil((s.saves?.length || 0) / PAGE_SIZE);
@@ -1473,6 +1484,14 @@ export class Engine {
     if (id === 'savenew') return this.saveAs(arg);
     if (id.startsWith('save:')) return this.saveAs(id.slice(5));
     if (id.startsWith('load:')) return this.loadFile(id.slice(5));
+  }
+
+  /** Closes the open Options section, focusing its button again. */
+  _closeSection() {
+    const { section } = this.state;
+    if (!section) return;
+    this.setState({ section: null, menuFocus: this.state.menuFocus ? section : null });
+    playTick();
   }
 
   /** Closes the open menu dropdown, focusing its button again. */
@@ -2243,6 +2262,7 @@ export class Engine {
       this.phoneStereo.update(dt, s.background === 'passthrough');
       this.phoneStereo.render(this.scene, this.camera); // a plain render unless Phone Viewer
     } else if (s.screenView === 'sbs') this._renderSideBySide();
+    else if (s.screenView === 'interlaced') (this._interlaced ??= new Interlaced(SBS_EYE_SEPARATION)).render(this.renderer, this.scene, this.camera);
     else this.renderer.render(this.scene, this.camera);
   }
 
@@ -2433,8 +2453,9 @@ export class Engine {
     if (slider && edge(0)) return; // A on a slider: nothing to press
     if (edge(0)) return this._keyMenuGo(items[idx].id); // A
     if (edge(1)) {
-      // B: closes an open dropdown, else goes back
+      // B: closes an open dropdown, else the open section the focus is in, else goes back
       if (s.dropdown) this._closeDropdown();
+      else if (sectionOf(menuModel(s), s.menuFocus)) this._closeSection();
       else if (s.menu !== 'main') this.menuAction('back');
       else if (s.paused) this.resume();
       return;
@@ -2605,6 +2626,7 @@ export class Engine {
     window.removeEventListener('dragover', this._onDragOver);
     window.removeEventListener('drop', this._onDrop);
     this.controls.dispose();
+    this._interlaced?.dispose();
     this.renderer.dispose();
     el.remove();
     this.listeners.clear();

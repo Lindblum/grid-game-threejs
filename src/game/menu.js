@@ -32,28 +32,30 @@ const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Pass
 const BACKGROUND_ICONS = { solid: 'bgSolid', skybox: 'bgSky', passthrough: 'bgPass' };
 
 /**
- * Options → Video → View Mode, in dropdown order (from 4d-viewer-threejs). Normal and 3D: SBS
- * (half side-by-side, for 3D TVs) are windowed; the rest are XR sessions. Phones get the phone
- * views, headsets and PCs with a headset the HMD one.
+ * Options → Video → View Mode, in dropdown order (from 4d-viewer-threejs). Normal, 3D: SBS
+ * (half side-by-side, for 3D TVs) and 3D: Interlaced (row-interleaved, for passive 3D monitors)
+ * are windowed; the rest are XR sessions. Phones get the phone views, headsets and PCs with a
+ * headset the HMD one.
  */
-export const VIEWS = ['normal', 'sbs', 'hmd', 'phoneAR', 'phoneViewer'];
+export const VIEWS = ['normal', 'sbs', 'interlaced', 'hmd', 'phoneAR', 'phoneViewer'];
 export const XR_VIEWS = ['hmd', 'phoneAR', 'phoneViewer'];
 const VIEW_LABELS = {
   normal: 'Normal',
   sbs: '3D: SBS',
+  interlaced: '3D: Interlaced',
   hmd: 'XR: HMD Stereo',
   phoneAR: 'XR: Phone AR',
   phoneViewer: 'XR: Phone Viewer',
 };
-const VIEW_ICONS = { normal: 'monitor', sbs: 'monitorSbs', hmd: 'xr', phoneAR: 'phone', phoneViewer: 'phoneViewer' };
+const VIEW_ICONS = { normal: 'monitor', sbs: 'monitorSbs', interlaced: 'monitorInterlaced', hmd: 'xr', phoneAR: 'phone', phoneViewer: 'phoneViewer' };
 
 /**
  * The views this device can show. `env`: { phone, headset, xrSupported }.
- * A headset browser's own window can't show side-by-side usefully, so no SBS there.
+ * A headset browser's own window can't show the 3D views usefully, so not there.
  */
 export function availableViews(env) {
   return VIEWS.filter((view) => {
-    if (view === 'sbs') return !env.headset;
+    if (view === 'sbs' || view === 'interlaced') return !env.headset;
     if (view === 'hmd') return !env.phone && env.xrSupported;
     if (view === 'phoneAR' || view === 'phoneViewer') return env.phone;
     return true;
@@ -80,12 +82,22 @@ export const PICK_PREFIX = 'pick:';
 /**
  * A dropdown: the button shows the current choice and, when it is the open one
  * (`state.dropdown`), lists every choice beneath it (from xr-music-threejs). Choosing
- * one sends "pick:<id>:<choice>".
+ * one sends "pick:<id>:<choice>". `unavailable(choice)`: why that choice can't be picked
+ * here, if it can't (it is listed disabled, the reason as its tooltip).
  */
-function dropdown(state, id, choices, current, labels, icons) {
+function dropdown(state, id, choices, current, labels, icons, unavailable = () => null) {
   return {
     open: state.dropdown === id,
-    options: choices.map((choice) => ({ id: `${PICK_PREFIX}${id}:${choice}`, label: labels[choice], icon: icons[choice], selected: choice === current })),
+    options: choices.map((choice) => {
+      const reason = unavailable(choice);
+      return {
+        id: `${PICK_PREFIX}${id}:${choice}`,
+        label: labels[choice],
+        icon: icons[choice],
+        selected: choice === current,
+        ...(reason && { disabled: true, title: reason }),
+      };
+    }),
   };
 }
 
@@ -96,15 +108,44 @@ export function parsePick(id) {
   return { id: dropdownId, choice };
 }
 
-/**
- * The menu's focusable entries in order: its enabled items, each followed by its open
- * dropdown's choices (for keyboard and gamepad navigation).
- */
-export function focusables(model) {
-  return model.items.flatMap((it) => (it.disabled ? [] : [it, ...(it.dropdown?.open ? it.dropdown.options : [])]));
+/** Whether dropdown choice `id` ("pick:…") is listed disabled in `model` (open or not). */
+export function isDisabledChoice(model, id) {
+  const all = (items) => items.flatMap((it) => [...(it.dropdown?.options ?? []), ...all(it.section?.items ?? [])]);
+  return all(model.items).some((o) => o.id === id && o.disabled);
 }
 
-/** Options → Video → View Mode: a dropdown of the views this device can show. */
+/**
+ * The menu's focusable entries in order: its enabled items, each followed by its open
+ * dropdown's choices or its open section's entries (for keyboard and gamepad navigation).
+ */
+export function focusables(model) {
+  return focusableItems(model.items);
+}
+
+function focusableItems(items) {
+  return items.flatMap((it) =>
+    it.disabled
+      ? []
+      : [it, ...(it.dropdown?.open ? it.dropdown.options.filter((o) => !o.disabled) : []), ...(it.section?.open ? focusableItems(it.section.items) : [])],
+  );
+}
+
+/** The id of the open section that `id` is (the button of, or) inside, else null. */
+export function sectionOf(model, id) {
+  const open = model.items.find((it) => it.section?.open);
+  if (!open) return null;
+  return open.id === id || focusableItems(open.section.items).some((it) => it.id === id) ? open.id : null;
+}
+
+/** Why this device can't show `view` (see availableViews). */
+function viewUnavailableReason(view, state) {
+  if (view === 'sbs' || view === 'interlaced') return 'A headset’s browser can’t show the 3D views';
+  if (view === 'phoneAR' || view === 'phoneViewer') return 'Needs a phone';
+  if (state.phone) return 'Needs a headset';
+  return 'WebXR isn’t available here. Open the game in a headset browser over HTTPS for XR.';
+}
+
+/** Options → Video → View Mode: a dropdown of every view, the ones this device can't show disabled. */
 function viewItem(state) {
   const view = currentView(state);
   const views = state.views ?? [view];
@@ -112,19 +153,24 @@ function viewItem(state) {
     id: 'view',
     label: `View Mode: ${VIEW_LABELS[view]}`,
     icon: VIEW_ICONS[view],
-    disabled: views.length < 2,
-    dropdown: dropdown(state, 'view', views, view, VIEW_LABELS, VIEW_ICONS),
+    dropdown: dropdown(state, 'view', VIEWS, view, VIEW_LABELS, VIEW_ICONS, (v) => (views.includes(v) ? null : viewUnavailableReason(v, state))),
   };
 }
 
-/** Options → Video → Background: a solid colour, the sky panorama, or passthrough (see-through in XR). */
+/**
+ * Options → Video → Background: a solid colour, the sky panorama, or passthrough (see-through in XR),
+ * which needs a browser with AR sessions (Quest Browser) or a phone (its camera).
+ */
 function background(state) {
   const current = BACKGROUNDS.includes(state.background) ? state.background : 'solid';
+  const passthrough = state.xrAR || state.phone;
   return {
     id: 'background',
     label: `Background: ${BACKGROUND_LABELS[current]}`,
     icon: BACKGROUND_ICONS[current],
-    dropdown: dropdown(state, 'background', BACKGROUNDS, current, BACKGROUND_LABELS, BACKGROUND_ICONS),
+    dropdown: dropdown(state, 'background', BACKGROUNDS, current, BACKGROUND_LABELS, BACKGROUND_ICONS, (b) =>
+      b === 'passthrough' && !passthrough ? 'Passthrough needs an XR headset or a phone camera' : null,
+    ),
   };
 }
 
@@ -138,57 +184,51 @@ function newItem(state) {
   return { id: 'new', label: 'New', icon: 'new', dropdown: dropdown(state, 'new', GRID_IDS, state.gridMode, GRID_LABELS, GRID_ICONS) };
 }
 
-
+/** Options → Video: graphics / performance settings. */
+function videoItems(state) {
+  return [
+    viewItem(state),
+    background(state),
+    {
+      id: 'materials',
+      label: `Materials: ${state.proceduralMaterials ? 'Procedural' : 'Solid'}`,
+      icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
+      toggle: true,
+    },
+    {
+      id: 'rendering',
+      label: `Rendering: ${state.smoothRendering ? 'Smooth' : 'Blocky'}`,
+      icon: state.smoothRendering ? 'renderSmooth' : 'renderBlocky',
+      toggle: true,
+    },
+    { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff', toggle: true },
+    { id: 'refraction', label: `Refraction: ${state.refraction ? 'On' : 'Off'}`, icon: state.refraction ? 'refractionOn' : 'refractionOff', toggle: true },
+    { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff', toggle: true },
+  ];
+}
 
 /**
- * Returns { title, table?, items: [{ id, label, icon, sub?, disabled?, accent?, slider?, submenu?, toggle?, dropdown? }] } for the current
+ * Returns { title, items: [{ id, label, icon, sub?, disabled?, accent?, slider?, submenu?, toggle?, dropdown?, section? }] } for the current
  * menu screen. `submenu`: the button opens another menu screen (drawn with a right arrow at its far right).
  * `dropdown`: { open, options: [{ id, label, icon, selected }] }: the button opens or closes a list of
  * choices beneath it (drawn with a chevron at its far right).
+ * `section`: { open, items, table? }: like a dropdown, but what opens beneath the button is more menu
+ * entries (indented), and `table` the Controls table of that control schema (id).
  * `toggle`: the button switches a setting (On / Off, or the next choice); Right on the keyboard presses it too.
  * Every submenu lists Back first; renderers draw it at the very top of the panel
- * (above the Controls table / save-name row).
+ * (above the save-name row).
  */
 export function menuModel(state) {
   const { menu, saves, savesError, page } = state;
-  if (menu === 'controls') {
-    // the table of the control schema in use (Observer, or Creature: see controls.js)
-    const schema = CONTROL_SCHEMAS[state.controlSchema] ?? CONTROL_SCHEMAS.observer;
-    return { title: `Controls: ${schema.name}`, table: schema.id, items: [BACK] };
-  }
-  if (menu === 'video') {
-    // graphics / performance settings, a submenu of Options
-    return {
-      title: 'Video',
-      items: [
-        BACK,
-        viewItem(state),
-        background(state),
-        {
-          id: 'materials',
-          label: `Materials: ${state.proceduralMaterials ? 'Procedural' : 'Solid'}`,
-          icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
-          toggle: true,
-        },
-        {
-          id: 'rendering',
-          label: `Rendering: ${state.smoothRendering ? 'Smooth' : 'Blocky'}`,
-          icon: state.smoothRendering ? 'renderSmooth' : 'renderBlocky',
-          toggle: true,
-        },
-        { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff', toggle: true },
-        { id: 'refraction', label: `Refraction: ${state.refraction ? 'On' : 'Off'}`, icon: state.refraction ? 'refractionOn' : 'refractionOff', toggle: true },
-        { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff', toggle: true },
-      ],
-    };
-  }
   if (menu === 'options') {
+    // Controls and Video open in place, beneath their buttons (one at a time)
+    const schema = CONTROL_SCHEMAS[state.controlSchema] ?? CONTROL_SCHEMAS.observer;
     return {
       title: 'Options',
       items: [
         BACK,
-        { id: 'controls', label: 'Controls', icon: 'controls', submenu: true },
-        { id: 'video', label: 'Video', icon: 'video', submenu: true },
+        { id: 'controls', label: `Controls: ${schema.name}`, icon: 'controls', section: { open: state.section === 'controls', table: schema.id, items: [] } },
+        { id: 'video', label: 'Video', icon: 'video', section: { open: state.section === 'video', items: videoItems(state) } },
         { id: 'music', label: `Music: ${state.musicOn ? 'On' : 'Off'}`, icon: state.musicOn ? 'musicOn' : 'musicOff', toggle: true },
         { id: 'sound', label: `Sounds: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff', toggle: true },
         {
