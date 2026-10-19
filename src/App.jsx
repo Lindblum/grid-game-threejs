@@ -31,12 +31,14 @@ export default function App() {
 
 function Overlay({ engine }) {
   const s = useSyncExternalStore(engine.subscribe, engine.getState);
+  // the page's own HUD and menus: outside XR, and in front of the view in XR: Phone AR
+  const flat = !s.inXR || engine.screenUI(s);
   return (
     <>
-      {s.screen === 'playing' && !s.inXR && <Hud engine={engine} s={s} />}
+      {s.screen === 'playing' && flat && <Hud engine={engine} s={s} />}
       {s.screen === 'playing' && !s.inXR && !s.paused && s.gamepadAim && <div className="crosshair" />}
-      {engine.isMenuOpen(s) && !s.inXR && <MenuScreen engine={engine} s={s} />}
-      {s.inXR && !s.handheld && <div className="xr-note">In XR — take off the headset view to return here.</div>}
+      {engine.isMenuOpen(s) && flat && <MenuScreen engine={engine} s={s} />}
+      {s.inXR && !s.handheld && !flat && <div className="xr-note">In XR — take off the headset view to return here.</div>}
       {s.handheld && <CardboardOverlay split={s.phoneStereo} onTap={() => engine.gazeTap()} onExit={() => engine.exitXR()} />}
       <Toast toast={s.toast} />
     </>
@@ -266,7 +268,7 @@ function Hud({ engine, s }) {
                   title={`${t.label} (${(i + 1) % 10})`}
                   onClick={blurThen(() => engine.selectTool(i))}
                 >
-                  <img src={toolIconURL(t, 96, { procedural: s.proceduralMaterials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
+                  <img src={toolIconURL(t, 96, { materials: s.materials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
                 </button>
               ))}
               {/* the current tool's name, under its slot (scrolls with the icons) */}

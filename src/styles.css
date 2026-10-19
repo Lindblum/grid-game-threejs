@@ -13,6 +13,10 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 
 .app { position: fixed; inset: 0; }
 .stage { position: absolute; inset: 0; }
+/* XR: Phone AR's DOM overlay: the session draws the view behind the page, so the canvas
+   (its last frame) stays out of the way and only the UI shows */
+.app.xr-dom-overlay { background: transparent; }
+.app.xr-dom-overlay .stage { visibility: hidden; }
 .game-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
 .panel {
@@ -262,7 +266,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .toast.error { border-color: #ff6b6b; color: #ffd0d0; }
 
 /* the handheld XR view (phones without WebXR AR): tap anywhere to click, ✕ to leave */
-.cardboard { position: fixed; inset: 0; cursor: pointer; z-index: 5; }
+.cardboard { position: fixed; inset: 0; cursor: pointer; z-index: 4; } /* under the HUD (XR: Phone AR shows it) */
 .cardboard-divider {
   position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px;
   background: rgba(255, 255, 255, 0.25); pointer-events: none;

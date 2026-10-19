@@ -123,13 +123,22 @@ export const TRANSLUCENT_STYLES = TRANSLUCENT.map((t) => t.style);
 // each instead of evaluating Perlin (8 gradient hashes) or Voronoi (27 cells) per pixel.
 const NOISE_GLSL = `
 uniform highp sampler3D uNoiseTex;
+// Options → Materials: Simple leaves out the fine detail (FINE(x) is 0, so its texture fetches
+// compile away) and sums half the noise octaves
+#ifdef SIMPLE_MATERIALS
+#define FINE(x) 0.0
+#define FBM_OCTAVES 2
+#else
+#define FINE(x) (x)
+#define FBM_OCTAVES 4
+#endif
 // 3D Perlin noise, ~[-1, 1]; one lattice cell per unit of p
 float perlin3(vec3 p) {
   return texture(uNoiseTex, p * ${(1 / PERLIN_PERIOD).toFixed(6)}).r * 2.0 - 1.0;
 }
 float perlinFbm(vec3 p) {
   float s = 0.0, a = 0.5;
-  for (int k = 0; k < 4; k++) { s += a * perlin3(p); p = p * 2.03 + 17.1; a *= 0.5; }
+  for (int k = 0; k < FBM_OCTAVES; k++) { s += a * perlin3(p); p = p * 2.03 + 17.1; a *= 0.5; }
   return s;
 }
 // 3D Voronoi: x = distance to the border between the two nearest cells,
@@ -200,9 +209,12 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * Crystal) looks like one body.
  * `blockStyle.w` = bit mask of neighbours (bit i = FACE_DIRS[i]) holding an opaque block,
  * for ambient occlusion (`uniforms.uAO.value` 1 = on, 0 = off).
- * `setProcedural(false)` switches both materials to plain instance colours (plus Water /
- * Crystal translucency): the procedural code is compiled out, for slower GPUs.
+ * `setMaterials(level)` (Options → Materials, see MATERIALS) recompiles them: 'procedural' is
+ * all of the above; 'simple' keeps each style's pattern but leaves out its fine grain, half the
+ * noise octaves and the bump mapping; 'solid' is plain instance colours (plus Water / Crystal
+ * translucency), the procedural code compiled out. The lower levels are for slower GPUs.
  */
+export const MATERIALS = ['solid', 'simple', 'procedural'];
 /** Crystal refraction (see createBlockMaterials): how much light passes through, its index of refraction, and how thick a gem the light crosses (cm). */
 export const CRYSTAL_TRANSMISSION = 0.85;
 export const CRYSTAL_IOR = 1.6;
@@ -215,7 +227,7 @@ export function createBlockMaterials() {
     uAO: { value: 1 }, // Options → Ambient Occlusion: 1 = on, 0 = off
     uSmoothRendering: { value: 0 }, // Options → Rendering: Smooth = 1: blocks flagged blockMerged are hidden here and drawn as cluster bodies
   };
-  const options = { procedural: true };
+  const options = { level: 'procedural' }; // Options → Materials (MATERIALS)
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
   const translucent = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false });
   // clouds (Fog, Nimbus) get their own see-through pass, drawn before Water and Crystal and
@@ -247,10 +259,10 @@ export function createBlockMaterials() {
   // the Delete tool's see-through block: an instance index per material (each pass numbers its
   // own blocks; see World.setDithered)
   for (const m of all) m.userData.dither = { value: -1 };
-  const setProcedural = (on) => {
-    if (options.procedural === on) return;
-    options.procedural = on;
-    for (const m of all) m.needsUpdate = true; // recompile with / without SOLID_MATERIALS
+  const setMaterials = (level) => {
+    if (!MATERIALS.includes(level) || options.level === level) return;
+    options.level = level;
+    for (const m of all) m.needsUpdate = true; // recompile with SOLID_MATERIALS, SIMPLE_MATERIALS or neither
   };
   // Options → Refraction (either material mode): On, Crystal bends the scene behind it
   // (transmission, an extra render pass); Off, it is simply see-through, alpha-blended like
@@ -266,7 +278,7 @@ export function createBlockMaterials() {
       m.needsUpdate = true; // recompile with / without transmission
     }
   };
-  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, uniforms, setProcedural, setRefraction };
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, uniforms, setMaterials, setRefraction };
 }
 
 /**
@@ -291,7 +303,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
     if (cloudPass) shader.defines = { ...shader.defines, CLOUD_PASS: '' };
     if (crystalPass) shader.defines = { ...shader.defines, CRYSTAL_PASS: '' };
     if (mergedBody) shader.defines = { ...shader.defines, MERGED_BODY: '' };
-    if (!options.procedural) shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
+    if (options.level === 'solid') shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
+    if (options.level === 'simple') shader.defines = { ...shader.defines, SIMPLE_MATERIALS: '' };
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -470,11 +483,11 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           vec3 drift = vec3(uTime * 0.05, uTime * 0.02, -uTime * 0.035);
           vec3 q = vNoisePos + drift;
           float billow = perlinFbm(q * 1.1);
-          float puffs = abs(perlin3(q * 2.4)) * 0.5 + abs(perlin3(q * 5.1 + 3.7)) * 0.3 + abs(perlin3(q * 10.7 + 8.1)) * 0.2;
+          float puffs = abs(perlin3(q * 2.4)) * 0.5 + abs(perlin3(q * 5.1 + 3.7)) * 0.3 + FINE(abs(perlin3(q * 10.7 + 8.1)) * 0.2);
           // puffy shape: the normal (out from the centre, a soft ball) is bent by 3D noise at two
           // sizes, so light breaks up into rounded puffs; Nimbus is lumpier still
           vec3 lump = vec3(perlin3(q * 2.1 + 1.3), perlin3(q * 2.1 + 6.1), perlin3(q * 2.1 + 12.9));
-          vec3 lump2 = vec3(perlin3(q * 4.6 + 2.2), perlin3(q * 4.6 + 8.4), perlin3(q * 4.6 + 15.1));
+          vec3 lump2 = vec3(FINE(perlin3(q * 4.6 + 2.2)), FINE(perlin3(q * 4.6 + 8.4)), FINE(perlin3(q * 4.6 + 15.1)));
           float isNimbus = vStyle > ${(BLOCK_STYLE.nimbus - 0.5).toFixed(1)} ? 1.0 : 0.0;
           cloudNormal = normalize(BODY_DIR + mix(0.6, 0.9, isNimbus) * lump + mix(0.3, 0.4, isNimbus) * lump2
                                   + 0.25 * isNimbus * normalize(vLocalNormal));
@@ -515,8 +528,9 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           // of thin grooves in their own directions per block (a plane through the gem meets a
           // face in a straight line), broken into short random runs by noise; each scratch is
           // slightly frosted. Grooves thinner than a pixel fade out instead of shimmering.
-          float grain = perlin3(vNoisePos * 38.0) * 0.6 + perlin3(vNoisePos * 83.0 + 5.1) * 0.4;
+          float grain = FINE(perlin3(vNoisePos * 38.0) * 0.6 + perlin3(vNoisePos * 83.0 + 5.1) * 0.4);
           float scratch = 0.0;
+          #ifndef SIMPLE_MATERIALS
           for (int k = 0; k < 3; k++) {
             float fk = float(k);
             vec3 dir = normalize(cellHash(vec3(vSeed * 3.7 + fk * 11.3, fk * 5.9, vSeed)) - 0.5 + 1e-3);
@@ -527,6 +541,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
             float run = smoothstep(0.35, 0.6, perlin3(vNoisePos * vec3(1.3, 1.1, 1.2) + fk * 7.7)); // short, sparse runs
             scratch = max(scratch, line * run);
           }
+          #endif
           bumpH = grain * 0.35 - scratch * 0.8;
           bumpStrength = 0.02;
           col += vec3(0.07) * scratch; // frosted scratches catch a little light
@@ -553,9 +568,9 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float grain = perlin3(p * 14.0) * 0.6 + perlin3(p * 31.0) * 0.4; // fine soil grain
           // grain, as in Wood and Moss: pores (dark flecks from thresholded fine noise),
           // speckle, and a noise roughness
-          float pore = smoothstep(0.3, 0.75, perlin3(p * 70.0 + 5.3));
-          float speck = perlin3(p * 55.0 + 1.9);
-          float rough = perlinFbm(p * 6.0 + 7.2);
+          float pore = FINE(smoothstep(0.3, 0.75, perlin3(p * 70.0 + 5.3)));
+          float speck = FINE(perlin3(p * 55.0 + 1.9));
+          float rough = FINE(perlinFbm(p * 6.0 + 7.2));
           // brown over dark brown: blend the instance colour with a darker, warmer shade
           float t = smoothstep(-0.35, 0.35, clumps * 1.2 + grain * 0.35);
           vec3 base = diffuseColor.rgb;
@@ -577,17 +592,17 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           vec3 warp = vec3(perlin3(p * 2.3), perlin3(p * 2.3 + 5.2), perlin3(p * 2.3 + 9.7));
           // second, higher-frequency warp octave adds small zig-zags along each fracture; it
           // fades out once its ~1 mm wiggles get close to pixel size, where they'd only alias
-          vec3 jag = vec3(perlin3(p * 9.0 + 3.1), perlin3(p * 9.0 + 7.4), perlin3(p * 9.0 + 12.6));
-          float jagAmt = 0.12 * (1.0 - smoothstep(0.02, 0.06, px));
+          vec3 jag = vec3(FINE(perlin3(p * 9.0 + 3.1)), FINE(perlin3(p * 9.0 + 7.4)), FINE(perlin3(p * 9.0 + 12.6)));
+          float jagAmt = FINE(0.12 * (1.0 - smoothstep(0.02, 0.06, px)));
           vec2 vor = voronoi3(p * 1.7 + warp * 0.5 + jag * jagAmt);
           float cellShade = vor.y;                           // per-slab brightness
           float mottle = perlinFbm(p * 4.0);                 // mineral mottling inside slabs
-          float speck = perlin3(p * 28.0);                   // fine grain
+          float speck = FINE(perlin3(p * 28.0));             // fine grain
           // grain, as in Wood and Moss: pores (dark flecks from thresholded fine noise), a finer
           // speckle, and a noise roughness
-          float pore = smoothstep(0.35, 0.8, perlin3(p * 70.0 + 3.7));
-          float fleck = perlin3(p * 55.0 + 6.6);
-          float rough = perlinFbm(p * 6.0 + 2.2);
+          float pore = FINE(smoothstep(0.35, 0.8, perlin3(p * 70.0 + 3.7)));
+          float fleck = FINE(perlin3(p * 55.0 + 6.6));
+          float rough = FINE(perlinFbm(p * 6.0 + 2.2));
           vec3 base = diffuseColor.rgb;
           vec3 col = base * (0.78 + 0.34 * cellShade);
           col *= vec3(1.0 + 0.04 * (cellShade - 0.5), 1.0, 1.0 - 0.04 * (cellShade - 0.5)); // slight warm/cool shift
@@ -615,12 +630,12 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float dome = smoothstep(0.0, 0.35, vor.x);         // rounded top, low at the cell borders
           // Perlin coverage: where moss grows vs. bare soil
           float cover = smoothstep(-0.2, 0.15, perlinFbm(p * 1.6) + 0.12);
-          float fuzz = perlin3(p * 24.0) * 0.4 + perlin3(p * 48.0) * 0.35 + perlin3(p * 96.0) * 0.25; // fibrous strands
+          float fuzz = FINE(perlin3(p * 24.0) * 0.4 + perlin3(p * 48.0) * 0.35 + perlin3(p * 96.0) * 0.25); // fibrous strands
           // grain, as in Wood: pores (dark flecks from thresholded fine noise), speckle, and a
           // noise roughness that breaks up the cushion tops
-          float pore = smoothstep(0.3, 0.75, perlin3(p * 70.0 + 2.9));
-          float speck = perlin3(p * 55.0 + 8.1);
-          float rough = perlinFbm(p * 6.0 + 4.4);
+          float pore = FINE(smoothstep(0.3, 0.75, perlin3(p * 70.0 + 2.9)));
+          float speck = FINE(perlin3(p * 55.0 + 8.1));
+          float rough = FINE(perlinFbm(p * 6.0 + 4.4));
           // green over dark brown: soil shows in bare patches, and only faintly in the thin
           // gaps between cushions
           float gap = 1.0 - smoothstep(0.0, 0.04, vor.x + fuzz * 0.02);
@@ -665,7 +680,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float seed = 1.0 - smoothstep(seedR - afw, seedR + afw, r);
           float pit = (1.0 - smoothstep(seedR, 0.32, r)) * (1.0 - seed);
           vec3 base = diffuseColor.rgb;
-          float mottle = perlin3(vNoisePos * 1.6 + 1.7) * 0.6 + perlin3(vNoisePos * 4.3 + 4.2) * 0.4;
+          float mottle = perlin3(vNoisePos * 1.6 + 1.7) * 0.6 + FINE(perlin3(vNoisePos * 4.3 + 4.2) * 0.4);
           vec3 red = base * (0.92 + 0.28 * mottle);
           red *= mix(1.0, 0.55, pit);                                   // shadowed pit around each seed
           vec3 seedCol = mix(vec3(0.22, 0.46, 0.07), vec3(0.5, 0.66, 0.14), sh.z); // deep to yellowish green
@@ -712,15 +727,15 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float late = smoothstep(0.55, 0.9, ring) * (1.0 - smoothstep(0.9, 1.0, ring));
           late = mix(late, 0.2, clamp(rfw * 2.0 - 0.5, 0.0, 1.0));
           // grain: long fibres at two scales, fine pores (dark flecks along the grain), speckle
-          float fibre = perlin3(q * vec3(16.0, 1.0, 16.0)) * 0.5 + perlin3(q * vec3(40.0, 2.5, 40.0)) * 0.5;
-          float pore = smoothstep(0.35, 0.75, perlin3(q * vec3(70.0, 5.0, 70.0)));
-          float speck = perlin3(q * 55.0);
+          float fibre = perlin3(q * vec3(16.0, 1.0, 16.0)) * 0.5 + FINE(perlin3(q * vec3(40.0, 2.5, 40.0)) * 0.5);
+          float pore = FINE(smoothstep(0.35, 0.75, perlin3(q * vec3(70.0, 5.0, 70.0))));
+          float speck = FINE(perlin3(q * 55.0));
           // bark, on the sides (fades out on faces that point along the trunk)
           float side = smoothstep(0.35, 0.8, 1.0 - abs(normalize(vLocalNormal).y));
           vec3 bq = q * vec3(2.4, 0.7, 2.4) + vec3(perlin3(q * 1.7), 0.0, perlin3(q * 1.7 + 3.3)) * 0.35;
           vec2 plates = voronoi3(bq);                             // x: distance to a crack, y: plate id
           float crack = 1.0 - smoothstep(0.01, 0.06, plates.x);   // 1 in a crack (thin)
-          float rough = perlinFbm(q * vec3(6.0, 2.0, 6.0));
+          float rough = FINE(perlinFbm(q * vec3(6.0, 2.0, 6.0)));
           vec3 base = diffuseColor.rgb;
           vec3 col = mix(base * 1.08, base * vec3(0.5, 0.4, 0.32), late * 0.85);
           col *= 1.0 + 0.32 * fibre;
@@ -772,8 +787,12 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float e = 0.03;
           vec2 s0 = voronoi3(sp);
           float h0 = smoothstep(0.0, 0.32, s0.x);
+          #ifdef SIMPLE_MATERIALS
+          float h1 = h0, h2 = h0; // Simple: the scales aren't domed (no extra lookups for their slope)
+          #else
           float h1 = smoothstep(0.0, 0.32, voronoi3(sp + t1 * e).x);
           float h2 = smoothstep(0.0, 0.32, voronoi3(sp + t2 * e).x);
+          #endif
           cloudNormal = normalize(n0 - 0.55 * ((h1 - h0) * t1 + (h2 - h0) * t2) / e * 0.1);
           float gap = 1.0 - smoothstep(0.0, 0.07, s0.x);   // 1 in the seams between scales
           vec3 base = diffuseColor.rgb;
@@ -807,6 +826,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         // bumps and the style's own normal (clouds, creatures) still go on top
         if (vSmooth > 0.5) normal = normalize(vLocalToView * normalize(vLocalPos));
         #ifndef SOLID_MATERIALS
+        #ifndef SIMPLE_MATERIALS
         {
           // bump the normal by the surface height; scale converts the cm-space height
           // gradient to view units so the bumps look the same at any world scale.
@@ -815,6 +835,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
                          / max(length(dFdx(vNoisePos)) + length(dFdy(vNoisePos)), 1e-6);
           normal = heightBump(-vViewPosition, normal, bumpH, bumpStrength * cmToView);
         }
+        #endif
         // Crystal facets: tilt the normal directly (block-local tilt -> view space)
         if (dot(facetTilt, facetTilt) > 0.0) normal = normalize(normal + vLocalToView * facetTilt);
         // Fog / Nimbus: replace the flat face normal with the fluffy one (block-local -> view)
@@ -876,5 +897,5 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       );
   };
   mat.customProgramCacheKey = () =>
-    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}-${options.procedural ? 'procedural' : 'solid'}`;
+    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}-${options.level}`;
 }

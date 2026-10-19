@@ -345,6 +345,12 @@ const DRAW = {
     circle(ctx, P, 0.66, 0.62, 0.035, s, { fill: true });
     circle(ctx, P, 0.3, 0.56, 0.035, s, { fill: true });
   },
+  matSimple(ctx, P) {
+    // hexagon block face with a crack, no speckles: a pattern without the fine detail
+    poly(ctx, P, HEX);
+    line(ctx, P, [[0.34, 0.3], [0.46, 0.46], [0.42, 0.58], [0.56, 0.72]]);
+    line(ctx, P, [[0.46, 0.46], [0.66, 0.42]]);
+  },
   matSolid(ctx, P) {
     // hexagon block face filled flat
     ctx.fillStyle = INK;

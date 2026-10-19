@@ -1,5 +1,6 @@
 import { CONTROL_SCHEMAS } from './controls.js';
 import { GRIDS, GRID_IDS } from './grids.js';
+import { MATERIALS } from './geometry.js';
 // Start/pause-menu model shared by the DOM menu (desktop) and the canvas panel (XR).
 
 export const PAGE_SIZE = 5;
@@ -184,17 +185,26 @@ function newItem(state) {
   return { id: 'new', label: 'New', icon: 'new', dropdown: dropdown(state, 'new', GRID_IDS, state.gridMode, GRID_LABELS, GRID_ICONS) };
 }
 
+const MATERIAL_LABELS = { solid: 'Solid', simple: 'Simple', procedural: 'Procedural' };
+const MATERIAL_ICONS = { solid: 'matSolid', simple: 'matSimple', procedural: 'matProcedural' };
+
+/** Options → Video → Materials: how detailed the block surfaces are, from cheapest to richest (geometry.js MATERIALS). */
+function materialsItem(state) {
+  const current = MATERIALS.includes(state.materials) ? state.materials : 'procedural';
+  return {
+    id: 'materials',
+    label: `Materials: ${MATERIAL_LABELS[current]}`,
+    icon: MATERIAL_ICONS[current],
+    dropdown: dropdown(state, 'materials', MATERIALS, current, MATERIAL_LABELS, MATERIAL_ICONS),
+  };
+}
+
 /** Options → Video: graphics / performance settings. */
 function videoItems(state) {
   return [
     viewItem(state),
     background(state),
-    {
-      id: 'materials',
-      label: `Materials: ${state.proceduralMaterials ? 'Procedural' : 'Solid'}`,
-      icon: state.proceduralMaterials ? 'matProcedural' : 'matSolid',
-      toggle: true,
-    },
+    materialsItem(state),
     {
       id: 'rendering',
       label: `Rendering: ${state.smoothRendering ? 'Smooth' : 'Blocky'}`,

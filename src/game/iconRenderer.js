@@ -47,10 +47,10 @@ class IconRenderer {
     this.world = new World(root);
   }
 
-  /** Renders block type `type` in `style` ({ procedural, smooth }); returns a canvas copy. */
-  render(type, { procedural = false, smooth = false } = {}) {
+  /** Renders block type `type` in `style` ({ materials, smooth }); returns a canvas copy. */
+  render(type, { materials = 'solid', smooth = false } = {}) {
     const w = this.world;
-    w.materials.setProcedural(procedural);
+    w.materials.setMaterials(materials);
     w.setSmoothRendering(smooth);
     w.add(0, 0, 0, type);
     const b = w.get(0, 0, 0);
@@ -86,7 +86,7 @@ const cache = new Map();
  */
 export function renderedBlockIcon(type, style = {}) {
   if (failed || typeof document === 'undefined') return null;
-  const key = `${type}:${style.procedural ? 'p' : 's'}${style.smooth ? 'r' : 'b'}:${gridMode()}`; // (its World follows the grid mode)
+  const key = `${type}:${style.materials ?? 'solid'}:${style.smooth ? 'r' : 'b'}:${gridMode()}`; // (its World follows the grid mode)
   if (cache.has(key)) return cache.get(key);
   try {
     instance ??= new IconRenderer();

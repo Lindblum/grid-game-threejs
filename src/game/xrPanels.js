@@ -116,9 +116,9 @@ export class RightHudPanel extends CanvasPanel {
     this._last = '';
   }
 
-  /** `style`: the icons' look ({ procedural, smooth }, see drawToolIcon). `hover`: the slot under the gaze, if any. */
+  /** `style`: the icons' look ({ materials, smooth }, see drawToolIcon). `hover`: the slot under the gaze, if any. */
   draw(toolIndex, message, label = TOOLS[toolIndex].label, style = {}, hover = null) {
-    const sig = `${toolIndex}|${message || ''}|${label}|${!!style.procedural}|${!!style.smooth}|${hover}|${gridMode()}`; // (icons show the grid's block shape)
+    const sig = `${toolIndex}|${message || ''}|${label}|${style.materials}|${!!style.smooth}|${hover}|${gridMode()}`; // (icons show the grid's block shape)
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;

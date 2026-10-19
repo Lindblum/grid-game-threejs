@@ -11,7 +11,7 @@ import { debugSections } from './debugSections.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
 import { GRID, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
-import { EDGE_SHADE, EDGE_WIDTH_CM, cellFaces } from './geometry.js';
+import { EDGE_SHADE, EDGE_WIDTH_CM, MATERIALS, cellFaces } from './geometry.js';
 import {
   playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
@@ -126,7 +126,7 @@ export class Engine {
       musicOn: true, // Options → Music: plays while the game is running (quieter in the pause menu)
       gameTime: -COUNTDOWN_SECONDS, // whole seconds (turns) since New / Load; negative = countdown
       background: 'passthrough', // Options → Background: 'solid', 'skybox' or 'passthrough' (XR passthrough; solid elsewhere)
-      proceduralMaterials: true, // Options → Materials: procedural shaders (true) or solid colours
+      materials: 'procedural', // Options → Materials: 'solid', 'simple' or 'procedural' shaders (geometry.js MATERIALS)
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
       speed: SPEED.default, // Options → Speed: 0x–4x (0x: stopped), where 1x is 60 turns a minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
@@ -146,6 +146,7 @@ export class Engine {
       handheld: false, // the motion-sensor XR view is showing (phones without WebXR AR)
       xrSupport: null, // truthy when this browser can start XR at all
       xrAR: false, // browser supports immersive-ar (passthrough), e.g. Quest Browser
+      domOverlay: false, // the XR session shows the page's UI over the view (XR: Phone AR, see screenUI)
       xrVR: false, // browser supports immersive-vr, e.g. PC Chrome with a headset over Link
       blockCount: 0,
       blockCounts: {}, // block type -> how many are in the world (tool labels: "Stone (x100)")
@@ -208,7 +209,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'proceduralMaterials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction'];
+  static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction'];
 
   /** Options → Debug, or ` / ~ while playing: the Debug panel (XR: the debug tablet) on / off; remembered. */
   toggleDebug() {
@@ -242,9 +243,9 @@ export class Engine {
       this.setState({ background: BACKGROUNDS.includes(saved.background) ? saved.background : saved.passthrough ? 'passthrough' : 'solid' });
       this._applyBackground();
     }
-    if (bool('proceduralMaterials')) {
-      this.world.materials.setProcedural(saved.proceduralMaterials);
-      this.setState({ proceduralMaterials: saved.proceduralMaterials });
+    if (MATERIALS.includes(saved.materials) || bool('proceduralMaterials')) {
+      // (older settings stored procedural on / off)
+      this._setMaterials(MATERIALS.includes(saved.materials) ? saved.materials : saved.proceduralMaterials ? 'procedural' : 'solid');
     }
     if (bool('ambientOcclusion')) {
       this.world.materials.uniforms.uAO.value = saved.ambientOcclusion ? 1 : 0;
@@ -442,6 +443,12 @@ export class Engine {
     this._gazeDockAnchor = null; // { pos, yaw }: where the dock is heading (it eases there)
     // View Mode → XR: Phone Viewer (two eyes on a phone AR session) and the handheld view
     this.phoneStereo = new PhoneStereo(r, this.scene);
+    // XR: Phone AR's DOM overlay: a tap on the menus or HUD (anything but the empty overlay
+    // itself) is theirs, not also a tap into the scene (which uses the tool)
+    this._onBeforeXRSelect = (e) => {
+      if (e.target !== this._uiRoot) e.preventDefault();
+    };
+    this._uiRoot?.addEventListener('beforexrselect', this._onBeforeXRSelect);
     this.cardboard = new CardboardRig(r, this.camera);
     this.cameraFeed = new CameraFeed(); // the handheld view's passthrough: the rear camera
 
@@ -1436,12 +1443,13 @@ export class Engine {
       // a choice from a dropdown's list, which then closes
       this.setState({ dropdown: null });
       if (pick.id === 'background') return this._setBackground(pick.choice);
+      if (pick.id === 'materials') return this._setMaterials(pick.choice);
       if (pick.id === 'view') return this.selectView(pick.choice);
       if (pick.id === 'new') return this.newScene(undefined, null, pick.choice); // New: a world in the grid mode picked
       return;
     }
-    // New, View Mode and Background open (or close) their dropdowns; any other button closes one
-    if (id === 'new' || id === 'view' || id === 'background') return this.setState({ dropdown: s.dropdown === id ? null : id });
+    // New, View Mode, Background and Materials open (or close) their dropdowns; any other button closes one
+    if (id === 'new' || id === 'view' || id === 'background' || id === 'materials') return this.setState({ dropdown: s.dropdown === id ? null : id });
     if (s.dropdown) this.setState({ dropdown: null });
     if (id === 'resume') return this.resume();
     if (id === 'load' || id === 'save') {
@@ -1453,11 +1461,6 @@ export class Engine {
     if (id === 'controls' || id === 'video') return this.setState({ section: s.section === id ? null : id });
     if (id === 'sound') return this.setSound(!s.soundOn);
     if (id === 'music') return this.setState({ musicOn: !s.musicOn });
-    if (id === 'materials') {
-      const on = !s.proceduralMaterials;
-      this.world.materials.setProcedural(on);
-      return this.setState({ proceduralMaterials: on });
-    }
     if (id === 'ao') {
       const on = !s.ambientOcclusion;
       this.world.materials.uniforms.uAO.value = on ? 1 : 0;
@@ -1502,6 +1505,13 @@ export class Engine {
     playTick();
   }
 
+  /** Options → Video → Materials: 'solid', 'simple' or 'procedural' (recompiles the block shaders). */
+  _setMaterials(level) {
+    if (!MATERIALS.includes(level)) return;
+    this.world.materials.setMaterials(level);
+    this.setState({ materials: level });
+  }
+
   /** Options → Video → Background: 'solid', 'skybox' or 'passthrough'. */
   _setBackground(next) {
     if (!BACKGROUNDS.includes(next)) return;
@@ -1522,6 +1532,27 @@ export class Engine {
   /** Hands-free XR: no controllers (a phone, a headset used with its hands), so the gaze points and clicks. */
   _gazeMode() {
     return this._immersive && !this.hands.left && !this.hands.right;
+  }
+
+  /**
+   * XR: Phone AR draws the page's own menus and HUD in front of the view, as outside XR, instead
+   * of the in-world panels: the handheld view is the page anyway, and a WebXR session shows the
+   * page over it through its DOM overlay (when the browser grants one). Phone Viewer's two eyes
+   * keep the in-world panels.
+   */
+  screenUI(s = this.state) {
+    return s.inXR && s.phone && !s.phoneStereo && (s.handheld || s.domOverlay);
+  }
+
+  /** The element holding the page's UI (and the canvas): the WebXR DOM overlay's root. */
+  get _uiRoot() {
+    return this.container.parentElement;
+  }
+
+  /** A WebXR DOM overlay on or off. While on, the canvas is hidden: the session draws the view behind the overlay. */
+  _setDomOverlay(on) {
+    this._uiRoot?.classList.toggle('xr-dom-overlay', on);
+    if (this.state.domOverlay !== on) this.setState({ domOverlay: on });
   }
 
   /**
@@ -1563,13 +1594,16 @@ export class Engine {
     try {
       const session = await navigator.xr.requestSession(
         mode,
-        phone ? PHONE_AR_SESSION_INIT : { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking'] },
+        phone
+          ? { ...PHONE_AR_SESSION_INIT, domOverlay: { root: this._uiRoot } }
+          : { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking'] },
       );
       this._savedView = { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() };
       this.renderer.xr.setReferenceSpaceType('local-floor');
       await this.renderer.xr.setSession(session);
       session.addEventListener('end', () => this._leaveImmersive());
       this._xrMode = mode;
+      if (session.domOverlayState) this._setDomOverlay(true);
       if (phone && this.state.phoneStereo) this.phoneStereo.enable();
       this._beginImmersive();
       this._trapBackButton();
@@ -1618,6 +1652,7 @@ export class Engine {
       if (stereo) this.phoneStereo.enable();
       else this.phoneStereo.disable();
     }
+    if (stereo && this.isMenuOpen()) this._placeMenuPanel(); // the page's menu gives way to the in-world one
     this._applyBackground();
   }
 
@@ -1666,6 +1701,7 @@ export class Engine {
 
   _leaveImmersive() {
     this._releaseBackButton();
+    this._setDomOverlay(false);
     this.phoneStereo.disable();
     this.debugTablet.mesh.visible = false;
     this._tabletGrab = null;
@@ -2119,6 +2155,7 @@ export class Engine {
     this.rayDot.visible = false;
 
     const menuOpen = this.isMenuOpen(s);
+    const panelOpen = xr && menuOpen && !this.screenUI(s); // the in-world pause panel (not with the page's own menus)
     this._menuHover = null;
     this._menuPanelHover = false; // ray is on the pause panel (button or not)
     this._tabletHover = false;
@@ -2134,7 +2171,7 @@ export class Engine {
       const targets = [];
       if (this.leftHud.mesh.visible && this.leftHud.mesh.parent) targets.push(this.leftHud.mesh);
       if (gaze && this.rightHud.mesh.visible && this.rightHud.mesh.parent) targets.push(this.rightHud.mesh);
-      if (menuOpen) targets.push(this.menuPanel.mesh);
+      if (panelOpen) targets.push(this.menuPanel.mesh);
       if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
       for (const hit of this.raycaster.intersectObjects(targets, false)) {
         if (hit.object === this.debugTablet.mesh) {
@@ -2188,7 +2225,7 @@ export class Engine {
         this.rayDot.visible = true;
       }
     }
-    if (xr && menuOpen) this.menuPanel.draw(menuModel(s), this._menuHover);
+    if (panelOpen) this.menuPanel.draw(menuModel(s), this._menuHover);
 
     if (s.screen === 'playing' && !s.paused && !uiHit && this.toolsReady(s) && this.toolsAvailable(s)) {
       let ok = false;
@@ -2554,7 +2591,8 @@ export class Engine {
       this._pollGamepads();
       this._updateGrab();
       this._updateGazeDock(dt);
-      const dbg = this.state.debugMode;
+      const flat = this.screenUI(); // the page's UI is in front instead (XR: Phone AR)
+      const dbg = this.state.debugMode && !flat;
       this.debugTablet.mesh.visible = dbg;
       if (dbg) {
         if (this._needsTabletPlacement !== false && this._xrFrames > 2) this._placeDebugTablet();
@@ -2578,11 +2616,11 @@ export class Engine {
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
       const playing = this.state.screen === 'playing';
-      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel(), { procedural: this.state.proceduralMaterials, smooth: this.state.smoothRendering }, this._toolHover);
+      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel(), { materials: this.state.materials, smooth: this.state.smoothRendering }, this._toolHover);
       this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime), Engine.formatDiameter(this.state.blockCount));
-      this.rightHud.mesh.visible = playing;
-      this.leftHud.mesh.visible = playing;
-      const open = this.isMenuOpen();
+      this.rightHud.mesh.visible = playing && !flat;
+      this.leftHud.mesh.visible = playing && !flat;
+      const open = this.isMenuOpen() && !flat;
       // keep the menu docked to the left hand (re-dock if the controller connects / disconnects)
       if (open && (this.leftHud.mesh.parent ? this.menuPanel.mesh.parent !== this.leftHud.mesh : this.menuPanel.mesh.parent !== this.scene)) {
         this._placeMenuPanel();
@@ -2625,6 +2663,7 @@ export class Engine {
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('dragover', this._onDragOver);
     window.removeEventListener('drop', this._onDrop);
+    this._uiRoot?.removeEventListener('beforexrselect', this._onBeforeXRSelect);
     this.controls.dispose();
     this._interlaced?.dispose();
     this.renderer.dispose();

@@ -168,8 +168,8 @@ export const SELECT_GREEN = '#3ddc5a';
 
 /**
  * Draws tool `tool`'s icon. Blocks and creatures are rendered by the engine (iconRenderer.js)
- * the way they look in game, in `style` ({ procedural, smooth }: Options → Materials:
- * Procedural, Options → Rendering: Smooth); the drawn icons below are the fallback when that
+ * the way they look in game, in `style` ({ materials, smooth }: Options → Materials level,
+ * Options → Rendering: Smooth); the drawn icons below are the fallback when that
  * isn't possible, and Void (never drawn in game) keeps its wireframe.
  */
 export function drawToolIcon(ctx, tool, cx, cy, size, style = {}) {
@@ -192,7 +192,7 @@ export function drawToolIcon(ctx, tool, cx, cy, size, style = {}) {
 const cache = new Map();
 /** PNG data URL of a tool icon (for the DOM HUD), in `style` (see drawToolIcon). */
 export function toolIconURL(tool, size = 96, style = {}) {
-  const k = `${tool.id}:${size}:${style.procedural ? 'p' : 's'}${style.smooth ? 'r' : 'b'}:${gridMode()}`;
+  const k = `${tool.id}:${size}:${style.materials ?? 'solid'}:${style.smooth ? 'r' : 'b'}:${gridMode()}`;
   if (!cache.has(k)) {
     const cv = document.createElement('canvas');
     cv.width = cv.height = size;

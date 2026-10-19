@@ -14,10 +14,14 @@ import { CardboardLens } from './cardboardLens.js';
 // upright stays portrait after the phone goes sideways into a viewer. The eyes are then laid out
 // along the screen's long side, rolled 90 degrees so they are upright for the person holding it.
 
-/** The phone AR session's options: raw camera access too, for passthrough in stereo. */
+/**
+ * The phone AR session's options: raw camera access too, for passthrough in stereo, and a DOM
+ * overlay (the page's own menus and HUD drawn over the view in XR: Phone AR; pass its root as
+ * `domOverlay: { root }`).
+ */
 export const PHONE_AR_SESSION_INIT = {
   requiredFeatures: ['local-floor'],
-  optionalFeatures: ['camera-access', 'anchors', 'hit-test', 'hand-tracking'],
+  optionalFeatures: ['camera-access', 'anchors', 'hit-test', 'hand-tracking', 'dom-overlay'],
 };
 
 /**
