@@ -139,6 +139,9 @@ export const GRIDS = {
     scale: 1,
     vertices: signedPerms([1, 1, 1]),
     offsets: AXIS_DIRS,
+    // creatures also step diagonally across a cube's edge (up a step, round a corner): a cube
+    // has no face there, so with its 6 faces alone they could only walk along flat ground
+    edgeSteps: PLANE_DIRS.map((d) => d.map((v) => 2 * v)),
     cellVolume: 8,
     isValid: (x, y, z) => even(x) && even(y) && even(z),
     nearest: (x, y, z) => [x, y, z].map((v) => 2 * Math.round(v / 2)),

@@ -16,6 +16,12 @@ const SMOOTH_PASSES = 4;
 const SMOOTH_LAMBDA = 0.5;
 const SMOOTH_MU = -0.53;
 
+/** A chain creature's tube (ClusterBodies._createTube): radius (cm; a cell's inradius is 1 cm), sides, rings per segment (even) and per end cap. */
+const TUBE_RADIUS_CM = 0.95;
+const TUBE_SIDES = 16;
+const TUBE_RINGS_PER_SEGMENT = 6;
+const TUBE_CAP_RINGS = 4;
+
 const _c = new THREE.Color();
 const _p = new THREE.Vector3();
 
@@ -36,17 +42,13 @@ const MAX_OWNERS = 8;
  * over the welded vertices (`tris`, for normals), and the render vertices: every outer face
  * fanned from its centre (3 per edge), each knowing its block (`rBlock`), face (`rFace`),
  * block-local position (`rLocal`) and welded vertex (`rWeld`). `flat` (shadeFlat types):
- * no smoothing, the faces stay flat. `linked(i, j)`: whether touching blocks i and j (indices
- * into `blocks`) are joined (default: every touching pair). Unjoined ones (a chain creature
- * touching itself away from its next / previous segment) each keep their face between them
- * and share no corners, so the smoothing rounds them apart instead of fusing them.
+ * no smoothing, the faces stay flat.
  */
-export function buildBody(blocks, flat = false, linked = null) {
+export function buildBody(blocks, flat = false) {
   // the cell shape in lattice units (corners weld on lattice coordinates), drawn in cm
   const FACES = GRID.faces, scale = GRID.scale;
   const at = new Map();
   blocks.forEach((block, i) => at.set(cellKey(block.x, block.y, block.z), i));
-  const joined = (i, j) => i === j || !linked || linked(i, j);
   // which faces are on the outside, and how big everything will be
   const outer = new Uint8Array(blocks.length * FACES.length);
   let faceCount = 0, cornerCount = 0;
@@ -54,7 +56,7 @@ export function buildBody(blocks, flat = false, linked = null) {
     for (let fi = 0; fi < FACES.length; fi++) {
       const [dx, dy, dz] = FACE_DIRS[fi];
       const j = at.get(cellKey(block.x + dx, block.y + dy, block.z + dz));
-      if (j !== undefined && joined(i, j)) continue; // inside the body
+      if (j !== undefined) continue; // inside the body
       outer[i * FACES.length + fi] = 1;
       faceCount++;
       cornerCount += FACES[fi].verts.length;
@@ -68,41 +70,11 @@ export function buildBody(blocks, flat = false, linked = null) {
   const tris = new Uint32Array(cornerCount * 3);
   const rBlock = new Uint32Array(renderCount), rWeld = new Uint32Array(renderCount);
   const rFace = new Float32Array(renderCount), rLocal = new Float32Array(renderCount * 3);
-  // corner key -> welded vertex; with `linked`, a corner shared by unjoined blocks is one
-  // vertex per group of joined ones: key -> [[block index, vertex], …]
-  const weld = new Map();
-  const weldFor = (key, i, x, y, z) => {
-    if (!linked) {
-      let w = weld.get(key);
-      if (w === undefined) weld.set(key, (w = newVertex(x, y, z)));
-      return w;
-    }
-    let users = weld.get(key);
-    if (!users) weld.set(key, (users = []));
-    let w = -1;
-    for (const [j, v] of users) {
-      if (!joined(i, j)) continue;
-      if (w < 0) w = v;
-      else if (v !== w) {
-        // block i joins two groups that were apart (e.g. its previous and next segments):
-        // one vertex for all of them
-        for (const u of users) if (u[1] === v) u[1] = w;
-        mergeInto(v, w);
-      }
-    }
-    if (w < 0) w = newVertex(x, y, z);
-    users.push([i, w]);
+  const weld = new Map(); // corner key -> welded vertex
+  const weldFor = (key, x, y, z) => {
+    let w = weld.get(key);
+    if (w === undefined) weld.set(key, (w = newVertex(x, y, z)));
     return w;
-  };
-  // vertex merges (rare): `alias[v]` is the vertex v was merged into; resolved at the end
-  const alias = new Map();
-  const mergeInto = (v, w) => {
-    alias.set(v, w);
-    for (let k = 0, o = v * MAX_OWNERS; k < ownerCount[v]; k++) addOwner(w, ownerIdx[o + k]);
-  };
-  const resolve = (v) => {
-    while (alias.has(v)) v = alias.get(v);
-    return v;
   };
   let n = 0, nt = 0, nr = 0;
   const addOwner = (w, i) => {
@@ -124,7 +96,7 @@ export function buildBody(blocks, flat = false, linked = null) {
       for (let k = 0; k < len; k++) {
         const v = verts[k];
         const x = block.x + v.x, y = block.y + v.y, z = block.z + v.z;
-        const w = weldFor(weldKey(x, y, z), i, x, y, z);
+        const w = weldFor(weldKey(x, y, z), x, y, z);
         addOwner(w, i);
         ring[k] = w;
       }
@@ -149,10 +121,6 @@ export function buildBody(blocks, flat = false, linked = null) {
       }
     }
   });
-  if (alias.size) {
-    for (let k = 0; k < nt; k++) tris[k] = resolve(tris[k]);
-    for (let k = 0; k < nr; k++) rWeld[k] = resolve(rWeld[k]);
-  }
   // neighbours along the triangle edges, as compressed sparse rows: vertex v's neighbours are
   // list[start[v] .. start[v] + count[v]] (each listed once, as the old Sets did)
   const start = new Int32Array(n + 1);
@@ -359,28 +327,82 @@ export class ClusterBodies {
 
   _create(blocks) {
     const flat = !!blockProps(blocks[0].type).shadeFlat;
-    // a chain creature is joined only segment to segment (head, 2nd, 3rd, …): curled up
-    // against itself, its body stays a chain instead of fusing into a lump
-    let linked = null;
-    const chain = isChainCreature(blocks[0].type) && this._world?.squirmyOf.get(blocks[0])?.segments;
-    if (chain) {
-      const pos = blocks.map((b) => chain.indexOf(b));
-      linked = (i, j) => Math.abs(pos[i] - pos[j]) === 1;
-    }
-    const topo = buildBody(blocks, flat, linked);
+    // a creature in segments (a chain creature like a Squirmy, or a Buzzy grown longer) is a
+    // tube through them (see _createTube), not its cells welded
+    const head = blocks[0].segmentOf ?? blocks[0];
+    const chain = isChainCreature(blocks[0].type) ? this._world?.squirmyOf.get(blocks[0])?.segments
+      : isCreature(blocks[0].type) && head.segments?.length ? [head, ...head.segments] : null;
+    if (chain && blocks.length > 1) return this._createTube(blocks, chain);
+    const topo = buildBody(blocks, flat);
     const n = topo.rWeld.length;
     const vn = topo.vertexCount;
+    const g = this._bodyGeometry(n);
+    g.getAttribute('localPos').array.set(topo.rLocal);
+    g.getAttribute('faceIndex').array.set(topo.rFace);
+    const mesh = this._bodyMesh(g, blocks[0].type);
+    return { mesh, blocks, topo, flat, indices: [], normals: new Float32Array(vn * 3), welded: new Float32Array(vn * 3), offsets: new Float32Array(blocks.length * 3) };
+  }
+
+  /**
+   * A chain creature's body: a round tube along a smooth curve (Catmull-Rom) through its
+   * segments' centres, head to tail, capped with half-spheres. Its cells welded together would
+   * make a boxy elbow at every turn, pinched while the segments slide round it; the curve bends
+   * smoothly instead, and follows the segments as they slide (see _poseTube). Each segment owns
+   * the stretch of tube nearest it (rings are doubled where two meet), so its pattern stays its own.
+   */
+  _createTube(blocks, chain) {
+    const order = [...blocks].sort((a, b) => chain.indexOf(a) - chain.indexOf(b));
+    const n = order.length, R = TUBE_RINGS_PER_SEGMENT, last = (n - 1) * R;
+    // rings: { i (segment), s (sample along the spine, 0 = head .. last = tail), rad, axial }:
+    // radius and offset along the tangent, both as fractions of the tube radius
+    const rings = [];
+    const cap = (i, s, sign, outward) => {
+      for (let k = 1; k <= TUBE_CAP_RINGS; k++) {
+        const kk = outward ? k : TUBE_CAP_RINGS + 1 - k;
+        const a = (kk / TUBE_CAP_RINGS) * Math.PI / 2;
+        rings.push({ i, s, rad: Math.cos(a), axial: sign * Math.sin(a) });
+      }
+    };
+    for (let i = 0; i < n; i++) {
+      if (i === 0) cap(0, 0, -1, false); // the head's end, pole first
+      for (let s = Math.max(0, i * R - R / 2); s <= Math.min(last, i * R + R / 2); s++) rings.push({ i, s, rad: 1, axial: 0 });
+      if (i === n - 1) cap(i, last, 1, true); // the tail's end, pole last
+    }
+    const V = TUBE_SIDES;
+    const index = [];
+    for (let r = 0; r + 1 < rings.length; r++) {
+      if (rings[r].i !== rings[r + 1].i) continue; // (a doubled ring: the next segment starts afresh)
+      for (let j = 0; j < V; j++) {
+        const a = r * V + j, b = r * V + ((j + 1) % V), c = a + V, d = b + V;
+        index.push(a, b, c, b, d, c); // (counter-clockwise from outside)
+      }
+    }
+    const count = rings.length * V;
+    const g = this._bodyGeometry(count);
+    g.setIndex(index);
+    const rBlock = new Uint32Array(count);
+    rings.forEach((ring, r) => rBlock.fill(blocks.indexOf(order[ring.i]), r * V, (r + 1) * V));
+    const mesh = this._bodyMesh(g, blocks[0].type);
+    return { mesh, blocks, tube: { order, rings, samples: last + 1 }, topo: { rBlock }, indices: [] };
+  }
+
+  /** A body's geometry, `n` vertices: positions and normals set when posed, the rest by _refreshLook. */
+  _bodyGeometry(n) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute('localPos', new THREE.BufferAttribute(topo.rLocal, 3));
-    g.setAttribute('faceIndex', new THREE.BufferAttribute(topo.rFace, 1));
+    g.setAttribute('localPos', new THREE.BufferAttribute(new Float32Array(n * 3), 3)); // each vertex's place on its own block (cm)
+    g.setAttribute('faceIndex', new THREE.BufferAttribute(new Float32Array(n), 1));
     // smooth bodies: no corner darkening
     g.setAttribute('aoFaces', new THREE.BufferAttribute(new Float32Array(n * 4).fill(-1), 4));
     g.setAttribute('blockStyle', new THREE.BufferAttribute(new Float32Array(n * 4), 4));
     g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
     g.setAttribute('blockIndex', new THREE.BufferAttribute(new Float32Array(n), 1));
-    const type = blocks[0].type;
+    return g;
+  }
+
+  /** The mesh drawing a body of `type`, with the matching body material, added to the scene. */
+  _bodyMesh(g, type) {
     const isCloud = type === BLOCK.FOG || type === BLOCK.NIMBUS;
     const isCrystal = type === BLOCK.CRYSTAL;
     const mesh = new THREE.Mesh(g, isCloud ? this.materials.bodyCloud : isCrystal ? this.materials.bodyCrystal
@@ -390,7 +412,7 @@ export class ClusterBodies {
     mesh.raycast = () => { }; // picking uses the (hidden) blocks
     if (isTranslucent(type)) mesh.renderOrder = isCloud ? 1 : 2; // clouds first (they write depth), then Water / Crystal
     this.parent.add(mesh);
-    return { mesh, blocks, topo, flat, indices: [], normals: new Float32Array(vn * 3), welded: new Float32Array(vn * 3), offsets: new Float32Array(blocks.length * 3) };
+    return mesh;
   }
 
   /** Copies each block's colour, style (seed, buff tint) and instance index to its vertices. */
@@ -433,6 +455,7 @@ export class ClusterBodies {
    * computed on the welded surface and copied to the render vertices.
    */
   _pose(world, body, now) {
+    if (body.tube) return this._poseTube(world, body, now);
     const { smooth, ownerIdx, ownerCount, tris, rWeld, vertexCount } = body.topo;
     const offsets = body.offsets;
     const s = GRID.scale; // (rendered positions are in cm)
@@ -487,6 +510,65 @@ export class ClusterBodies {
       nor[r * 3 + 2] = N[w + 2];
     }
     g.getAttribute('position').needsUpdate = g.getAttribute('normal').needsUpdate = true;
+  }
+
+  /**
+   * Places a chain creature's tube (_createTube): the spine is sampled along a curve through
+   * the segments' rendered centres (so it bends smoothly while they slide), each ring is set
+   * round it on a twist-free frame (carried along from the head), and normals point straight
+   * out from the spine (and round the end caps).
+   */
+  _poseTube(world, body, now) {
+    const { order, rings, samples } = body.tube;
+    const n = order.length, R = TUBE_RINGS_PER_SEGMENT, V = TUBE_SIDES;
+    const centres = order.map((block) => world.renderedPosition(block, now, new THREE.Vector3()));
+    // the spine: points and tangents (head -> tail)
+    const P = [], T = [];
+    if (n === 1) {
+      P.push(centres[0]);
+      T.push(new THREE.Vector3(0, 1, 0));
+    } else {
+      const curve = new THREE.CatmullRomCurve3(centres, false, 'centripetal');
+      for (let s = 0; s < samples; s++) P.push(curve.getPoint(s / (samples - 1)));
+      for (let s = 0; s < samples; s++) {
+        const t = P[Math.min(s + 1, samples - 1)].clone().sub(P[Math.max(s - 1, 0)]);
+        T.push(t.lengthSq() > 1e-12 ? t.normalize() : (T[s - 1]?.clone() ?? new THREE.Vector3(0, 1, 0)));
+      }
+    }
+    // a frame (N, B) round each spine point, carried along without twisting (parallel transport)
+    const N = [], B = [];
+    const n0 = Math.abs(T[0].y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    N.push(n0.sub(T[0].clone().multiplyScalar(n0.dot(T[0]))).normalize());
+    for (let s = 1; s < samples; s++) {
+      const prev = N[s - 1];
+      const next = prev.clone().sub(T[s].clone().multiplyScalar(prev.dot(T[s])));
+      N.push(next.lengthSq() > 1e-12 ? next.normalize() : prev.clone());
+    }
+    for (let s = 0; s < samples; s++) B.push(T[s].clone().cross(N[s]));
+    const g = body.mesh.geometry;
+    const pos = g.getAttribute('position').array, nor = g.getAttribute('normal').array, local = g.getAttribute('localPos').array;
+    const r = TUBE_RADIUS_CM;
+    rings.forEach((ring, k) => {
+      const p = P[ring.s], t = T[ring.s], nn = N[ring.s], bb = B[ring.s], c = centres[ring.i];
+      for (let j = 0; j < V; j++) {
+        const a = (j / V) * Math.PI * 2, ca = Math.cos(a) * ring.rad, sa = Math.sin(a) * ring.rad;
+        const nx = nn.x * ca + bb.x * sa + t.x * ring.axial;
+        const ny = nn.y * ca + bb.y * sa + t.y * ring.axial;
+        const nz = nn.z * ca + bb.z * sa + t.z * ring.axial;
+        const o = (k * V + j) * 3;
+        pos[o] = p.x + r * nx;
+        pos[o + 1] = p.y + r * ny;
+        pos[o + 2] = p.z + r * nz;
+        nor[o] = nx;
+        nor[o + 1] = ny;
+        nor[o + 2] = nz;
+        // its place on its own segment, for the per-block patterns
+        local[o] = pos[o] - c.x;
+        local[o + 1] = pos[o + 1] - c.y;
+        local[o + 2] = pos[o + 2] - c.z;
+      }
+    });
+    g.getAttribute('position').needsUpdate = g.getAttribute('normal').needsUpdate = g.getAttribute('localPos').needsUpdate = true;
   }
 
   /** shadeFlat bodies: posed welded positions `W`, and each render triangle's own flat normal. */

@@ -1,14 +1,16 @@
 // Turn-based simulation: runs once per game second ("turn").
 // Order each turn: 1) connected groups not anchored at the origin fall one step toward it,
 // 2) Water flows toward the origin, 3) creatures move, 4) trees (Wood groups) drink Water
-// and grow Wood or Berries, 5) Dirt absorbs Water and becomes Moss (both only take Water
-// that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
+// and grow Wood or Berries, 5) Dirt absorbs Water and becomes Moss, Plop becomes Wood (all
+// only take Water that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
-import { NEIGHBOR_DIRS, cellKey, randomCellOnSphere } from './lattice.js';
+import { EDGE_STEPS, NEIGHBOR_DIRS, cellKey, randomCellOnSphere } from './lattice.js';
 import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly } from './blocks.js';
 
 
+/** Chance per turn that a creature carrying something in its inventory excretes it (see maybeExcrete). */
+export const EXCRETE_CHANCE = 0.05;
 /** Chance that a wandering creature decides to move on a given turn (when it has somewhere to go). */
 export const WANDER_MOVE_CHANCE = 0.5;
 
@@ -194,25 +196,28 @@ function closestToOrigin(blocks) {
   return nearest[Math.floor(Math.random() * nearest.length)];
 }
 
-/** Chance that a Dirt block next to settled Water absorbs it (and turns into Moss) each turn. */
+/** Chance that a Dirt (or Plop) block next to settled Water absorbs it (and turns into Moss / Wood) each turn. */
 export const DIRT_ABSORB_CHANCE = 1;
 
+/** The soils that soak up settled Water, and what each becomes when it does. */
+const ABSORB_INTO = { [BLOCK.DIRT]: BLOCK.MOSS, [BLOCK.PLOP]: BLOCK.WOOD };
+
 /**
- * Dirt next to settled Water (see WATER_SETTLE_TURNS) absorbs it: the Water block is
- * deleted — the one closest to the origin, if several touch — and the Dirt becomes Moss.
- * Dirt blocks act one at a time in random order, so each Water is absorbed only once.
- * Returns the number of Dirt blocks that turned into Moss.
+ * Dirt or Plop next to settled Water (see WATER_SETTLE_TURNS) absorbs it: the Water block is
+ * deleted — the one closest to the origin, if several touch — and the Dirt becomes Moss, the
+ * Plop Wood (ABSORB_INTO). They act one at a time in random order, so each Water is absorbed
+ * only once. Returns the number of blocks that changed.
  */
 export function stepDirt(world, turn) {
   let changed = 0;
-  // only Dirt touching settled Water can soak it up: find those from the Water side (far
+  // only soil touching settled Water can soak it up: find it from the Water side (far
   // fewer blocks to look at than all the Dirt)
   const candidates = new Set();
   for (const w of world.ofType(BLOCK.WATER)) {
     if (!isSettledWater(w, turn)) continue;
     for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
       const n = world.blocks.get(cellKey(w.x + dx, w.y + dy, w.z + dz));
-      if (n?.type === BLOCK.DIRT) candidates.add(n);
+      if (n && ABSORB_INTO[n.type]) candidates.add(n);
     }
   }
   for (const d of shuffle([...candidates])) {
@@ -223,8 +228,13 @@ export function stepDirt(world, turn) {
     }
     if (!waters.length || Math.random() >= DIRT_ABSORB_CHANCE) continue;
     const w = closestToOrigin(waters);
-    if (!world.consume(d, w, 'waterSip')) continue; // the Water shrinks into the Dirt (its slot)
-    if (world.setType(d, BLOCK.MOSS)) changed++;
+    const into = ABSORB_INTO[d.type];
+    if (!world.consume(d, w, 'waterSip')) continue; // the Water shrinks into the soil (its slot)
+    if (!world.setType(d, into)) continue;
+    changed++;
+    // a Plop's Water is used up becoming Wood: its slot stays free, so the new tree can drink
+    // (a tree only drinks while one of its blocks has an empty slot, see World.freeSlotFor)
+    if (into === BLOCK.WOOD) d.inventory = null;
   }
   return changed;
 }
@@ -278,6 +288,7 @@ export function stepSquirmies(world, skip = new Set()) {
     const head = sq.segments[0];
     tickWait(head);
     if (sq.segments.some((block) => skip.has(block))) continue;
+    maybeExcrete(world, head);
     const own = new Set(sq.segments);
     const ok = (x, y, z, steps) => squirmyCellOk(world, head, own, x, y, z, steps === 1);
     if (head.isControlled) {
@@ -347,6 +358,16 @@ export function stepSquirmies(world, skip = new Set()) {
 /** Whether `block` has at least one empty neighbouring cell. */
 function hasEmptyNeighbor(world, block) {
   return NEIGHBOR_DIRS.some(([dx, dy, dz]) => !world.blocks.has(cellKey(block.x + dx, block.y + dy, block.z + dz)));
+}
+
+/**
+ * Now and then (EXCRETE_CHANCE a turn) a creature carrying something excretes it, out behind
+ * its tail (World.excrete: eaten creatures and Berries come out as Plop).
+ */
+function maybeExcrete(world, creature) {
+  if (Math.random() >= EXCRETE_CHANCE) return;
+  const body = world.clusterOf(creature);
+  if (body.some((block) => block.inventory)) world.excrete(body, 'excrete');
 }
 
 /** Moves a Squirmy's head to `to`; each following segment takes the cell the one ahead of it just left. */
@@ -584,7 +605,7 @@ export function stepNimbus(world, turn) {
 }
 
 /** Solid block types (Stone, Dirt, Moss, Wood, Berry): Wood only grows into cells away from these. */
-export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY, BLOCK.CRYSTAL]);
+export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.PLOP, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY, BLOCK.CRYSTAL]);
 /** A tree (connected Wood group) needs at least this many Wood blocks to grow Berries. */
 export const BERRY_MIN_TREE_SIZE = 5;
 /** Chance that a big-enough tree with no Berries yet grows a Berry instead of Wood when watered. */
@@ -712,10 +733,12 @@ export function stepSink(world, skip = new Set()) {
       const cluster = world.clusterOf(start);
       for (const b of cluster) done.add(b);
       if (cluster.some((block) => skip.has(block) || moved.has(block) || block.vanishing || canFly(block))) continue;
-      // holding on to something it can walk on: it doesn't sink
+      // holding on to something it can walk on: it doesn't sink (its own body doesn't count:
+      // a Squirmy's segments can walk on Squirmy, and every one touches the next)
+      const members = new Set(cluster);
       const holds = cluster.some((block) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => {
         const n = world.blocks.get(cellKey(block.x + dx, block.y + dy, block.z + dz));
-        return n && canWalkOn(block.type, n.type);
+        return n && !members.has(n) && canWalkOn(block.type, n.type);
       }));
       if (holds) continue;
       let cx = 0, cy = 0, cz = 0;
@@ -726,7 +749,6 @@ export function stepSink(world, skip = new Set()) {
       }
       if (!cx && !cy && !cz) continue; // at the origin: no "down"
       const [dx, dy, dz] = closestDir(-cx, -cy, -cz);
-      const members = new Set(cluster);
       const waters = [];
       let ok = true;
       for (const b of cluster) {
@@ -890,13 +912,31 @@ function isAirborneBuzzy(world, creature) {
 function wander(world, creature) {
   if (Math.random() >= WANDER_MOVE_CHANCE && !isAirborneBuzzy(world, creature)) return false;
   const options = [];
-  for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+  for (const [dx, dy, dz] of stepOffsets(world, creature.x, creature.y, creature.z, creature)) {
     const x = creature.x + dx, y = creature.y + dy, z = creature.z + dz;
     if (isWalkable(world, x, y, z, creature)) options.push({ x, y, z });
   }
   if (!options.length) return false;
   const to = options[Math.floor(Math.random() * options.length)];
   return world.move(creature, to, world.stepSeconds);
+}
+
+/**
+ * The offsets a one-block creature (`self`) at (x, y, z) may step along: its neighbours, plus
+ * (Cube mode) the EDGE_STEPS across one of its cube's edges where at least one of the two cells
+ * beside that edge is open, so it goes up a step or round a corner but never squeezes between
+ * two blocks.
+ */
+function stepOffsets(world, x, y, z, self) {
+  if (!EDGE_STEPS.length) return NEIGHBOR_DIRS;
+  const open = (cx, cy, cz) => {
+    const b = world.blocks.get(cellKey(cx, cy, cz));
+    return !b || b === self;
+  };
+  return [
+    ...NEIGHBOR_DIRS,
+    ...EDGE_STEPS.filter(([dx, dy, dz]) => (dx && open(x + dx, y, z)) || (dy && open(x, y + dy, z)) || (dz && open(x, y, z + dz))),
+  ];
 }
 
 /** Most cells one Walk path search may visit (keeps a turn cheap in big builds). */
@@ -907,9 +947,11 @@ export const WALK_GIVE_UP_TURNS = 5;
 /**
  * First step of a shortest path (fewest steps) from creature `creature` to cell `t`, found by
  * breadth-first search; null if there is none. `ok(x, y, z, steps)` says whether a cell can
- * be stepped into `steps` moves from now (default: the creature's isWalkable).
+ * be stepped into `steps` moves from now (default: the creature's isWalkable). One-block
+ * creatures also take Cube mode's edge steps (stepOffsets); a Squirmy's body keeps to faces.
  */
 function firstStepToward(world, creature, t, ok = (x, y, z) => isWalkable(world, x, y, z, creature)) {
+  const chain = isChainCreature(creature.type);
   if (!ok(t.x, t.y, t.z, Infinity)) return null;
   const goal = cellKey(t.x, t.y, t.z);
   const firstStep = new Map([[cellKey(creature.x, creature.y, creature.z), null]]); // visited cell -> first step on its path
@@ -917,7 +959,7 @@ function firstStepToward(world, creature, t, ok = (x, y, z) => isWalkable(world,
   for (let i = 0; i < queue.length && firstStep.size < WALK_SEARCH_LIMIT; i++) {
     const p = queue[i];
     const via = firstStep.get(cellKey(p.x, p.y, p.z));
-    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+    for (const [dx, dy, dz] of chain ? NEIGHBOR_DIRS : stepOffsets(world, p.x, p.y, p.z, creature)) {
       const q = { x: p.x + dx, y: p.y + dy, z: p.z + dz, steps: p.steps + 1 };
       const k = cellKey(q.x, q.y, q.z);
       if (firstStep.has(k) || !ok(q.x, q.y, q.z, q.steps)) continue;
@@ -999,14 +1041,15 @@ function endWalk(creature) {
  * Creature controls (the player steering `creature`: `creature.steer`, a direction in lattice
  * space set by the engine): of the neighbouring cells `ok(x, y, z)` allows, the one most nearly
  * in the steer direction (within about 70° of it); null if none, or not steered. The steer is
- * used up: the player's input since the last turn moves it one step.
+ * used up: the player's input since the last turn moves it one step. `dirs`: the offsets it
+ * may step along (default: its neighbours).
  */
-export function steeredCell(creature, ok) {
+export function steeredCell(creature, ok, dirs = NEIGHBOR_DIRS) {
   const s = creature.steer;
   delete creature.steer;
   if (!s) return null;
   let best = null, bestDot = 0.35;
-  for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+  for (const [dx, dy, dz] of dirs) {
     const dot = (dx * s[0] + dy * s[1] + dz * s[2]) / Math.hypot(dx, dy, dz);
     if (dot <= bestDot) continue;
     const x = creature.x + dx, y = creature.y + dy, z = creature.z + dz;
@@ -1103,9 +1146,10 @@ export function stepSoloCreatures(world, skip = new Set()) {
     if (!checkTrapped(world, c)) continue; // trapped (or just died): no action this turn
     tickWait(c);
     if (skip.has(c)) continue;
+    maybeExcrete(world, c);
     if (c.isControlled) {
       // Creature controls: it goes where the player steers it (else stays put), nothing else
-      const to = steeredCell(c, (x, y, z) => isWalkable(world, x, y, z, c));
+      const to = steeredCell(c, (x, y, z) => isWalkable(world, x, y, z, c), stepOffsets(world, c.x, c.y, c.z, c));
       if (to && world.move(c, to, world.stepSeconds)) moved++;
       continue;
     }

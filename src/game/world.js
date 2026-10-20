@@ -1110,7 +1110,8 @@ export class World {
    * move along the queue toward the tail (packed at the tail end, order kept), and the new
    * block grows in from the tail to its cell (appear) while the sound `sound` plays
    * ('blockExcreted' event; the engine plays it). `cell` ({ x, y, z }, optional) picks the cell
-   * instead (a Nimbus raining straight down). Returns the new block, or null if the tail's slot
+   * instead (a Nimbus raining straight down). A creature's eaten creatures and Berries come out
+   * as Plop. Returns the new block, or null if the tail's slot
    * is empty or it has no empty neighbouring cell (or `cell` is taken).
    */
   excrete(cluster, sound, { cell: into = null } = {}) {
@@ -1134,10 +1135,11 @@ export class World {
     if (!cell) return null;
     const type = tail.inventory;
     tail.inventory = null;
+    const excreted = isCreature(tail.type) && (isCreature(type) || type === BLOCK.BERRY) ? BLOCK.PLOP : type; // digested
     // the rest of the items move along the queue toward the tail
     const items = cluster.map((block) => block.inventory).filter(Boolean);
     cluster.forEach((block, i) => (block.inventory = items[i - (cluster.length - items.length)] ?? null));
-    if (!this.add(cell.x, cell.y, cell.z, type)) {
+    if (!this.add(cell.x, cell.y, cell.z, excreted)) {
       tail.inventory = type; // couldn't place it after all: undo (the queue keeps its new order)
       return null;
     }

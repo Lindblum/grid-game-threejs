@@ -16,6 +16,7 @@ export const TOOLS = [
   { id: BLOCK.SLITHER, label: blockProps(BLOCK.SLITHER).name, block: BLOCK.SLITHER },
   { id: BLOCK.STONE, label: blockProps(BLOCK.STONE).name, block: BLOCK.STONE },
   { id: BLOCK.DIRT, label: blockProps(BLOCK.DIRT).name, block: BLOCK.DIRT },
+  { id: BLOCK.PLOP, label: blockProps(BLOCK.PLOP).name, block: BLOCK.PLOP },
   { id: BLOCK.MOSS, label: blockProps(BLOCK.MOSS).name, block: BLOCK.MOSS },
   { id: BLOCK.CRYSTAL, label: blockProps(BLOCK.CRYSTAL).name, block: BLOCK.CRYSTAL },
   { id: BLOCK.WOOD, label: blockProps(BLOCK.WOOD).name, block: BLOCK.WOOD },

@@ -345,7 +345,14 @@ export class Engine {
     // a creature moving under its own power: a Crawly skitters, a Buzzy buzzes, a Squirmy slithers
     const MOVE_SOUNDS = { [BLOCK.CRAWLY]: 'skitter', [BLOCK.BUZZY]: 'buzz', [BLOCK.SQUIRMY]: 'slither', [BLOCK.SLITHER]: 'slither' };
     this.world.on('creatureMoved', (creature) => playSfx(MOVE_SOUNDS[creature.type], 150, at(creature)));
-    this.world.on('blockConsumed', ({ sound, block }) => playSfx(sound, 90, at(block)));
+    this.world.on('blockConsumed', ({ sound, block }) => {
+      playSfx(sound, 90, at(block));
+      // a creature eaten whole dies: a one-block creature (a Buzzy's head; not a body segment
+      // bitten off), or a chain creature's last segment
+      const dies = isSingleCreature(block.type) ? !block.segmentOf
+        : isChainCreature(block.type) && (this.world.squirmyOf.get(block)?.segments.length ?? 1) <= 1;
+      if (dies) playCreatureDeath(at(block));
+    });
     this.world.on('blockExcreted', ({ sound, block }) => playSfx(sound, 90, at(block)));
     // event log (console, so it also shows in the debug panel): consume, excrete, buffs, behavior
     const nameOf = (type) => blockProps(type).name;
@@ -1335,7 +1342,7 @@ export class Engine {
     stepSquirmies(this.world, moved); // …and Squirmies crawl as chains, head first…
     stepSight(this.world); // …and every creature clears the Fog it can see (it shrinks away, then goes)…
     stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
-    stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss…
+    stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss (Plop: to Wood)…
     if (this.state.rain) stepRain(this.world, turn); // …a raindrop appears far out now and then (Options → Rain)…
     stepNimbus(this.world, turn); // …and every 3rd turn each Nimbus may rain one Water below it
     this._syncCount(); // rain, Nimbus and growth add blocks: keep the HUD's count (and diameter) current

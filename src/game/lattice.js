@@ -8,6 +8,8 @@ import { DEFAULT_GRID, GRIDS } from './grids.js';
 export let GRID = GRIDS[DEFAULT_GRID];
 /** Offsets to a cell's neighbours, in face order (GRID.faces). */
 export let NEIGHBOR_DIRS = GRID.offsets;
+/** Extra creature steps across a cell's edges (Cube mode; empty in the others, where every step is a face). */
+export let EDGE_STEPS = GRID.edgeSteps ?? [];
 
 const listeners = new Set();
 
@@ -26,6 +28,7 @@ export function setGridMode(id) {
   if (next === GRID) return false;
   GRID = next;
   NEIGHBOR_DIRS = next.offsets;
+  EDGE_STEPS = next.edgeSteps ?? [];
   for (const fn of listeners) fn(next);
   return true;
 }

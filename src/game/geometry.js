@@ -562,7 +562,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           surfaceRough = 0.08;
         }
         #else
-        if (vStyle > 0.5 && vStyle < 1.5) {
+        if ((vStyle > 0.5 && vStyle < 1.5) || abs(vStyle - ${BLOCK_STYLE.plop.toFixed(1)}) < 0.5) {
+          // Dirt, and Plop (the same soil in its own darker colour)
           vec3 p = vNoisePos;
           float clumps = perlinFbm(p * 2.2);                 // large damp/dry patches
           float grain = perlin3(p * 14.0) * 0.6 + perlin3(p * 31.0) * 0.4; // fine soil grain

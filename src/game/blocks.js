@@ -57,6 +57,9 @@ export const BEHAVIOR = Object.freeze({
 export const BLOCK_TYPES = [
   { key: 'STONE', id: 'gray', name: 'Stone', color: '#9aa0a6', style: 2, opacity: 1, sinkable: true },
   { key: 'DIRT', id: 'brown', name: 'Dirt', color: '#8b5a2b', style: 1, opacity: 1, sinkable: true },
+  // what creatures excrete when they've eaten a creature or a Berry (World.excrete): dark Dirt;
+  // it soaks up settled Water like Dirt, and becomes Wood (sim.js stepDirt)
+  { key: 'PLOP', id: 'plop', name: 'Plop', color: '#4a3020', style: 15, opacity: 1, sinkable: true },
   { key: 'BERRY', id: 'red', name: 'Berry', color: '#e53935', style: 5, opacity: 1, sinkable: true },
   { key: 'WOOD', id: 'orange', name: 'Wood', color: '#b8804a', style: 7, opacity: 1 }, // warm tan
   { key: 'CRYSTAL', id: 'yellow', name: 'Crystal', color: '#e03cd2', style: 8, opacity: 0.9, shadeFlat: true }, // magenta gem
@@ -68,9 +71,9 @@ export const BLOCK_TYPES = [
     sinkable: true,
     body: 'single',
     legs: true,
-    diet: ['BERRY', 'WOOD'],
-    priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
+    diet: ['BERRY', 'WOOD', 'PLOP'],
+    priorityDiet: ['BERRY', 'PLOP'],
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 2,
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED],
     defaultBehavior: BEHAVIOR.WANDER,
@@ -87,7 +90,7 @@ export const BLOCK_TYPES = [
     legs: true,
     diet: ['BERRY'],
     priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 3,
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED],
     defaultBehavior: BEHAVIOR.WANDER,
@@ -99,9 +102,9 @@ export const BLOCK_TYPES = [
     sinkable: true,
     body: 'chain',
     selfAvoidance: false, // may curl up alongside itself
-    diet: ['BERRY', 'DIRT', 'WATER'],
+    diet: ['BERRY', 'DIRT', 'PLOP', 'WATER'],
     priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 1, // around its head
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
@@ -117,7 +120,7 @@ export const BLOCK_TYPES = [
     fangs: true,
     diet: ['BERRY', 'WATER', 'CRAWLY', 'SQUIRMY', 'BUZZY'],
     priorityDiet: ['CRAWLY', 'SQUIRMY'],
-    walkableBlocks: ['STONE', 'DIRT', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 2, // around its head
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,

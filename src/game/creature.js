@@ -8,7 +8,7 @@ import { BLOCK, blockProps } from './blocks.js';
 // Behaviors, sight radius and eye size are per creature type: see BLOCK_TYPES in blocks.js.
 
 /** Block types a creature can use as its floor (sets which way is "up" for its eyes). */
-export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.MOSS, BLOCK.CRYSTAL, BLOCK.WOOD, BLOCK.BERRY]);
+export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.PLOP, BLOCK.MOSS, BLOCK.CRYSTAL, BLOCK.WOOD, BLOCK.BERRY]);
 /**
  * Eye centres in the creature's own frame, cm: x = right, y = up (away from the floor),
  * z = front. The frame turns; the eyes themselves never rotate.
@@ -94,6 +94,16 @@ const _noRot = new THREE.Quaternion();
 const dot = (a, b) => (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / Math.hypot(...a) / Math.hypot(...b);
 const same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 
+/**
+ * A diagonal step (Cube mode's edge steps) as a front: the neighbour direction most along it
+ * that lies flat along the new floor (up a step: the way it went on; round a corner: down the
+ * new side). Ties go to the first.
+ */
+function faceAlong(moveDir, floor) {
+  const flat = NEIGHBOR_DIRS.filter((d) => !floor || Math.abs(dot(d, floor)) < 1e-6);
+  return (flat.length ? flat : NEIGHBOR_DIRS).reduce((best, d) => (dot(d, moveDir) > dot(best, moveDir) ? d : best));
+}
+
 /** Neighbour offsets (lattice directions) that hold a floor block. */
 function floorDirs(world, creature) {
   return NEIGHBOR_DIRS.filter(([dx, dy, dz]) => FLOOR_TYPES.has(world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz))?.type));
@@ -109,13 +119,13 @@ function floorDirs(world, creature) {
  *   so "down" stays consistent as the creature walks around corners.
  */
 export function orientCreature(world, creature, moveDir = null) {
-  if (moveDir) creature.front = moveDir;
   const dirs = floorDirs(world, creature);
   if (!dirs.length) creature.floor = null;
   else if (!dirs.some((d) => same(d, creature.floor))) {
     const ref = creature.floor ?? [0, -1, 0];
     creature.floor = dirs.reduce((best, d) => (dot(d, ref) > dot(best, ref) ? d : best));
   }
+  if (moveDir) creature.front = NEIGHBOR_DIRS.find((d) => same(d, moveDir)) ?? faceAlong(moveDir, creature.floor);
   if (!creature.front) {
     const down = creature.floor ?? [0, -1, 0];
     const minDot = Math.min(...NEIGHBOR_DIRS.map((d) => Math.abs(dot(d, down))));

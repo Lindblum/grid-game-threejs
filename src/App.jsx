@@ -10,6 +10,9 @@ import { getLogs, getLogVersion } from './game/debugLog.js';
 import { claudePrompt } from './game/claudePrompt.js';
 import { debugSections } from './game/debugSections.js';
 
+/** How far (px) a press may move before its release no longer counts as a click. */
+const DRAG_PX = 6;
+
 export default function App() {
   const hostRef = useRef(null);
   const [engine, setEngine] = useState(null);
@@ -19,6 +22,33 @@ export default function App() {
     window.__gridGame = e; // handy for debugging in the console
     setEngine(e);
     return () => e.dispose();
+  }, []);
+
+  // a drag isn't a click: a press that moves more than DRAG_PX before its release doesn't
+  // click the button it's released on (window capture, so it runs before React's handlers)
+  useEffect(() => {
+    let down = null; // { x, y } of the press, or null once it has moved too far
+    const onDown = (e) => (down = e.isPrimary ? { x: e.clientX, y: e.clientY } : down);
+    const onMove = (e) => {
+      if (down && e.isPrimary && Math.hypot(e.clientX - down.x, e.clientY - down.y) > DRAG_PX) down = 'dragged';
+    };
+    const onClick = (e) => {
+      const dragged = down === 'dragged';
+      down = null;
+      if (dragged && e.detail > 0) {
+        // (detail 0: a click from the keyboard, not the pointer)
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('click', onClick, true);
+    };
   }, []);
 
   return (
