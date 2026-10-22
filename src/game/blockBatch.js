@@ -26,6 +26,7 @@ export class BlockBatch {
     this.blocks = []; // instance index -> block
     this.capacity = 0;
     this.mesh = null;
+    this.depthMesh = null; // a depth prepass (material.userData.depthMaterial: blocks.js transparency 'prepass'), drawn just before
     this.geometry = null;
     this._allocate(initialCapacity);
   }
@@ -55,6 +56,23 @@ export class BlockBatch {
     mesh.name = this.name;
     mesh.renderOrder = this.renderOrder;
     mesh.userData.batch = this; // picking: hit.object -> batch, hit.instanceId -> block
+    const depthMaterial = this.material.userData.depthMaterial;
+    if (this.depthMesh) {
+      this.parent.remove(this.depthMesh);
+      this.depthMesh.dispose();
+      this.depthMesh = null;
+    }
+    if (depthMaterial) {
+      // the same instances (shared buffers), drawn depth only, just before this pass
+      const d = new THREE.InstancedMesh(g, depthMaterial, capacity);
+      d.instanceMatrix = mesh.instanceMatrix;
+      d.instanceColor = mesh.instanceColor;
+      d.frustumCulled = false;
+      d.name = `${this.name}-depth`;
+      d.renderOrder = this.renderOrder - 0.5;
+      d.raycast = () => { }; // picking uses the mesh itself
+      this.depthMesh = d;
+    }
     if (old) {
       for (let i = 0; i < this.blocks.length; i++) {
         old.getMatrixAt(i, _m);
@@ -66,11 +84,12 @@ export class BlockBatch {
       old.dispose();
       oldGeometry.dispose(); // (the shared attributes stay alive in the new geometry)
     }
-    mesh.count = this.blocks.length;
     this.parent.add(mesh);
+    if (this.depthMesh) this.parent.add(this.depthMesh);
     this.mesh = mesh;
     this.geometry = g;
     this.capacity = capacity;
+    this._setCount(this.blocks.length);
     this.dirty();
   }
 
@@ -80,7 +99,7 @@ export class BlockBatch {
     block.batch = this;
     block.index = this.blocks.length;
     this.blocks.push(block);
-    this.mesh.count = this.blocks.length;
+    this._setCount(this.blocks.length);
     this.attr('blockSeeThrough').setX(block.index, 0); // (a slot may keep a removed block's flag; World.setSeeThrough sets it)
   }
 
@@ -101,7 +120,7 @@ export class BlockBatch {
       this.blocks[block.index] = lb;
     }
     this.blocks.pop();
-    this.mesh.count = this.blocks.length;
+    this._setCount(this.blocks.length);
     delete block.batch;
   }
 
@@ -113,8 +132,13 @@ export class BlockBatch {
 
   clear() {
     this.blocks.length = 0;
-    this.mesh.count = 0;
+    this._setCount(0);
     this.dirty();
+  }
+
+  _setCount(n) {
+    this.mesh.count = n;
+    if (this.depthMesh) this.depthMesh.count = n;
   }
 
   attr(name) {

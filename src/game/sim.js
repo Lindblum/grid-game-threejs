@@ -544,13 +544,19 @@ export function creatureEat(world, creature, food) {
 
 /**
  * `creature` (a one-block creature, or a Squirmy's head) eats the block in front of it, or, if it
- * can't eat that one, any other edible block next to it (tried in random order).
- * Returns whether it ate.
+ * can't eat that one, the edible block next to it closest to its front direction (ties in random
+ * order; with no front, any in random order). Returns whether it ate.
  */
 export function creatureEatNearby(world, creature) {
   const front = blockInFront(world, creature);
   if (front && creatureEat(world, creature, front)) return true;
-  for (const [dx, dy, dz] of shuffle([...NEIGHBOR_DIRS])) {
+  const dirs = shuffle([...NEIGHBOR_DIRS]);
+  if (creature.front) {
+    const [fx, fy, fz] = creature.front;
+    const cos = ([dx, dy, dz]) => (dx * fx + dy * fy + dz * fz) / Math.hypot(dx, dy, dz);
+    dirs.sort((a, b) => cos(b) - cos(a)); // (a stable sort: ties keep their shuffled order)
+  }
+  for (const [dx, dy, dz] of dirs) {
     const n = world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz));
     if (n && n !== front && creatureEat(world, creature, n)) return true;
   }

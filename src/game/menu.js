@@ -32,6 +32,12 @@ export const SPEED = Object.freeze({ min: 0, max: 4, step: 0.25, default: 1, tur
 /** Options → Accessibility → Text Size: a multiplier on the page UI's text, 75% to 200% in steps of 25%. */
 export const TEXT_SIZE = Object.freeze({ min: 0.75, max: 2, step: 0.25, default: 1 });
 
+/** Options → Accessibility → Music and Sounds: a volume, 0% (off) to 100% in steps of 10%. */
+export const VOLUME = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
+
+/** Options → Accessibility → Camera Speed: a multiplier on how fast the camera turns (mouse and stick), 10% to 150%. */
+export const CAMERA_SPEED = Object.freeze({ min: 0.1, max: 1.5, step: 0.1, default: 1 });
+
 /** Options → Background, in the order its dropdown lists them (passthrough last). */
 export const BACKGROUNDS = ['solid', 'skybox', 'passthrough'];
 const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Passthrough (XR Only)' };
@@ -219,16 +225,32 @@ function videoItems(state) {
     { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff', toggle: true },
     { id: 'refraction', label: `Refraction: ${state.refraction ? 'On' : 'Off'}`, icon: state.refraction ? 'refractionOn' : 'refractionOff', toggle: true },
     { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff', toggle: true },
+    {
+      id: 'antialias',
+      label: `Anti-aliasing: ${state.antialias ? 'On' : 'Off'}`,
+      icon: state.antialias ? 'aaOn' : 'aaOff',
+      toggle: true,
+      ...(state.antialias !== state.antialiasActive && { sub: 'on reload' }), // (fixed when the page loads)
+    },
   ];
 }
 
 /**
- * Options → Accessibility: the page UI's text size, the game's speed, which way each camera orbits (Observer
- * controls, and Creature controls: Normal or Invert), and Music and Sounds on / off.
+ * Options → Accessibility: the Music and Sounds volumes, the page UI's text size, the game's speed, how fast
+ * the camera turns, which way each camera orbits (Observer controls, and Creature controls: Normal or Invert),
+ * Movement Guides (Creature controls' step dots and lines) and View Internal (creatures' inventories) on / off.
  */
 function accessibilityItems(state) {
   const camera = (id, name, invert) => ({ id, label: `${name}: ${invert ? 'Invert' : 'Normal'}`, icon: invert ? 'cameraInvert' : 'cameraNormal', toggle: true });
+  const volume = (id, name, v, on, off) => ({
+    id,
+    label: `${name}: ${v > 0 ? `${Math.round(v * 100)}%` : 'Off'}`,
+    icon: v > 0 ? on : off,
+    slider: { min: VOLUME.min, max: VOLUME.max, step: VOLUME.step, value: v },
+  });
   return [
+    volume('music', 'Music', state.musicVolume, 'musicOn', 'musicOff'),
+    volume('sound', 'Sounds', state.soundVolume, 'soundOn', 'soundOff'),
     {
       id: 'textSize',
       label: `Text Size: ${Math.round(state.textSize * 100)}%`,
@@ -241,10 +263,16 @@ function accessibilityItems(state) {
       icon: 'speed',
       slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
     },
+    {
+      id: 'cameraSpeed',
+      label: `Camera Speed: ${Math.round(state.cameraSpeed * 100)}%`,
+      icon: 'cameraNormal',
+      slider: { min: CAMERA_SPEED.min, max: CAMERA_SPEED.max, step: CAMERA_SPEED.step, value: state.cameraSpeed },
+    },
     camera('observerCamera', 'Observer Camera', state.observerCameraInvert),
     camera('controlCamera', 'Control Camera', state.controlCameraInvert),
-    { id: 'music', label: `Music: ${state.musicOn ? 'On' : 'Off'}`, icon: state.musicOn ? 'musicOn' : 'musicOff', toggle: true },
-    { id: 'sound', label: `Sounds: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff', toggle: true },
+    { id: 'movementGuides', label: `Movement Guides: ${state.movementGuides ? 'On' : 'Off'}`, icon: state.movementGuides ? 'guidesOn' : 'guidesOff', toggle: true },
+    { id: 'viewInternal', label: `View Internal: ${state.viewInternal ? 'On' : 'Off'}`, icon: state.viewInternal ? 'internalOn' : 'internalOff', toggle: true },
   ];
 }
 

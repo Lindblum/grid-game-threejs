@@ -19,8 +19,10 @@ import soilUrl from '../../music/soil.wav?url';
 const excreteUrl = new URL('../../sfx/excrete.wav', import.meta.url).href;
 
 let ctx = null;
-let muted = false;
+let soundVolume = 1; // Options → Accessibility → Sounds: 0 (off) to 1
+let muted = false; // (Sounds at 0)
 let master = null; // the output every sound goes to (a limiter in front of the speakers)
+let effects = null; // the sound effects' volume (Sounds), in front of `master`
 
 // ---------------------------------------------------------------- positional sound
 // Sounds from the game scene (not the menus) are placed where they happen (`at`: a position in
@@ -62,7 +64,7 @@ function applyListener() {
 
 /** Where a sound goes: placed at `at` (scene metres) when given, else straight out (menu sounds). */
 function outputAt(audioCtx, at) {
-  if (!at) return master;
+  if (!at) return effects;
   const p = audioCtx.createPanner();
   p.panningModel = 'HRTF';
   p.distanceModel = 'inverse';
@@ -76,12 +78,15 @@ function outputAt(audioCtx, at) {
   } else p.setPosition(at.x, at.y, at.z);
   const g = audioCtx.createGain();
   g.gain.value = CLOSE_BOOST;
-  g.connect(p).connect(master);
+  g.connect(p).connect(effects);
   return g;
 }
 
-export function setMuted(m) {
-  muted = !!m;
+/** Options → Accessibility → Sounds: the sound effects' volume, 0 (off) to 1. */
+export function setSoundVolume(v) {
+  soundVolume = Math.max(0, Math.min(1, v || 0));
+  muted = soundVolume === 0;
+  if (effects) effects.gain.value = soundVolume;
 }
 
 /** The audio context for sound effects: none while Sounds is off. */
@@ -102,6 +107,9 @@ function audioContext() {
     master.knee.value = 6;
     master.ratio.value = 12;
     master.connect(ctx.destination);
+    effects = ctx.createGain();
+    effects.gain.value = soundVolume;
+    effects.connect(master);
     applyListener();
   }
   if (ctx.state === 'suspended') ctx.resume();

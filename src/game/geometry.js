@@ -263,8 +263,11 @@ export function createBlockMaterials() {
   patchBlockShader(bodyTranslucent, uniforms, options, true, true);
   patchBlockShader(bodyCloud, uniforms, options, true, true, 'cloud');
   patchBlockShader(bodyCrystal, uniforms, options, true, true, 'crystal');
-  patchBlockShader(bodySeeThrough, uniforms, options, false, true, null, true);
-  const all = [opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough];
+  patchBlockShader(bodySeeThrough, uniforms, options, false, true, null, 1);
+  // a body seen into (Accessibility → View Internal): dithered to 3/4, front faces only
+  const bodyInternal = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true });
+  patchBlockShader(bodyInternal, uniforms, options, false, true, null, 2);
+  const all = [opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal];
   // the Delete tool's see-through block: an instance index per material (each pass numbers its
   // own blocks; see World.setDithered)
   for (const m of all) m.userData.dither = { value: -1 };
@@ -298,7 +301,7 @@ export function createBlockMaterials() {
     applyRefraction();
   };
   applyRefraction();
-  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, uniforms, setMaterials, setRefraction };
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, uniforms, setMaterials, setRefraction };
 }
 
 /**
@@ -313,11 +316,12 @@ export function createBlockMaterials() {
  * `subPass` (with `translucentPass`): a see-through pass for one kind only, which the plain
  * translucent pass skips: 'cloud' (CLOUD_PASS: Fog, Nimbus, writing depth) or 'crystal'
  * (CRYSTAL_PASS: refractive Crystal).
- * `seeThrough` (with `mergedBody`): the whole body dithered (SEE_THROUGH; the camera is inside
- * it). Instances are dithered one by one instead (the blockSeeThrough attribute). Either way,
- * with the material double-sided (World.setSeeThrough), only see-through blocks draw back faces.
+ * `seeThrough` (with `mergedBody`): the whole body dithered (SEE_THROUGH, its level: 1 = the
+ * camera is inside it, 2 = View Internal). Instances are dithered one by one instead (the
+ * blockSeeThrough attribute, the same levels). Either way, with the material double-sided
+ * (World.setSeeThrough), only level-1 blocks draw back faces.
  */
-function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = false, subPass = null, seeThrough = false) {
+function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = false, subPass = null, seeThrough = 0) {
   const cloudPass = subPass === 'cloud', crystalPass = subPass === 'crystal';
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
@@ -326,7 +330,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
     if (cloudPass) shader.defines = { ...shader.defines, CLOUD_PASS: '' };
     if (crystalPass) shader.defines = { ...shader.defines, CRYSTAL_PASS: '' };
     if (mergedBody) shader.defines = { ...shader.defines, MERGED_BODY: '' };
-    if (seeThrough) shader.defines = { ...shader.defines, SEE_THROUGH: '' };
+    if (seeThrough) shader.defines = { ...shader.defines, SEE_THROUGH: seeThrough.toFixed(1) };
     if (options.level === 'solid') shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
     if (options.level === 'simple') shader.defines = { ...shader.defines, SIMPLE_MATERIALS: '' };
     shader.vertexShader = shader.vertexShader
@@ -366,7 +370,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         vec3 blockPos = localPos;
         vSmooth = 0.0; // bodies are smooth already
         #ifdef SEE_THROUGH
-        vSeeThrough = 1.0;
+        vSeeThrough = SEE_THROUGH;
         #else
         vSeeThrough = 0.0;
         #endif
@@ -471,15 +475,21 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         `#include <clipping_planes_fragment>
         // 50 % screen-door transparency: drop every other pixel in a checkerboard
         if (vDither > 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0) < 1.0) discard;
-        // the camera is inside it: 1/8 opaque (two staggered pixels in each 4×4 square), so you see
-        // out; the material is then double-sided (World.setSeeThrough) so its inside faces show,
-        // but only these blocks'
-        if (vSeeThrough > 0.5) {
+        // Accessibility → View Internal (see-through level 2): 3/4 opaque (one pixel in each 2×2
+        // square dropped), so its inventory shows inside; front faces only
+        if (vSeeThrough > 1.5) {
+          vec2 q = mod(floor(gl_FragCoord.xy), 2.0);
+          if (q.x + q.y < 0.5) discard;
+        }
+        // the camera is inside it (level 1): 1/8 opaque (two staggered pixels in each 4×4 square),
+        // so you see out; the material is then double-sided (World.setSeeThrough) so its inside
+        // faces show, but only these blocks'
+        else if (vSeeThrough > 0.5) {
           vec2 q = mod(floor(gl_FragCoord.xy), 4.0);
           if (!(q.x == q.y && mod(q.x, 2.0) < 0.5)) discard; // keeps (0, 0) and (2, 2)
         }
         #ifdef DOUBLE_SIDED
-        if (vSeeThrough < 0.5 && !gl_FrontFacing) discard;
+        if ((vSeeThrough < 0.5 || vSeeThrough > 1.5) && !gl_FrontFacing) discard;
         #endif`
       )
       .replace(
@@ -952,5 +962,5 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       );
   };
   mat.customProgramCacheKey = () =>
-    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}${seeThrough ? '-see' : ''}-${options.level}`;
+    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}${seeThrough ? `-see${seeThrough}` : ''}-${options.level}`;
 }

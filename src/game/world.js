@@ -199,7 +199,7 @@ export class World {
     this._batchList = Object.values(this.batches);
     // which materials draw each batch's blocks (their own mesh, and cluster bodies in Smooth rendering)
     this._batchMaterials = new Map([
-      [this.batches.opaque, [this.materials.opaque, this.materials.body, this.materials.bodySeeThrough]],
+      [this.batches.opaque, [this.materials.opaque, this.materials.body, this.materials.bodySeeThrough, this.materials.bodyInternal]],
       [this.batches.cloud, [this.materials.cloud, this.materials.bodyCloud]],
       [this.batches.crystal, [this.materials.crystal, this.materials.bodyCrystal]],
       [this.batches.water, [this.materials.translucent, this.materials.bodyTranslucent]],
@@ -673,6 +673,12 @@ export class World {
     return out.lerpVectors(a.from, a.to, a.easeIn ? t * t * (2 - t) : t);
   }
 
+  /** `block`'s slide this turn ({ from, to }: lattice units), while it is sliding; else null. */
+  slideOf(block) {
+    const a = this.anims.get(cellKey(block.x, block.y, block.z));
+    return a && this.time - a.t0 < a.dur ? a : null;
+  }
+
   /** Whether `block` is moving on from a slide it made last turn (or earlier this turn), rather than setting off. */
   _movingOn(block) {
     return block.movedTurn != null && block.movedTurn >= this.turn - 1;
@@ -699,24 +705,29 @@ export class World {
    * faces showing (the opaque material goes double-sided while any are; the shader keeps the
    * other blocks' back faces culled). Their cluster bodies too, in Smooth rendering. For the
    * camera inside a creature or a cluster; call every frame (an empty Set clears it).
+   * `internal` (a Set; Accessibility → View Internal): drawn 3/4 opaque, front faces only, so
+   * what's inside shows (InventoryView); `blocks` wins where both have a block.
    */
-  setSeeThrough(blocks) {
-    const prev = this._seeThrough ?? new Set();
+  setSeeThrough(blocks, internal = new Set()) {
+    const prev = this._seeThrough ?? new Map();
+    const levels = new Map(); // block -> 1 (the camera's inside it: wins), 2 (View Internal)
+    for (const block of internal) if (!isTranslucent(block.type)) levels.set(block, 2);
+    for (const block of blocks) levels.set(block, 1);
     const flag = (block, v) => {
       if (!block.batch) return; // gone from the world
       const a = block.batch.attr('blockSeeThrough');
       a.setX(block.index, v);
       a.needsUpdate = true;
     };
-    for (const block of prev) if (!blocks.has(block)) flag(block, 0);
-    for (const block of blocks) if (!prev.has(block)) flag(block, 1);
-    this._seeThrough = blocks;
+    for (const block of prev.keys()) if (!levels.has(block)) flag(block, 0);
+    for (const [block, v] of levels) if (prev.get(block) !== v) flag(block, v);
+    this._seeThrough = levels;
     const side = blocks.size ? THREE.DoubleSide : THREE.FrontSide;
     if (this.materials.opaque.side !== side) {
       this.materials.opaque.side = side;
       this.materials.opaque.needsUpdate = true; // (DOUBLE_SIDED: compiled once, then cached)
     }
-    this.clusterBodies.setSeeThrough(blocks);
+    this.clusterBodies.setSeeThrough(blocks, internal);
   }
 
   /** Draw this block 50 % see-through (dithered); pass null to clear. Only its own pass fades it. */

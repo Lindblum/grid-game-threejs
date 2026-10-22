@@ -440,6 +440,17 @@ const DRAW = {
       line(ctx, P, pts);
     }
   },
+  aaOn(ctx, P) {
+    // Anti-aliasing: a smooth diagonal edge
+    line(ctx, P, [[0.16, 0.84], [0.84, 0.16]]);
+    ctx.globalAlpha *= 0.4;
+    line(ctx, P, [[0.16, 0.66], [0.66, 0.16]]); // (its soft fringe)
+    line(ctx, P, [[0.34, 0.84], [0.84, 0.34]]);
+  },
+  aaOff(ctx, P) {
+    // the same edge, jagged: stair steps
+    line(ctx, P, [[0.16, 0.84], [0.16, 0.67], [0.33, 0.67], [0.33, 0.5], [0.5, 0.5], [0.5, 0.33], [0.67, 0.33], [0.67, 0.16], [0.84, 0.16]]);
+  },
   fogOff(ctx, P, s) {
     DRAW.fogOn(ctx, P, s);
     line(ctx, P, [[0.2, 0.84], [0.8, 0.16]]); // struck through
@@ -497,6 +508,31 @@ const DRAW = {
   },
   cameraInvert(ctx, P) {
     orbitArrow(ctx, P, -1);
+  },
+  guidesOn(ctx, P, s) {
+    // Movement Guides: a creature (a block), a line out from it, and the dot it's heading for
+    poly(ctx, P, [[0.12, 0.6], [0.4, 0.6], [0.4, 0.88], [0.12, 0.88]]);
+    line(ctx, P, [[0.26, 0.74], [0.74, 0.26]]);
+    circle(ctx, P, 0.76, 0.24, 0.09, s, { fill: true });
+  },
+  guidesOff(ctx, P, s) {
+    poly(ctx, P, [[0.12, 0.6], [0.4, 0.6], [0.4, 0.88], [0.12, 0.88]]);
+    circle(ctx, P, 0.76, 0.24, 0.09, s);
+    line(ctx, P, [[0.56, 0.86], [0.9, 0.52]]); // struck through
+  },
+  internalOn(ctx, P) {
+    // View Internal: a see-through (faint) body with the blocks inside it showing
+    ctx.globalAlpha *= 0.5;
+    poly(ctx, P, [[0.12, 0.2], [0.88, 0.2], [0.88, 0.8], [0.12, 0.8]]);
+    ctx.globalAlpha /= 0.5;
+    poly(ctx, P, [[0.24, 0.38], [0.44, 0.38], [0.44, 0.62], [0.24, 0.62]], { fill: true });
+    poly(ctx, P, [[0.56, 0.38], [0.76, 0.38], [0.76, 0.62], [0.56, 0.62]], { fill: true });
+  },
+  internalOff(ctx, P) {
+    // the body solid: nothing inside showing
+    poly(ctx, P, [[0.12, 0.2], [0.88, 0.2], [0.88, 0.8], [0.12, 0.8]]);
+    ctx.globalAlpha *= 0.35;
+    poly(ctx, P, [[0.12, 0.2], [0.88, 0.2], [0.88, 0.8], [0.12, 0.8]], { fill: true });
   },
   performance(ctx, P, s, cx, cy) {
     // Debug → Performance: a gauge, its needle well up

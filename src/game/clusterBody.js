@@ -248,18 +248,25 @@ export class ClusterBodies {
 
   /**
    * Draws the bodies holding any of `blocks` (a Set) see-through: dithered all over, inside
-   * faces too (the camera is inside them; see World.setSeeThrough). Opaque bodies only. Call
-   * every frame: rebuilt bodies start out with their own material.
+   * faces too (the camera is inside them; see World.setSeeThrough), and those holding any of
+   * `internal` 3/4 opaque (View Internal; `blocks` wins). Opaque bodies only. Call every frame:
+   * rebuilt bodies start out with their own material.
    */
-  setSeeThrough(blocks) {
-    const want = new Set();
-    for (const block of blocks) {
-      const body = this._byBlock.get(block);
-      if (body?.mesh.material === this.materials.body || body?.mesh.material === this.materials.bodySeeThrough) want.add(body);
-    }
-    for (const body of this._seeThrough) if (!want.has(body)) body.mesh.material = this.materials.body;
-    for (const body of want) body.mesh.material = this.materials.bodySeeThrough;
-    this._seeThrough = want;
+  setSeeThrough(blocks, internal = new Set()) {
+    const { body: plain, bodySeeThrough, bodyInternal } = this.materials;
+    const want = new Map(); // body -> its material
+    const mark = (set, material) => {
+      for (const block of set) {
+        const body = this._byBlock.get(block);
+        const m = body?.mesh.material;
+        if (m === plain || m === bodySeeThrough || m === bodyInternal) want.set(body, material);
+      }
+    };
+    mark(internal, bodyInternal);
+    mark(blocks, bodySeeThrough);
+    for (const body of this._seeThrough) if (!want.has(body)) body.mesh.material = plain;
+    for (const [body, material] of want) body.mesh.material = material;
+    this._seeThrough = new Set(want.keys());
   }
 
   /** Throws every body away and builds them all again (Smooth turned on, a new world, a huge change). */
