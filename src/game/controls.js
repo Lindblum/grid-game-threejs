@@ -57,7 +57,7 @@ const OBSERVER_CONTROLS = [
   {
     action: 'Zoom',
     mk: { g: ['mouse:wheel'], t: 'Mouse wheel' },
-    pad: { g: ['pad:LT', 'sep:/', 'pad:RT'], t: 'LT: zoom out, RT: zoom in (or the left stick up / down)' },
+    pad: { g: ['pad:LT', 'sep:/', 'pad:RT'], t: 'LT: zoom out, RT: zoom in' },
     xr: { g: ['xr:grip:L', 'sep:+', 'xr:grip:R'], t: 'Hold both grips and move your hands apart / together' },
   },
   {
@@ -105,7 +105,7 @@ export const ObserverControlSchema = {
  * Controlling the selected creature (R3 with a creature selected; R3 again, or deselecting
  * it, goes back to Observer): the camera orbits the creature's head, up close, and follows it
  * (no panning); the gamepad's left stick moves the creature, relative to the camera (on its
- * turn), so zooming is LT / RT only; and no tools (using, aiming or switching them): those
+ * turn); and no tools (using, aiming or switching them): those
  * belong to the Observer.
  */
 const TOOL_ACTIONS = new Set(['Use tool', 'Aim', 'Change tool']);
@@ -125,9 +125,7 @@ export const CreatureControlSchema = {
       pad: { g: ['stick:L:press'], t: 'L3 (hold the left stick in): the creature steps the way most nearly away from the camera' },
       xr: { g: ['text:—'], t: 'No XR controller binding yet' },
     },
-    ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action)).map((row) =>
-      row.action === 'Zoom' ? { ...row, pad: { g: ['pad:LT', 'sep:/', 'pad:RT'], t: 'LT: zoom out, RT: zoom in' } } : row,
-    ),
+    ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action)),
     {
       action: 'Control schema',
       mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click the creature: back to Observer controls (another creature: control that one instead)' },

@@ -11,16 +11,31 @@ const _c = new THREE.Color();
 /** Per-instance attributes a batch keeps, and their sizes (see World and the block shader). */
 const INSTANCE_ATTRIBUTES = { blockStyle: 4, blockMerged: 1, blockSmooth: 1, blockSeeThrough: 1 };
 
+/**
+ * Draws geometry `g` twice, each draw its own group: first with material 0 (a depth-only
+ * pre-pass), then material 1. Within one object three.js draws the groups in order (they tie in
+ * every sort key, and the sort is stable). Counts are Infinity: clamped to the index count, so
+ * a rebuilt index needs no new groups.
+ */
+export function addDepthPrePass(g) {
+  g.clearGroups();
+  g.addGroup(0, Infinity, 0);
+  g.addGroup(0, Infinity, 1);
+}
+
 export class BlockBatch {
   /**
    * `baseGeometry`: the block's shape and per-vertex data (shared by every batch);
    * `material`: this pass's material. `name` names the mesh; `renderOrder` places it among
-   * the see-through passes.
+   * the see-through passes. `depthMaterial`: a depth-only pre-pass the mesh draws first (its
+   * own geometry group; e.g. the clouds' cloudDepth), so the see-through colour pass blends only
+   * the nearest surface.
    */
-  constructor(parent, baseGeometry, material, name, { renderOrder = 0, initialCapacity = 256 } = {}) {
+  constructor(parent, baseGeometry, material, name, { renderOrder = 0, initialCapacity = 256, depthMaterial = null } = {}) {
     this.parent = parent;
     this.baseGeometry = baseGeometry;
     this.material = material;
+    this.depthMaterial = depthMaterial;
     this.name = name;
     this.renderOrder = renderOrder;
     this.blocks = []; // instance index -> block
@@ -49,7 +64,8 @@ export class BlockBatch {
       if (oldGeometry) a.array.set(oldGeometry.getAttribute(name).array.subarray(0, this.blocks.length * size));
       g.setAttribute(name, a);
     }
-    const mesh = new THREE.InstancedMesh(g, this.material, capacity);
+    if (this.depthMaterial) addDepthPrePass(g);
+    const mesh = new THREE.InstancedMesh(g, this.depthMaterial ? [this.depthMaterial, this.material] : this.material, capacity);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.setColorAt(0, _c.set('#ffffff')); // make sure the colour buffer exists
     mesh.frustumCulled = false;

@@ -248,6 +248,17 @@ export function createBlockMaterials() {
   const bodySeeThrough = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true, side: THREE.DoubleSide });
   const bodyTranslucent = new THREE.MeshPhysicalMaterial({ ...waterOptions, vertexColors: true });
   const bodyCloud = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true, vertexColors: true });
+  // …and a depth pre-pass for each (drawn first, by the same mesh: see BlockBatch's depthMaterial
+  // and ClusterBodies._bodyMesh): with the depth laid down, the colour pass blends only each
+  // pixel's nearest surface, once, so a cloud is the same see-through all over whatever order its
+  // triangles come in (blended surface over surface, a rebuilt mesh's new triangle order made its
+  // sides flicker). The same shader program as the colour pass (colorWrite is render state), so
+  // the depths match exactly.
+  // Water too, while it's blended (not refracting: see applyRefraction)
+  const translucentDepth = new THREE.MeshPhysicalMaterial({ ...waterOptions, colorWrite: false, depthWrite: true });
+  const bodyTranslucentDepth = new THREE.MeshPhysicalMaterial({ ...waterOptions, colorWrite: false, depthWrite: true, vertexColors: true });
+  const cloudDepth = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true, colorWrite: false });
+  const bodyCloudDepth = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true, colorWrite: false, vertexColors: true });
   // Crystal: refractive. Physical transmission: the scene behind is rendered to a texture and
   // seen through the gem, bent by its index of refraction over its thickness (cm, like the
   // lattice) and tinted by its colour; each facet's tilted normal (the Crystal shader) bends
@@ -262,15 +273,24 @@ export function createBlockMaterials() {
   patchBlockShader(body, uniforms, options, false, true);
   patchBlockShader(bodyTranslucent, uniforms, options, true, true);
   patchBlockShader(bodyCloud, uniforms, options, true, true, 'cloud');
+  patchBlockShader(translucentDepth, uniforms, options, true);
+  patchBlockShader(bodyTranslucentDepth, uniforms, options, true, true);
+  patchBlockShader(cloudDepth, uniforms, options, true, false, 'cloud');
+  patchBlockShader(bodyCloudDepth, uniforms, options, true, true, 'cloud');
   patchBlockShader(bodyCrystal, uniforms, options, true, true, 'crystal');
   patchBlockShader(bodySeeThrough, uniforms, options, false, true, null, 1);
   // a body seen into (Accessibility → View Internal): dithered to 3/4, front faces only
   const bodyInternal = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true });
   patchBlockShader(bodyInternal, uniforms, options, false, true, null, 2);
-  const all = [opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal];
+  const all = [opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, cloudDepth, bodyCloudDepth, translucentDepth, bodyTranslucentDepth];
   // the Delete tool's see-through block: an instance index per material (each pass numbers its
-  // own blocks; see World.setDithered)
+  // own blocks; see World.setDithered); a depth pre-pass shares its colour pass's, so both drop
+  // the same pixels
   for (const m of all) m.userData.dither = { value: -1 };
+  cloudDepth.userData.dither = cloud.userData.dither;
+  bodyCloudDepth.userData.dither = bodyCloud.userData.dither;
+  translucentDepth.userData.dither = translucent.userData.dither;
+  bodyTranslucentDepth.userData.dither = bodyTranslucent.userData.dither;
   // Options → Refraction: On, Crystal (any Materials mode) and Water (Materials: Procedural)
   // bend the scene behind them (transmission, an extra render pass); Off, they are simply
   // see-through, alpha-blended at their shader's opacity, which is much cheaper
@@ -287,7 +307,10 @@ export function createBlockMaterials() {
       }
     };
     set([crystal, bodyCrystal], refraction ? CRYSTAL_TRANSMISSION : 0);
-    set([translucent, bodyTranslucent], refraction && options.level === 'procedural' ? 1 : 0);
+    const waterRefracts = refraction && options.level === 'procedural';
+    set([translucent, bodyTranslucent], waterRefracts ? 1 : 0);
+    // refracting Water is drawn whole (writing depth, not blended): no depth pre-pass needed
+    translucentDepth.visible = bodyTranslucentDepth.visible = !waterRefracts;
   };
   const setMaterials = (level) => {
     if (!MATERIALS.includes(level) || options.level === level) return;
@@ -301,7 +324,7 @@ export function createBlockMaterials() {
     applyRefraction();
   };
   applyRefraction();
-  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, uniforms, setMaterials, setRefraction };
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, cloudDepth, bodyCloudDepth, translucentDepth, bodyTranslucentDepth, uniforms, setMaterials, setRefraction };
 }
 
 /**

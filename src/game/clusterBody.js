@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { GRID, NEIGHBOR_DIRS, cellKey } from './lattice.js';
 import { FACE_DIRS } from './geometry.js';
+import { addDepthPrePass } from './blockBatch.js';
 import { BLOCK, blockProps, isChainCreature, isCreature, isTranslucent } from './blocks.js';
 
 /** Taubin smoothing (shrink, then inflate) passes over a welded body: rounds its edges off. */
@@ -429,8 +430,10 @@ export class ClusterBodies {
   _bodyMesh(g, type) {
     const isCloud = type === BLOCK.FOG || type === BLOCK.NIMBUS;
     const isCrystal = type === BLOCK.CRYSTAL;
-    const mesh = new THREE.Mesh(g, isCloud ? this.materials.bodyCloud : isCrystal ? this.materials.bodyCrystal
-      : isTranslucent(type) ? this.materials.bodyTranslucent : this.materials.body);
+    const isWater = isTranslucent(type) && !isCloud && !isCrystal;
+    if (isCloud || isWater) addDepthPrePass(g); // (depth first, then colour: see createBlockMaterials' cloudDepth)
+    const mesh = new THREE.Mesh(g, isCloud ? [this.materials.bodyCloudDepth, this.materials.bodyCloud] : isCrystal ? this.materials.bodyCrystal
+      : isWater ? [this.materials.bodyTranslucentDepth, this.materials.bodyTranslucent] : this.materials.body);
     mesh.name = 'cluster-body';
     mesh.frustumCulled = false;
     mesh.raycast = () => { }; // picking uses the (hidden) blocks

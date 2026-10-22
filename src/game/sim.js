@@ -354,8 +354,8 @@ export function stepSquirmies(world, skip = new Set()) {
       moveChain(world, sq.segments, to);
       moved++;
     } else if ((behavior === BEHAVIOR.WANDER || behavior === BEHAVIOR.WALK) && !hasEmptyNeighbor(world, head)) {
-      // boxed in (no empty cell next to its head): if its inventory is full it tries to
-      // excrete (World.excrete, out behind its tail); otherwise it eats its way out
+      // boxed in (no empty cell next to its head): if its head's slot is full it tries to
+      // excrete (World.excrete, out behind its tail: only with an item there); otherwise it eats its way out
       // (an edible block next to its head, freeing that cell)
       if (!world.freeSlotFor(head)) world.excrete(world.clusterOf(head), 'excrete');
       else creatureEatNearby(world, head);
@@ -405,8 +405,7 @@ function burrow(world, segments) {
   }
   const act = BURROW_CYCLE[step % BURROW_CYCLE.length];
   if (act === 'excrete') {
-    const body = world.clusterOf(head);
-    if (body.some((block) => block.inventory)) world.excrete(body, 'excrete');
+    world.excrete(world.clusterOf(head), 'excrete'); // (only when there's an item in its tail)
   } else if (act === 'eat') {
     for (const c of downwardCells(head)) {
       const food = world.get(c.x, c.y, c.z);
@@ -434,8 +433,7 @@ function hasEmptyNeighbor(world, block) {
  */
 function maybeExcrete(world, creature) {
   if (creature.isControlled || Math.random() >= EXCRETE_CHANCE) return;
-  const body = world.clusterOf(creature);
-  if (body.some((block) => block.inventory)) world.excrete(body, 'excrete');
+  world.excrete(world.clusterOf(creature), 'excrete'); // (only when there's an item in its tail)
 }
 
 /** Moves a Squirmy's head to `to`; each following segment takes the cell the one ahead of it just left. */
@@ -463,7 +461,7 @@ function moveChain(world, segments, to) {
 
 /**
  * Foraging, for a creature left to itself (`creature.isAssignedBehavior` false: the player hasn't
- * given it something to do) with an inventory slot free in its cluster. Its priority foods are
+ * given it something to do) with its head's inventory slot free. Its priority foods are
  * its priorityDiet (its type's, plus its buffs', e.g. Rockbiter's Crystal: blocks.js), counting
  * only those it can eat right now:
  *  - a priority food right next to it: it eats it (creatureEat)
@@ -506,7 +504,7 @@ const eatSound = (food) => (food.type === BLOCK.WATER ? 'sip' : 'eat');
 
 /**
  * `creature` (a one-block creature, or a Squirmy's head) eats block `food`, if its type is in the
- * creature's diet (or a buff's: canEat) and its cluster has a free inventory slot (World.consume:
+ * creature's diet (or a buff's: canEat) and its head's inventory slot is free (World.consume:
  * the food shrinks toward `creature`, the eat sound plays, the item goes into a slot). A Squirmy
  * that eats a Berry then grows one block at its tail, "worm" style: in an empty cell next to
  * the tail that touches no other block of the Squirmy (falling back to the segment before,

@@ -65,7 +65,7 @@ const ORBIT_PERIOD_S = 60; // one revolution per minute
 const GRAB_MIN_SCALE = 0.1; // two-hand zoom limits, relative to life size (1 lattice cm = 1 cm)
 const GRAB_MAX_SCALE = 20;
 const FLY_M_PER_WHEEL_PX = 0.00005; // zoomed all the way in, scrolling flies forward: ~0.5 cm per wheel notch
-const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's left stick flies up to 8 cm/s
+const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's RT flies up to 8 cm/s
 // The windowed camera settles, gently, so down (toward the origin: gravity) is down (see _settleCamera):
 // its roll eases level, and it drifts round its orbit to look down on its target from between these
 // heights (degrees above the target's ground). Each eases over about _S seconds, never faster than _MAX_DEG_S.
@@ -389,6 +389,7 @@ export class Engine {
       if (dies) playCreatureDeath(at(block));
     });
     this.world.on('blockExcreted', ({ sound, block }) => playSfx(sound, 90, at(block)));
+    this.world.on('inventoryMoved', ({ blocks }) => playSfx('churn', 90, at(blocks[0])));
     // event log (console, so it also shows in the debug panel): consume, excrete, buffs, behavior
     const nameOf = (type) => blockProps(type).name;
     this.world.on('blockConsumed', ({ by, block }) => this._logEvent('consume', by, `ate ${nameOf(block.type)}`));
@@ -996,7 +997,7 @@ export class Engine {
   /**
    * Gamepad / Touch A: each selected creature eats the block in front of it (its `front`
    * side; for a Squirmy, its head's), or else the edible block next to it closest to its front, if its
-   * cluster has an inventory slot free. If none of them can, "ineffective" plays.
+   * head's inventory slot is free. If none of them can, "ineffective" plays.
    */
   selectedEat() {
     if (!this.selected.length || !this.toolsReady()) return false;
@@ -1345,8 +1346,8 @@ export class Engine {
   /**
    * Creature controls: a dot on the cell each controlled creature will step into on its next
    * turn as it is being steered (sim.js nextSteppedCell); none while it isn't steered, or can't
-   * go that way (it bumps instead). While the stick is pushed, lines run from each one's cell
-   * toward the cells it could step into (sim.js steppableCells), as far as the stick points
+   * go that way (it bumps instead). Lines run from each one's cell to the cells it could step
+   * into (sim.js steppableCells): all the way while the stick is at rest; while it's pushed, as far as it points
    * along each (its cosine with the line on screen; with the step in 3D if the creature is
    * behind the camera): all the way when it points right along it, not at all at 90° or more.
    * While it moves, a line runs from the cell it left to the one it's moving into. All in its
@@ -1376,8 +1377,9 @@ export class Engine {
     };
     const stick = this._steerStick;
     const steps = [];
-    for (const c of stick ? controlled : []) {
-      const cosines = this._stepCosines(c, ...stick) ?? steppableCells(this.world, c).map((t) => {
+    for (const c of controlled) {
+      // the stick at rest: a line all the way to every cell it could step into
+      const cosines = !stick ? steppableCells(this.world, c).map((t) => ({ t, cos: 1 })) : this._stepCosines(c, ...stick) ?? steppableCells(this.world, c).map((t) => {
         const d = [t.x - c.x, t.y - c.y, t.z - c.z];
         const st = c.steer ?? [0, 0, 0];
         return { t, cos: (d[0] * st[0] + d[1] * st[1] + d[2] * st[2]) / Math.hypot(...d) };
@@ -1705,6 +1707,7 @@ export class Engine {
     stepSoloCreatures(this.world, moved); // …then one-block creatures (one that just fell with its group waits)…
     stepSquirmies(this.world, moved); // …and Squirmies crawl as chains, head first…
     stepSight(this.world); // …and every creature clears the Fog it can see (it shrinks away, then goes)…
+    this.world.digest(); // …what creatures swallowed moves a block along their bodies…
     stepWood(this.world, turn); // …then watered trees grow Wood (or Berries)…
     stepDirt(this.world, turn); // …then Dirt soaks up leftover settled Water and turns to Moss (Plop: to Wood)…
     if (this.state.rain) stepRain(this.world, turn); // …a raindrop appears far out now and then (Options → Rain)…
@@ -2740,7 +2743,8 @@ export class Engine {
     const shown = this.state.viewInternal && this.state.screen === 'playing'
       ? [...new Set([...this.selected, ...(this._controlled ?? [])])].filter((c) => this.world.get(c.x, c.y, c.z) === c)
       : [];
-    const internal = new Set(shown.flatMap((c) => this._bodyOf(c)));
+    // (see-through only while there's something inside to see)
+    const internal = new Set(shown.filter((c) => this.world.clusterOf(c).some((b) => b.inventory)).flatMap((c) => this._bodyOf(c)));
     this.inventoryView.update(shown, now);
     if (!this._immersive) {
       this.cameraCollider ??= new CameraCollider(this.world);
@@ -2887,9 +2891,9 @@ export class Engine {
     if (edge(2)) this.selectedToggleWait(); // X: selected creatures wait, or resume what they were doing
     if (edge(4)) this.cycleTool(-1); // LB
     if (edge(5)) this.cycleTool(1); // RB
-    // left stick up / down and the triggers zoom (LT out, RT in); in the creature's view the
+    // the triggers zoom (LT out, RT in; the left stick doesn't); in the creature's view the
     // camera orbits its head the same way (no panning: see _padCamera)
-    this._padCamera(dt, ax(2), ax(3), THREE.MathUtils.clamp((steering ? 0 : ax(1)) + zoom, -1, 1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
+    this._padCamera(dt, ax(2), ax(3), THREE.MathUtils.clamp(zoom, -1, 1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
   }
 
   /** D-pad / left stick moves the focus, A selects, B goes back, Start closes the pause menu. */
@@ -2933,7 +2937,7 @@ export class Engine {
 
   /**
    * Right stick orbits (like the trackball: about the camera's own up and right axes, so it
-   * keeps turning over the poles), left stick up/down zooms, D-pad pans.
+   * keeps turning over the poles), the triggers zoom (`ly`: < 0 in), D-pad pans.
    */
   _padCamera(dt, rx, ry, ly, [du, dd, dl, dr]) {
     if (!rx && !ry && !ly && !du && !dd && !dl && !dr) return;
@@ -2952,7 +2956,7 @@ export class Engine {
     off.applyQuaternion(turn);
     cam.up.copy(upv).applyQuaternion(turn);
     const radius = THREE.MathUtils.clamp(off.length() * Math.exp(ly * 1.6 * dt), c.minDistance, c.maxDistance);
-    if (ly < 0) this._flyForward(-ly * FLY_M_PER_PAD_S * dt, radius); // stick past the zoom limit: fly forward
+    if (ly < 0) this._flyForward(-ly * FLY_M_PER_PAD_S * dt, radius); // RT past the zoom limit: fly forward
     off.setLength(radius);
     const pan = new THREE.Vector3();
     if ((du || dd || dl || dr) && !this._pov) {

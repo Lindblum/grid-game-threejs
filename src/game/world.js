@@ -192,17 +192,17 @@ export class World {
     const batch = (material, name, opts) => new BlockBatch(parent, this.geometry, material, name, opts);
     this.batches = {
       opaque: batch(this.materials.opaque, 'blocks', { initialCapacity: 1024 }),
-      cloud: batch(this.materials.cloud, 'cloud-blocks', { renderOrder: 1, initialCapacity: 1024 }),
+      cloud: batch(this.materials.cloud, 'cloud-blocks', { renderOrder: 1, initialCapacity: 1024, depthMaterial: this.materials.cloudDepth }),
       crystal: batch(this.materials.crystal, 'crystal-blocks', { initialCapacity: 128 }),
-      water: batch(this.materials.translucent, 'translucent-blocks', { renderOrder: 2, initialCapacity: 256 }),
+      water: batch(this.materials.translucent, 'translucent-blocks', { renderOrder: 2, initialCapacity: 256, depthMaterial: this.materials.translucentDepth }),
     };
     this._batchList = Object.values(this.batches);
     // which materials draw each batch's blocks (their own mesh, and cluster bodies in Smooth rendering)
     this._batchMaterials = new Map([
       [this.batches.opaque, [this.materials.opaque, this.materials.body, this.materials.bodySeeThrough, this.materials.bodyInternal]],
-      [this.batches.cloud, [this.materials.cloud, this.materials.bodyCloud]],
+      [this.batches.cloud, [this.materials.cloud, this.materials.bodyCloud, this.materials.cloudDepth, this.materials.bodyCloudDepth]],
       [this.batches.crystal, [this.materials.crystal, this.materials.bodyCrystal]],
-      [this.batches.water, [this.materials.translucent, this.materials.bodyTranslucent]],
+      [this.batches.water, [this.materials.translucent, this.materials.bodyTranslucent, this.materials.translucentDepth, this.materials.bodyTranslucentDepth]],
     ]);
     onGridChange(() => this._rebuildShape());
   }
@@ -497,12 +497,17 @@ export class World {
 
   /**
    * The inventory slot an item consumed by block `a` would go into, or null if none is free.
-   * Every block has one slot (`b.inventory`: a block type, or empty). Wood and creatures
-   * pass items along their cluster, into its last empty slot (a Squirmy's toward the tail, a
-   * tree's furthest from the drinking block); other blocks keep them in their own slot.
+   * Every block has one slot (`b.inventory`: a block type, or empty). A creature swallows into
+   * its head's slot (then digest moves it along the body, a block a turn); Wood passes items
+   * along its cluster, into its last empty slot (furthest from the drinking block); other
+   * blocks keep them in their own slot.
    */
   freeSlotFor(a) {
-    if (a.type === BLOCK.WOOD || isCreature(a.type)) {
+    if (isCreature(a.type)) {
+      const head = this.clusterOf(a)[0];
+      return head.inventory ? null : head;
+    }
+    if (a.type === BLOCK.WOOD) {
       const cluster = this.clusterOf(a);
       for (let i = cluster.length - 1; i >= 0; i--) if (!cluster[i].inventory) return cluster[i];
       return null;
@@ -671,6 +676,27 @@ export class World {
     const t = Math.min(1, (now - a.t0) / a.dur);
     // ease in: from standing still up to the even speed (slope 1) by the end
     return out.lerpVectors(a.from, a.to, a.easeIn ? t * t * (2 - t) : t);
+  }
+
+  /**
+   * Once a turn: every creature's swallowed items move along its body (head to tail), each at
+   * most one block, into the next block's slot if it's empty (the tail end first, so a line of
+   * them moves up together). A creature whose items moved churns ('inventoryMoved', with its
+   * blocks that took one in; the engine plays the sound).
+   */
+  digest() {
+    const bodies = [...this.soloCreatures].filter((c) => c.segments?.length).map((c) => this.clusterOf(c));
+    for (const sq of this.squirmies) if (sq.segments.length > 1) bodies.push(sq.segments);
+    for (const body of bodies) {
+      const into = [];
+      for (let i = body.length - 2; i >= 0; i--) {
+        if (!body[i].inventory || body[i + 1].inventory) continue;
+        body[i + 1].inventory = body[i].inventory;
+        body[i].inventory = null;
+        into.push(body[i + 1]);
+      }
+      if (into.length) this.emit('inventoryMoved', { creature: body[0], blocks: into });
+    }
   }
 
   /** `block`'s slide this turn ({ from, to }: lattice units), while it is sliding; else null. */
@@ -1155,8 +1181,8 @@ export class World {
    * cluster `cluster` (ordered head .. tail, e.g. World.clusterOf) excretes the item in its
    * tail's inventory slot: a block of that type is created in an empty cell next to the tail,
    * preferably directly behind it (continuing the line from the segment before the tail, or,
-   * for a one-block creature, opposite its front), the slot is emptied, the remaining items
-   * move along the queue toward the tail (packed at the tail end, order kept), and the new
+   * for a one-block creature, opposite its front), the slot is emptied (the items further up
+   * the body come down to it a block a turn: digest), and the new
    * block grows in from the tail to its cell (appear) while the sound `sound` plays
    * ('blockExcreted' event; the engine plays it). `cell` ({ x, y, z }, optional) picks the cell
    * instead (a Nimbus raining straight down). A creature's eaten creatures and Berries come out
@@ -1189,11 +1215,8 @@ export class World {
     // and Crystal as Stone
     const excreted = !isCreature(tail.type) ? type
       : blockProps(tail.type).excretes?.[type] ?? (isCreature(type) || type === BLOCK.BERRY ? BLOCK.PLOP : type === BLOCK.CRYSTAL ? BLOCK.STONE : type);
-    // the rest of the items move along the queue toward the tail
-    const items = cluster.map((block) => block.inventory).filter(Boolean);
-    cluster.forEach((block, i) => (block.inventory = items[i - (cluster.length - items.length)] ?? null));
     if (!this.add(cell.x, cell.y, cell.z, excreted)) {
-      tail.inventory = type; // couldn't place it after all: undo (the queue keeps its new order)
+      tail.inventory = type; // couldn't place it after all: undo
       return null;
     }
     const made = this.get(cell.x, cell.y, cell.z);

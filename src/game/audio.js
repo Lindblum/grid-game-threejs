@@ -291,6 +291,13 @@ export const SOUND_EFFECTS = {
       { wave: WAVE_TYPES.NOISE, f0: NOTE.F5, q: 0.6, t0: 0, dur: 0.14, gain: 0.25 },
     ],
   },
+  churn: { // light low gurgle: swallowed food moving along a creature's body
+    tones: [
+      { wave: WAVE_TYPES.NOISE, f0: NOTE.A3, q: 1.4, t0: 0, dur: 0.16, gain: 0.05 },
+      { wave: WAVE_TYPES.SINE, f0: NOTE.G3, f1: NOTE.C3, t0: 0.02, dur: 0.11, gain: 0.06 },
+      { wave: WAVE_TYPES.SINE, f0: NOTE.E3, f1: NOTE.A2, t0: 0.1, dur: 0.12, gain: 0.045 },
+    ],
+  },
   bump: { // soft, muted low "bonk": a controlled creature was steered where it can't go
     tones: [
       { wave: WAVE_TYPES.SINE, f0: NOTE.A3, f1: NOTE.E3, t0: 0, dur: 0.09, gain: 0.14 },

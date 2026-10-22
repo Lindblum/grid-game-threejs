@@ -1,14 +1,14 @@
 // Accessibility → View Internal: the items in a creature's inventory, drawn inside it. Every
-// block of a creature holds one inventory slot (World.freeSlotFor), and the items queue up
-// from the tail end, so each item is drawn as a block of its type, at INVENTORY_SCALE, in the
+// block of a creature holds one inventory slot (World.freeSlotFor): food is swallowed into the
+// head's and moves a block a turn toward the tail (World.digest). Each item is drawn as a block of its type, at INVENTORY_SCALE, in the
 // middle of the body block whose slot holds it (moving with it as it slides). The creature
 // itself is drawn 3/4 opaque meanwhile (World.setSeeThrough), so they show through.
 //
 // The World only keeps each slot's item type, so the items are tracked here, each with the
 // place it's drawn: frame to frame, a creature's queue (tail first) loses items off its tail
 // end (excreted) and gains them at the other (eaten), the rest keeping their order. An eaten
-// item grows in from where its eater is to its slot; an item moved on to another slot (the
-// queue moving up after an excretion) slides there; an excreted one shrinks away as it moves
+// item grows in from where its eater is to its slot; an item moved on to another slot (a
+// block along, digesting) slides there; an excreted one shrinks away as it moves
 // to where the excreted block appears. Each takes a step (World.stepSeconds), eased like
 // World.appear.
 import * as THREE from 'three';
