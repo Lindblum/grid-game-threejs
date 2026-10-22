@@ -5,6 +5,22 @@
   --muted: rgba(232, 236, 242, 0.6);
   --accent: #5aa0ff;
   --text-scale: 1; /* Options → Accessibility → Text Size (set by the engine) */
+  /* the side-panel pattern (Options, Debug; shared with our other apps): every panel, field
+     and gap takes its size from these, so they stay consistent */
+  --ui-gap: 6px;          /* between fields, and between the panels in the column */
+  --ui-pad-y: 4px;        /* inside a field (button, choice, text box): top / bottom… */
+  --ui-pad-x: 8px;        /* …and left / right, and between its icon and label */
+  --ui-panel-pad: 10px;   /* inside a panel */
+  --ui-indent: 16px;      /* an open section's or dropdown's contents, under its button */
+  --ui-field-h: 30px;     /* a field's least height (a corner button is this square) */
+  --ui-icon: 20px;        /* a field's icon */
+  --ui-radius: 8px;       /* a field's corners */
+  --ui-panel-radius: 12px;
+  --ui-panel-bg: rgba(10, 14, 28, 0.72);
+  --ui-field-bg: rgba(255, 255, 255, 0.09);
+  --ui-field-border: rgba(255, 255, 255, 0.14);
+  --ui-well-bg: rgba(0, 0, 0, 0.22); /* a darkened text field (readouts, logs, text boxes) */
+  --ui-well-border: rgba(255, 255, 255, 0.16);
   font-size: calc(16px * var(--text-scale));
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   color: var(--text);
@@ -45,27 +61,16 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.accent { background: rgba(90, 160, 255, 0.28); border-color: rgba(156, 200, 255, 0.6); }
 
-/* ---------- overlays ---------- */
-.screen-center {
-  position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center;
-  padding: 16px;
-}
-.screen-center.dim { background: rgba(8, 10, 14, 0.45); }
-/* the menu sits in front of the HUDs; the dim backdrop lets clicks through to the HUD */
-.screen-center.dim, .screen-center { z-index: 10; }
-.screen-center.dim { pointer-events: none; }
-.screen-center.dim > .panel { pointer-events: auto; }
 
 /* ---------- Controls table ---------- */
-.menu-panel.controls-panel { width: min(860px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+.menu-panel.controls-panel { width: min(860px, calc(100vw - 24px)); }
 .controls-scroll { overflow: auto; margin-bottom: 14px; min-height: 0; }
 .controls { width: 100%; border-collapse: collapse; font-size: calc(14px * var(--text-scale)); }
-.controls th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 10px; white-space: nowrap; }
-.controls td { padding: 6px 10px; vertical-align: middle; white-space: nowrap; }
+.controls th { text-align: left; color: var(--muted); font-weight: 600; padding: var(--ui-pad-y) var(--ui-pad-x); white-space: nowrap; }
+.controls td { padding: var(--ui-pad-y) var(--ui-pad-x); vertical-align: middle; white-space: nowrap; }
 .controls tbody tr:nth-child(odd) td { background: rgba(255, 255, 255, 0.05); }
-.controls tbody tr td:first-child { border-radius: 10px 0 0 10px; }
-.controls tbody tr td:last-child { border-radius: 0 10px 10px 0; }
+.controls tbody tr td:first-child { border-radius: var(--ui-radius) 0 0 var(--ui-radius); }
+.controls tbody tr td:last-child { border-radius: 0 var(--ui-radius) var(--ui-radius) 0; }
 .controls td.action { font-weight: 600; }
 .controls img { display: block; }
 
@@ -80,57 +85,88 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   transform: translate(-50%, -50%); background: #fff; border-radius: 50%;
 }
 
-/* the panel never outgrows the window: title and Back stay put, the item list scrolls */
-.menu-panel {
-  width: min(560px, 100%); padding: 24px;
-  max-height: calc(100vh - 32px); display: flex; flex-direction: column;
+/* the left column (as in 4d-viewer-threejs): Options, then the Debug panel as the next row.
+   Each panel keeps the same frame and padding open or closed; closed, only its button shows.
+   Neither outgrows the window: the header stays put, the body scrolls */
+.side-stack {
+  position: absolute; z-index: 10;
+  top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left));
+  max-height: calc(100dvh - 2 * max(12px, env(safe-area-inset-top)));
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--ui-gap);
+  pointer-events: none;
 }
-.menu-panel > .menu-items:not(.menu-back) { overflow-y: auto; min-height: 0; flex: 1 1 auto; padding-right: 6px; margin-right: -6px; }
-.menu-panel h2 { margin: 0 0 16px; text-align: center; font-size: calc(28px * var(--text-scale)); }
-.menu-items { display: flex; flex-direction: column; gap: 9px; }
-.menu-items.menu-back { margin-bottom: 12px; } /* Back sits at the top, above the rest of the panel */
-.menu-btn { display: flex; align-items: center; gap: 12px; text-align: left; font-size: calc(17px * var(--text-scale)); }
-.menu-btn .menu-icon { width: 26px; height: 26px; flex: none; }
+.side-panel {
+  position: relative; pointer-events: auto;
+  display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0;
+  width: min(400px, calc(100vw - 24px)); max-width: calc(100vw - 24px);
+  padding: var(--ui-panel-pad);
+  background: var(--ui-panel-bg);
+  border: 1px solid var(--ui-field-border);
+  border-radius: var(--ui-panel-radius);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: calc(14px * var(--text-scale));
+  user-select: none;
+}
+.side-panel.collapsed { width: auto; }
+.side-header { display: flex; align-items: center; gap: var(--ui-pad-x); margin-bottom: var(--ui-gap); flex: none; }
+.side-panel.collapsed .side-header { margin-bottom: 0; }
+.side-header h2 { flex: 1; margin: 0; font-size: calc(16px * var(--text-scale)); font-weight: 650; letter-spacing: 0.02em; }
+.side-toggle { display: grid; place-items: center; width: var(--ui-field-h); height: var(--ui-field-h); min-height: 0; padding: 0; border-radius: var(--ui-radius); flex: none; }
+.side-toggle img { width: var(--ui-icon); height: var(--ui-icon); }
+.side-body {
+  min-height: 0; flex: 1 1 auto;
+  margin-right: calc(-1 * var(--ui-panel-pad)); padding-right: var(--ui-panel-pad); /* the scrollbar sits in the panel's padding, not over the fields */
+  overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+}
+.menu-items { display: flex; flex-direction: column; gap: var(--ui-gap); }
+.menu-items.menu-back { margin-bottom: var(--ui-gap); } /* Back sits at the top, above the rest of the panel */
+.menu-btn {
+  display: flex; align-items: center; gap: var(--ui-pad-x); width: 100%; min-height: var(--ui-field-h);
+  padding: var(--ui-pad-y) var(--ui-pad-x); border-radius: var(--ui-radius); text-align: left; line-height: 1.25;
+}
+.menu-btn .menu-icon { width: var(--ui-icon); height: var(--ui-icon); flex: none; }
 /* slider items (Options → Speed) */
-.menu-slider { cursor: default; flex-wrap: wrap; }
+.menu-slider { cursor: default; flex-wrap: wrap; row-gap: var(--ui-pad-y); }
 .menu-slider input[type='range'] { flex: 1 1 140px; min-width: 120px; accent-color: var(--accent); cursor: pointer; }
 /* a dropdown's choices (Options → Video → View Mode, Background), two to a row beneath its button */
-.menu-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: -3px 0 0 24px; }
+.menu-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-gap); margin-left: var(--ui-indent); }
 /* an open section's entries (Options → Controls, Video), indented beneath its button */
-.menu-section { display: flex; flex-direction: column; gap: 9px; margin: -3px 0 0 24px; }
+.menu-section { display: flex; flex-direction: column; gap: var(--ui-gap); margin-left: var(--ui-indent); }
 .menu-section > .controls-scroll { margin-bottom: 0; flex: none; }
 .menu-option {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--ui-pad-x);
   min-width: 0;
-  min-height: 30px;
-  padding: 3px 10px;
-  border-radius: 8px;
+  min-height: var(--ui-field-h);
+  padding: var(--ui-pad-y) var(--ui-pad-x);
+  border-radius: var(--ui-radius);
   background: rgba(255, 255, 255, 0.05);
   border-color: rgba(255, 255, 255, 0.1);
   text-align: left;
-  font-size: calc(13.5px * var(--text-scale));
 }
-.menu-option .menu-icon { width: 20px; height: 20px; flex: none; }
+.menu-option .menu-icon { width: var(--ui-icon); height: var(--ui-icon); flex: none; }
 .menu-option.selected { background: rgba(255, 255, 255, 0.16); border-color: rgba(255, 255, 255, 0.45); }
 .menu-option .option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.save-new-btn { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.save-new-btn .menu-icon { width: 22px; height: 22px; }
+.save-new-btn { display: flex; align-items: center; gap: var(--ui-pad-x); min-height: var(--ui-field-h); padding: var(--ui-pad-y) var(--ui-pad-x); border-radius: var(--ui-radius); white-space: nowrap; }
+.save-new-btn .menu-icon { width: var(--ui-icon); height: var(--ui-icon); }
 .menu-btn:disabled .menu-icon { opacity: 0.5; }
-.menu-btn .sub { color: var(--muted); font-size: calc(13px * var(--text-scale)); white-space: nowrap; }
+.menu-btn .sub { color: var(--muted); font-size: 0.9em; white-space: nowrap; }
 .menu-btn .label { flex: 1; min-width: 0; display: flex; gap: 18px; justify-content: space-between; white-space: nowrap; }
 .menu-btn .label .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .menu-btn .label .value { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; text-align: right; }
-.save-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.save-row { display: flex; gap: var(--ui-gap); margin-bottom: var(--ui-gap); }
 .save-row input {
   flex: 1; min-width: 0; font: inherit; color: var(--text);
-  background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 12px; padding: 10px 12px; outline: none;
+  background: var(--ui-well-bg); border: 1px solid var(--ui-well-border);
+  border-radius: var(--ui-radius); padding: var(--ui-pad-y) var(--ui-pad-x); outline: none;
 }
 .save-row input:focus { border-color: var(--accent); }
-.fallback { margin-top: 14px; font-size: calc(14px * var(--text-scale)); color: var(--muted); }
-.fallback .btn { width: 100%; margin-top: 4px; }
+.fallback { margin-top: var(--ui-gap); color: var(--muted); }
+.fallback p { margin: 0 0 var(--ui-gap); }
+.fallback .btn { width: 100%; min-height: var(--ui-field-h); padding: var(--ui-pad-y) var(--ui-pad-x); border-radius: var(--ui-radius); }
 .fallback code { color: var(--text); }
 
 /* ---------- HUD ---------- */
@@ -142,57 +178,38 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 }
 .hud-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
 
-/* Options → Debug: a dock on the left edge, from the top down to just above the HUD (its
-   bottom is set by App); Performance, Inspector and Logging stacked, each collapsible. Kept
-   narrow at the normal font size: labels, values and log lines wrap instead of widening it */
-.debug-dock {
-  position: absolute; left: 16px; top: 16px; z-index: 5; pointer-events: auto;
-  display: flex; flex-direction: column; gap: 8px; min-height: 0; max-height: none; overflow: hidden;
-  padding: 8px 10px 10px; font-size: calc(12px * var(--text-scale)); border-radius: 14px;
+/* Options → Debug: a side panel under Options; its sections open beneath their buttons */
+/* the panel's own text size (14 px × Accessibility → Text Size), like the Options menu's */
+.debug-section-body { display: flex; flex-direction: column; gap: var(--ui-gap); }
+/* Debug's text fields (Performance's and the Inspector's readouts, the log, Claude's reply and
+   prompt): one darkened, framed box (like xr-music-threejs's progression queue); values and
+   log lines in monospace */
+.debug-box, .debug-log, .claude-log, .claude-text {
+  padding: var(--ui-pad-y) var(--ui-pad-x);
+  border: 1px solid var(--ui-well-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-well-bg);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
-/* sections share the dock's height: each shrinks to fit and scrolls its own content (the
-   header stays put); Logging (.grow) takes what is left over */
-.debug-section-box { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; overflow: hidden; }
-.debug-section-box.grow { flex: 1 1 0; min-height: 70px; }
-.debug-section-head { flex: none; }
-.debug-section-body { min-height: 0; overflow: auto; display: flex; flex-direction: column; }
-.debug-section-box.grow > .debug-section-body { flex: 1; overflow: hidden; }
-.debug-section-head {
-  display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 2px 0; margin: 0 0 4px;
-  background: none; border: none; color: inherit; font: inherit; cursor: pointer; text-align: left;
-}
-/* headers keep one colour (like the HUD panels' headers); hovering only lights the collapse arrow */
-.debug-section-head:hover .debug-arrow { color: var(--text); }
-.debug-section { font-size: calc(11px * var(--text-scale)); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
-.debug-summary { font-family: ui-monospace, Consolas, monospace; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.debug-arrow { margin-left: auto; color: var(--muted); font-size: calc(11px * var(--text-scale)); }
-.debug-title { font-weight: 700; font-size: calc(13px * var(--text-scale)); margin-bottom: 4px; overflow-wrap: anywhere; }
 .debug-table { border-collapse: collapse; width: 100%; }
-.debug-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 1px 8px 1px 0; vertical-align: top; overflow-wrap: anywhere; }
+.debug-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 1px var(--ui-pad-x) 1px 0; vertical-align: top; overflow-wrap: anywhere; }
 .debug-table td { font-family: ui-monospace, Consolas, monospace; padding: 1px 0; overflow-wrap: anywhere; }
-.debug-log {
-  flex: 1; min-height: 40px; overflow: auto; font-family: ui-monospace, Consolas, monospace; line-height: 1.4;
-  background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 4px 8px; overflow-wrap: anywhere;
-}
+.debug-log { min-height: 40px; max-height: 40vh; overflow: auto; font-family: ui-monospace, Consolas, monospace; }
 .debug-log .log-time { color: var(--muted); }
 .debug-log .log-info { color: #9cc8ff; }
 .debug-log .log-warn { color: #ffd166; }
 .debug-log .log-error { color: #ff8a80; }
 .debug-log .log-empty { color: var(--muted); }
 /* Debug → Claude (placeholder: not connected yet) */
-.claude-log {
-  min-height: 48px; max-height: 160px; overflow: auto; font-family: ui-monospace, Consolas, monospace; line-height: 1.4;
-  background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 4px 8px; overflow-wrap: anywhere;
-}
+.claude-log { min-height: 48px; max-height: 160px; overflow: auto; font-family: ui-monospace, Consolas, monospace; }
 .claude-log .log-empty { color: var(--muted); }
-.claude-text {
-  margin-top: 6px; width: 100%; box-sizing: border-box; resize: none; font: inherit; color: var(--text);
-  background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 8px; padding: 4px 8px;
-}
-.claude-buttons { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
-.claude-buttons .btn { padding: 4px 10px; font-size: calc(12px * var(--text-scale)); border-radius: 8px; }
-.claude-buttons .icon-btn { display: flex; align-items: center; justify-content: center; width: 32px; height: 28px; padding: 0; }
-.claude-buttons .icon-btn img { width: 18px; height: 18px; }
+.claude-text { width: 100%; box-sizing: border-box; resize: none; font: inherit; color: var(--text); outline: none; }
+.claude-text:focus { border-color: var(--accent); }
+.claude-buttons { display: flex; gap: var(--ui-gap); align-items: center; }
+.claude-buttons .btn { min-height: var(--ui-field-h); padding: var(--ui-pad-y) var(--ui-pad-x); border-radius: var(--ui-radius); }
+.claude-buttons .icon-btn { display: grid; place-items: center; width: var(--ui-field-h); height: var(--ui-field-h); padding: 0; }
+.claude-buttons .icon-btn img { width: var(--ui-icon); height: var(--ui-icon); }
 .claude-buttons .send-btn { margin-left: auto; }
 /* dictating: the microphone button glows red */
 /* the hidden field the XR system keyboard types into: focusable, but out of sight */

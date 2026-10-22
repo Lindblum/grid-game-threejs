@@ -8,12 +8,12 @@ import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
 import { debugSections } from './debugSections.js';
-import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature } from './blocks.js';
+import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
 import { GRID, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
 import { EDGE_SHADE, EDGE_WIDTH_CM, MATERIALS, cellFaces } from './geometry.js';
 import {
-  playPlace, playDelete, playTick, playResume, playLoad, playSave, playError, unlockAudio, setMuted,
+  playPlace, playDelete, playTick, playResume, playPause, playLoad, playSave, playError, unlockAudio, setMuted,
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
@@ -72,6 +72,10 @@ const STEP_MARKER_RADIUS_CM = 0.05;
 /** Creature controls: the lines to the cells a creature could step into, room for this many at once (all controlled creatures). */
 const STEP_LINES_MAX = 256;
 /** Creature controls: the stick picks the step line nearest its direction on screen, within this (cosine: ~70°). */
+/** The camera this close to a block's surface (cm), or inside it, draws it see-through: the near plane (0.25 cm, ~0.4 cm at its corners) would cut it. */
+const SEE_THROUGH_REACH_CM = 0.45;
+/** How far (px) the pointer may move between a left press and its release for it to be a click (the tool) rather than a drag (the camera). */
+const CLICK_MAX_MOVE_PX = 6;
 const STEER_SCREEN_COS = 0.35;
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
 
@@ -127,7 +131,7 @@ export class Engine {
     this.state = {
       screen: 'playing',
       paused: false, // the game opens straight into a New scene, with a countdown
-      menu: 'main', // 'main' | 'load' | 'save' | 'options'
+      menu: 'main', // 'main' (Options) | 'load' | 'save' (Options → File)
       gridMode: gridMode(), // the world's grid mode (grids.js): chosen from New's dropdown, or by the save loaded
       soundOn: true, // Options → Sounds
       controlSchema: 'observer', // 'observer' (default) or 'creature' (R3 with a creature selected; the camera takes on its view): controls.js
@@ -140,7 +144,7 @@ export class Engine {
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
       fog: true, // Options → Fog: Fog template steps in New scenes
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
-      refraction: true, // Options → Refraction: Crystal bends what's behind it (Off: just see-through, cheaper)
+      refraction: true, // Options → Refraction: Crystal (and Water, with Procedural materials) bends what's behind it (Off: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
       observerCameraInvert: false, // Options → Accessibility → Observer Camera: Invert turns orbiting the other way
@@ -165,7 +169,7 @@ export class Engine {
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
       dropdown: null, // the menu dropdown whose list is open ('new' | 'view' | 'background'), see menu.js
-      section: null, // the Options section open beneath its button ('controls' | 'video' | 'accessibility'), see menu.js
+      section: null, // the Options section open beneath its button ('file' | 'controls' | 'video' | 'accessibility'), see menu.js
       selectPhase: 'select', // Select tool: 'select' (pick a creature) or 'target' (pick where it walks)
     };
     this._toastId = 0;
@@ -208,10 +212,9 @@ export class Engine {
   };
   getState = () => this.state;
   setState(patch) {
-    const inOptions = (s) => s.paused && s.menu === 'options';
-    const wasInOptions = inOptions(this.state);
+    const wasOpen = this.state.paused;
     this.state = { ...this.state, ...patch };
-    if (wasInOptions && !inOptions(this.state)) this._saveOptions(); // left Options (Back, Esc, Resume, …)
+    if (wasOpen && !this.state.paused) this._saveOptions(); // closed Options (gear, Esc, …)
     // the music plays while the game is running, at a quarter of its volume in the pause menu
     // (fades in / out / down / up as that changes)
     const s = this.state;
@@ -324,7 +327,7 @@ export class Engine {
     // "up" turns with it; the world is a planet, so there's no fixed horizon to keep)
     const controls = new TrackballControls(cam, this.renderer.domElement);
     controls.target.set(0, 0, 0);
-    controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }; // left: tools
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }; // left: also tools (a click: see _onPointerUp)
     controls.keys = ['', '', '']; // no A / S / D mode keys (the game uses the keyboard)
     controls.rotateSpeed = ROTATE_SPEED; // (negated each frame while inverted: see _cameraSign)
     controls.zoomSpeed = 1.2;
@@ -582,7 +585,17 @@ export class Engine {
       // the dimmed backdrop lets clicks through to the canvas: a click beside the pause
       // panel resumes the game (without also using the tool)
       if (this.isMenuOpen() && !this.state.inXR) return this.resume();
+      // left drag orbits the camera (like right drag); a left click, released where it was
+      // pressed, uses the tool (_onPointerUp)
+      this._press = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    };
+    this._onPointerUp = (e) => {
+      const press = this._press;
+      this._press = null;
+      if (e.button !== 0 || !press || press.id !== e.pointerId) return;
+      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > CLICK_MAX_MOVE_PX) return; // a drag: it moved the camera
       if (this.state.screen === 'playing' && !this.state.paused && !this.state.inXR) {
+        this._onPointerMove(e);
         this._updateTarget();
         this.useTool();
       }
@@ -635,6 +648,7 @@ export class Engine {
     el.addEventListener('pointermove', this._onPointerMove);
     el.addEventListener('pointerleave', this._onPointerLeave);
     el.addEventListener('pointerdown', this._onPointerDown);
+    el.addEventListener('pointerup', this._onPointerUp);
     el.addEventListener('dblclick', this._onDoubleClick);
     el.addEventListener('contextmenu', this._onContextMenu);
     window.addEventListener('keydown', this._onKeyDown);
@@ -702,7 +716,7 @@ export class Engine {
       return true;
     }
     // Left: closes an open dropdown, else the open section the focus is in, else like the Back button
-    // (Resume on the main screen); Right on a button with an arrow (a submenu) or a closed dropdown or
+    // (closes Options on its main screen); Right on a button with an arrow (a submenu) or a closed dropdown or
     // section opens it, and on a toggle (On / Off, …) presses it
     if ((left || k === 'Escape' || k === 'Backspace') && s.dropdown) {
       e.preventDefault();
@@ -770,7 +784,7 @@ export class Engine {
     this.setState({ screen: 'playing', paused: false, menu: 'main' });
   }
 
-  /** The HUD Menu button: open the pause menu, or close it again. */
+  /** The gear button (the HUD's in XR): open Options, pausing the game, or close it, resuming. */
   toggleMenu() {
     if (this.state.screen !== 'playing') return;
     if (this.state.paused) this.resume();
@@ -779,9 +793,9 @@ export class Engine {
 
   pause() {
     if (this.state.screen !== 'playing') return;
-    this.setState({ paused: true, menu: 'main', page: 0, dropdown: null, menuFocus: this.state.gamepadAim ? 'resume' : null });
+    this.setState({ paused: true, menu: 'main', page: 0, dropdown: null, menuFocus: this.state.gamepadAim ? focusables(menuModel(this.state))[0]?.id ?? null : null });
     if (this._immersive) this._placeMenuPanel();
-    playTick();
+    playPause();
   }
 
   resume() {
@@ -1697,8 +1711,8 @@ export class Engine {
 
   menuAction(id, arg) {
     const s = this.state;
-    // Resume, New, Load-file and Save play their own sounds; everything else ticks.
-    if (!/^(resume|savenew|save:|load:|pick:new:)/.test(id)) playTick();
+    // New, Load-file and Save play their own sounds; everything else ticks.
+    if (!/^(savenew|save:|load:|pick:new:)/.test(id)) playTick();
     const pick = parsePick(id);
     if (pick) {
       if (isDisabledChoice(menuModel(s), id)) return; // a choice this device can't use
@@ -1713,14 +1727,12 @@ export class Engine {
     // New, View Mode, Background and Materials open (or close) their dropdowns; any other button closes one
     if (id === 'new' || id === 'view' || id === 'background' || id === 'materials') return this.setState({ dropdown: s.dropdown === id ? null : id });
     if (s.dropdown) this.setState({ dropdown: null });
-    if (id === 'resume') return this.resume();
     if (id === 'load' || id === 'save') {
       this.setState({ menu: id, page: 0 });
       return this.refreshSaves();
     }
-    if (id === 'options') return this.setState({ menu: 'options', section: null });
-    // Controls, Video and Accessibility open (or close) their sections, closing any other
-    if (id === 'controls' || id === 'video' || id === 'accessibility') return this.setState({ section: s.section === id ? null : id });
+    // File, Controls, Video and Accessibility open (or close) their sections, closing any other
+    if (id === 'file' || id === 'controls' || id === 'video' || id === 'accessibility') return this.setState({ section: s.section === id ? null : id });
     if (id === 'observerCamera') return this.setState({ observerCameraInvert: !s.observerCameraInvert });
     if (id === 'controlCamera') return this.setState({ controlCameraInvert: !s.controlCameraInvert });
     if (id === 'sound') return this.setSound(!s.soundOn);
@@ -1742,7 +1754,7 @@ export class Engine {
       this.world.setSmoothRendering(!s.smoothRendering); // Smooth: clusters drawn as merged, smoothed bodies
       return this.setState({ smoothRendering: !s.smoothRendering });
     }
-    if (id === 'back') return this.setState({ menu: 'main', page: 0 });
+    if (id === 'back') return this.setState({ menu: 'main', page: 0, section: 'file' }); // Load / Save: back to Options → File
     if (id === 'prev') return this.setState({ page: Math.max(0, s.page - 1) });
     if (id === 'next') {
       const pages = Math.ceil((s.saves?.length || 0) / PAGE_SIZE);
@@ -2625,6 +2637,26 @@ export class Engine {
    * some of the motion, the controls' leftover momentum is dropped, so they don't keep
    * pushing into it.
    */
+  /**
+   * Blocks the camera is inside, or so close to that the near plane cuts them (the creature
+   * view's camera may pass through its own creature), are drawn see-through: dithered, inside
+   * faces showing (World.setSeeThrough). A creature goes see-through whole; in Smooth
+   * rendering, so does the cluster body. Not in XR.
+   */
+  _updateSeeThrough(now) {
+    const blocks = new Set();
+    if (!this._immersive) {
+      this.cameraCollider ??= new CameraCollider(this.world);
+      const p = this.worldRoot.worldToLocal(this.camera.position.clone());
+      for (const block of this.cameraCollider.blocksNear(p, now, SEE_THROUGH_REACH_CM)) {
+        if (isTranslucent(block.type)) continue;
+        const creature = this._creatureOf(block);
+        for (const b of creature ? this._bodyOf(creature) : [block]) blocks.add(b);
+      }
+    }
+    this.world.setSeeThrough(blocks);
+  }
+
   _collideCamera(now, dt) {
     this.cameraCollider ??= new CameraCollider(this.world);
     const cam = this.camera, root = this.worldRoot;
@@ -2854,7 +2886,9 @@ export class Engine {
         this.controls.update();
         this._collideCamera(now, dt);
       }
-    } else {
+    }
+    this._updateSeeThrough(sceneNow);
+    if (xr) {
       this._xrFrames++;
       if (this._needsXRPlacement && this._xrFrames > 2) {
         this._needsXRPlacement = false;
@@ -2932,6 +2966,7 @@ export class Engine {
     el.removeEventListener('pointermove', this._onPointerMove);
     el.removeEventListener('pointerleave', this._onPointerLeave);
     el.removeEventListener('pointerdown', this._onPointerDown);
+    el.removeEventListener('pointerup', this._onPointerUp);
     el.removeEventListener('dblclick', this._onDoubleClick);
     el.removeEventListener('contextmenu', this._onContextMenu);
     window.removeEventListener('keydown', this._onKeyDown);

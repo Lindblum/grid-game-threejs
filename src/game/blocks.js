@@ -54,6 +54,7 @@ export const BEHAVIOR = Object.freeze({
   WAIT: 'wait', // stays where it is (e.g. while selected)
   WALK: 'walk', // heads for `walkTarget` (set with the Select tool) by the shortest path
   TRAPPED: 'trapped', // walled in on all sides: does nothing; freed by a gap, dies if it lasts too long
+  BURROW: 'burrow', // every 30–60 Wander turns, for 3–6 turns: excrete, eat, go down, over and over (sim.js burrow)
 });
 
 export const BLOCK_TYPES = [
@@ -109,7 +110,7 @@ export const BLOCK_TYPES = [
     priorityDiet: ['BERRY'],
     walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 1, // around its head
-    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED], // the head's behavior drives the chain
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.BURROW], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
   },

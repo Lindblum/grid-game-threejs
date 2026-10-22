@@ -14,11 +14,13 @@
 //   xr:grip:L|R            Touch controller grip
 //   xr:stick:L|R:x|y|any   Touch thumbstick
 //   xr:A|B|X|Y             Touch face button
-//   hud:menu               the in-game ≡ Menu button
+//   hud:menu               the in-game gear (Options) button
 //   ray                    pointing ray
 //   crosshair              screen-centre crosshair
 //   text:<words>           plain text
 //   sep:<char>             separator ('/', '+')
+
+import { drawMenuIcon } from './icons.js';
 
 const INK = '#e8ecf2';
 const MUTED = 'rgba(232,236,242,0.6)';
@@ -297,13 +299,7 @@ export function drawGlyph(ctx, token, x, cy, h) {
       ctx.fill();
       ctx.strokeStyle = '#ffffff';
       ctx.stroke();
-      ctx.beginPath();
-      for (const dy of [-0.16, 0, 0.16]) {
-        ctx.moveTo(cx - s * 0.26, cy + dy * s);
-        ctx.lineTo(cx + s * 0.26, cy + dy * s);
-      }
-      ctx.lineWidth = lw * 1.1;
-      ctx.stroke();
+      drawMenuIcon(ctx, cx, cy, s * 0.85, '#ffffff'); // the gear
       break;
     }
     case 'ray': {

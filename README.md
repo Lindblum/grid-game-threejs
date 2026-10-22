@@ -42,8 +42,8 @@ as Truncated Octahedron. See `src/game/grids.js`.
 |---|---|---|---|
 | Use tool | Left click | RT | Right trigger |
 | Change tool | ← / → or 1–9, 0 | LB / RB | Right stick left/right |
-| Menu | Esc / Enter | Start | ≡ on the Left HUD, or Y |
-| Orbit / zoom / pan | Right-drag / wheel / middle-drag | Right stick / left stick / D-pad | Both grips: rotate and scale; one grip: drag |
+| Options (pauses) | Esc / Enter, or the gear (top left) | Start | The gear on the Left HUD, or Y |
+| Orbit / zoom / pan | Left- or right-drag / wheel / middle-drag | Right stick / left stick / D-pad | Both grips: rotate and scale; one grip: drag |
 
 With a creature selected: **A** eats, **B** excretes, **Y** wanders, **X** waits.
 The full table is under **Options → Controls** in the game.

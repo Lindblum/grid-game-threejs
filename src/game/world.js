@@ -199,7 +199,7 @@ export class World {
     this._batchList = Object.values(this.batches);
     // which materials draw each batch's blocks (their own mesh, and cluster bodies in Smooth rendering)
     this._batchMaterials = new Map([
-      [this.batches.opaque, [this.materials.opaque, this.materials.body]],
+      [this.batches.opaque, [this.materials.opaque, this.materials.body, this.materials.bodySeeThrough]],
       [this.batches.cloud, [this.materials.cloud, this.materials.bodyCloud]],
       [this.batches.crystal, [this.materials.crystal, this.materials.bodyCrystal]],
       [this.batches.water, [this.materials.translucent, this.materials.bodyTranslucent]],
@@ -692,6 +692,31 @@ export class World {
 
   get(x, y, z) {
     return this.blocks.get(cellKey(x, y, z));
+  }
+
+  /**
+   * Draws `blocks` (a Set; opaque ones) see-through: dithered like setDithered, with their inside
+   * faces showing (the opaque material goes double-sided while any are; the shader keeps the
+   * other blocks' back faces culled). Their cluster bodies too, in Smooth rendering. For the
+   * camera inside a creature or a cluster; call every frame (an empty Set clears it).
+   */
+  setSeeThrough(blocks) {
+    const prev = this._seeThrough ?? new Set();
+    const flag = (block, v) => {
+      if (!block.batch) return; // gone from the world
+      const a = block.batch.attr('blockSeeThrough');
+      a.setX(block.index, v);
+      a.needsUpdate = true;
+    };
+    for (const block of prev) if (!blocks.has(block)) flag(block, 0);
+    for (const block of blocks) if (!prev.has(block)) flag(block, 1);
+    this._seeThrough = blocks;
+    const side = blocks.size ? THREE.DoubleSide : THREE.FrontSide;
+    if (this.materials.opaque.side !== side) {
+      this.materials.opaque.side = side;
+      this.materials.opaque.needsUpdate = true; // (DOUBLE_SIDED: compiled once, then cached)
+    }
+    this.clusterBodies.setSeeThrough(blocks);
   }
 
   /** Draw this block 50 % see-through (dithered); pass null to clear. Only its own pass fades it. */

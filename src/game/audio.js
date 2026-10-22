@@ -302,6 +302,9 @@ export const SOUND_EFFECTS = {
   resume: { // leaving the pause menu: the opening arpeggio backwards, the sparkle first
     tones: [{ ...SPARKLE, t0: 0 }, ...[...OPENING_NOTES].reverse().flatMap((f, i) => bell(f, 0.02 + i * 0.06, 0.32, 0.1))],
   },
+  pause: { // opening Options (pausing): Resume's sequence reversed, the arpeggio then the sparkle
+    tones: [...OPENING_NOTES.flatMap((f, i) => bell(f, i * 0.06, 0.32, 0.1)), { ...SPARKLE, t0: 0.02 + OPENING_NOTES.length * 0.06 }],
+  },
   save: { // confident "ding-dong", G5 then D6, over a soft low thump
     tones: [...bell(NOTE.G5, 0, _1_4, 0.13), ...bell(NOTE.D6, 0.12, 0.45, 0.13), { wave: WAVE_TYPES.TRIANGLE, f0: NOTE.G3, f1: NOTE.G3 * 0.97, t0: 0, dur: 0.2, gain: 0.08 }],
   },
@@ -488,6 +491,7 @@ export const playTick = () => playSound('tick');
 export const playReady = () => playSound('ready');
 export const playGo = () => playSound('go');
 export const playResume = () => playSound('resume');
+export const playPause = () => playSound('pause');
 export const playLoad = () => playSound('load');
 export const playSave = () => playSound('save');
 export const playError = () => playSound('error');

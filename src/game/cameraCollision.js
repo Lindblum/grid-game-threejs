@@ -88,6 +88,28 @@ export class CameraCollider {
     return this.centres.length > 0;
   }
 
+  /**
+   * The blocks (not vanishing) whose surface is within `reach` cm of `p` (cm, worldRoot space)
+   * or that contain it, at their drawn positions: what the camera there is inside, or so near
+   * that its near plane cuts into them.
+   */
+  blocksNear(p, now, reach) {
+    const s = GRID.scale, r = reach + 1.5 * s; // (a block's corners stick out ~1 cell from its centre)
+    const found = [];
+    for (let x = Math.ceil((p.x - r) / s); x <= (p.x + r) / s; x++) {
+      for (let y = Math.ceil((p.y - r) / s); y <= (p.y + r) / s; y++) {
+        for (let z = Math.ceil((p.z - r) / s); z <= (p.z + r) / s; z++) {
+          if (!isValidCell(x, y, z)) continue;
+          const blk = this.world.blocks.get(cellKey(x, y, z));
+          if (!blk || blk.vanishing) continue;
+          this.world.renderedPosition(blk, now, _v);
+          if (blockDistance(p.x - _v.x, p.y - _v.y, p.z - _v.z) < reach) found.push(blk);
+        }
+      }
+    }
+    return found;
+  }
+
   /** The field at p: smooth minimum of the nearby blocks' distances (cm; negative inside a block). */
   field(p) {
     const c = this.centres;

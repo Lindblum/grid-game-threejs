@@ -9,7 +9,7 @@ const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
 
 /** Per-instance attributes a batch keeps, and their sizes (see World and the block shader). */
-const INSTANCE_ATTRIBUTES = { blockStyle: 4, blockMerged: 1, blockSmooth: 1 };
+const INSTANCE_ATTRIBUTES = { blockStyle: 4, blockMerged: 1, blockSmooth: 1, blockSeeThrough: 1 };
 
 export class BlockBatch {
   /**
@@ -81,6 +81,7 @@ export class BlockBatch {
     block.index = this.blocks.length;
     this.blocks.push(block);
     this.mesh.count = this.blocks.length;
+    this.attr('blockSeeThrough').setX(block.index, 0); // (a slot may keep a removed block's flag; World.setSeeThrough sets it)
   }
 
   /** Removes `block`: the last instance moves into its slot (all its instance data with it). */

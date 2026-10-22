@@ -277,6 +277,7 @@ export function canStand(world, creature, x, y, z) {
  * moves into the cell the one ahead of it just left. On Walk (sent with the Select tool) the
  * head takes the next step of a shortest path to its `walkTarget` instead, and goes back to
  * Wander on arrival (event creatureArrived), or after WALK_GIVE_UP_TURNS turns with no path.
+ * Every 30–60 Wander turns it Burrows for 3–6 (burrow: excrete, eat, go down, round and round).
  * Other behaviors (e.g. Wait while selected) stay put, as does a Squirmy with a segment that
  * fell with its group this turn.
  * Returns the number of Squirmies that moved.
@@ -300,6 +301,12 @@ export function stepSquirmies(world, skip = new Set()) {
         moveChain(world, sq.segments, to);
         moved++;
       } else if (steered) world.emit('creatureBlocked', head);
+      continue;
+    }
+    // now and then a wandering one burrows for a few turns (burrow)
+    if ((head.behavior ?? blockProps(head.type).defaultBehavior) === BEHAVIOR.WANDER) maybeStartBurrow(head);
+    if (head.behavior === BEHAVIOR.BURROW) {
+      if (burrow(world, sq.segments)) moved++;
       continue;
     }
     // left to itself, a Squirmy goes for Berries it can see (and eats one next to it)
@@ -355,6 +362,64 @@ export function stepSquirmies(world, skip = new Set()) {
     }
   }
   return moved;
+}
+
+/** How many Wander turns go by between burrows, and how many turns one lasts (inclusive ranges). */
+const BURROW_EVERY_TURNS = [30, 60];
+const BURROW_TURNS = [3, 6];
+/** A burrowing creature's turns, in order, round and round. */
+const BURROW_CYCLE = ['excrete', 'eat', 'down'];
+const randomIn = ([lo, hi]) => lo + Math.floor(Math.random() * (hi - lo + 1));
+
+/**
+ * A wandering creature that can Burrow (its behaviorList) counts down its Wander turns; when
+ * BURROW_EVERY_TURNS have gone by it switches to Burrow for BURROW_TURNS turns. Returns whether it did.
+ */
+function maybeStartBurrow(head) {
+  if (!blockProps(head.type).behaviorList?.includes(BEHAVIOR.BURROW)) return false;
+  head.burrowIn ??= randomIn(BURROW_EVERY_TURNS);
+  if (--head.burrowIn > 0) return false;
+  delete head.burrowIn;
+  head.burrowTurns = randomIn(BURROW_TURNS);
+  head.burrowStep = 0;
+  head.behavior = BEHAVIOR.BURROW;
+  return true;
+}
+
+/**
+ * One Burrow turn of a chain creature (`segments`, head first), the next in BURROW_CYCLE:
+ * excrete (what it carries, out behind its tail), eat (the block in the most downward
+ * direction, toward the origin), or go down (into the empty cell that way, as dropCell; gravity
+ * does the rest). An action it can't do just passes the turn. When its turns are up it goes
+ * back to Wander. Returns whether it moved.
+ */
+function burrow(world, segments) {
+  const head = segments[0];
+  const step = head.burrowStep ?? 0;
+  head.burrowStep = step + 1;
+  head.burrowTurns = (head.burrowTurns ?? 1) - 1; // (loaded from a save mid-burrow: one more turn)
+  if (head.burrowTurns <= 0) {
+    delete head.burrowTurns;
+    delete head.burrowStep;
+    head.behavior = BEHAVIOR.WANDER;
+  }
+  const act = BURROW_CYCLE[step % BURROW_CYCLE.length];
+  if (act === 'excrete') {
+    const body = world.clusterOf(head);
+    if (body.some((block) => block.inventory)) world.excrete(body, 'excrete');
+  } else if (act === 'eat') {
+    for (const c of downwardCells(head)) {
+      const food = world.get(c.x, c.y, c.z);
+      if (food && !food.vanishing && creatureEat(world, head, food)) break;
+    }
+  } else {
+    const to = dropCell(world, head);
+    if (to) {
+      moveChain(world, segments, to);
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Whether `block` has at least one empty neighbouring cell. */
@@ -1089,9 +1154,14 @@ function steerRules(world, creature) {
  * lattice direction(s) nearest the line to it), or null if that's taken, or it is at the origin.
  */
 function dropCell(world, creature) {
+  return downwardCells(creature).find((c) => !world.has(c.x, c.y, c.z)) ?? null; // (ties: the first that's free, so the preview agrees with the turn)
+}
+
+/** The valid cells beside `creature` in the most downward direction (toward the origin; several when tied); none at the origin. */
+function downwardCells(creature) {
   const { x, y, z } = creature;
   const len = Math.hypot(x, y, z);
-  if (!len) return null;
+  if (!len) return [];
   let bestCos = -Infinity, cells = [];
   for (const d of NEIGHBOR_DIRS) {
     const cos = -(d[0] * x + d[1] * y + d[2] * z) / (Math.hypot(...d) * len);
@@ -1101,7 +1171,7 @@ function dropCell(world, creature) {
     }
     if (cos >= bestCos - 1e-9) cells.push({ x: x + d[0], y: y + d[1], z: z + d[2] });
   }
-  return cells.find((c) => isValidCell(c.x, c.y, c.z) && !world.has(c.x, c.y, c.z)) ?? null; // (ties: the first that's free, so the preview agrees with the turn)
+  return cells.filter((c) => isValidCell(c.x, c.y, c.z));
 }
 
 /** steeredCell under the creature's steer rules (steerRules); `keep`: a preview. */

@@ -191,7 +191,7 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
 
 /**
  * The block materials, one per drawing pass: `opaque` (every style except the see-through
- * ones), `cloud` (Fog, Nimbus), `crystal` (refractive) and `translucent` (Water), plus the
+ * ones), `cloud` (Fog, Nimbus), `crystal` (refractive) and `translucent` (Water; refractive with Procedural), plus the
  * `body…` versions for Rendering: Smooth. Each pass draws its own InstancedMesh holding only
  * its blocks (World batches, blockBatch.js); the vertex shader still drops other styles as a
  * safeguard. All have per-instance colour.
@@ -219,6 +219,9 @@ export const MATERIALS = ['solid', 'simple', 'procedural'];
 export const CRYSTAL_TRANSMISSION = 0.85;
 export const CRYSTAL_IOR = 1.6;
 export const CRYSTAL_THICKNESS_CM = 1.6;
+/** Water refraction (Materials: Procedural): its index of refraction and how deep a body the light crosses (cm). How much light passes through follows its shader's opacity. */
+export const WATER_IOR = 1.33;
+export const WATER_THICKNESS_CM = 1.2;
 
 export function createBlockMaterials() {
   const uniforms = {
@@ -229,7 +232,10 @@ export function createBlockMaterials() {
   };
   const options = { level: 'procedural' }; // Options → Materials (MATERIALS)
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
-  const translucent = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false });
+  // Water: alpha-blended, or refractive (physical transmission, like Crystal below) with
+  // Refraction On and Materials: Procedural (see applyRefraction)
+  const waterOptions = { roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false, ior: WATER_IOR, thickness: WATER_THICKNESS_CM, specularIntensity: 1 };
+  const translucent = new THREE.MeshPhysicalMaterial(waterOptions);
   // clouds (Fog, Nimbus) get their own see-through pass, drawn before Water and Crystal and
   // writing depth: they're nearly opaque, so what's behind them is hidden (instead of the
   // later-drawn blocks showing through in front of them), while Water and Crystal in front of
@@ -238,7 +244,9 @@ export function createBlockMaterials() {
   // Rendering: Smooth: each cluster drawn as one merged, smoothed mesh (clusterBody.js); ordinary (not
   // instanced) geometry carrying the same attributes per vertex, colour as vertex colour
   const body = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true });
-  const bodyTranslucent = new THREE.MeshStandardMaterial({ roughness: 0.1, metalness: 0.0, transparent: true, depthWrite: false, vertexColors: true });
+  // a body the camera is inside (World.setSeeThrough): dithered all over, its inside faces drawn too
+  const bodySeeThrough = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true, side: THREE.DoubleSide });
+  const bodyTranslucent = new THREE.MeshPhysicalMaterial({ ...waterOptions, vertexColors: true });
   const bodyCloud = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true, vertexColors: true });
   // Crystal: refractive. Physical transmission: the scene behind is rendered to a texture and
   // seen through the gem, bent by its index of refraction over its thickness (cm, like the
@@ -255,30 +263,42 @@ export function createBlockMaterials() {
   patchBlockShader(bodyTranslucent, uniforms, options, true, true);
   patchBlockShader(bodyCloud, uniforms, options, true, true, 'cloud');
   patchBlockShader(bodyCrystal, uniforms, options, true, true, 'crystal');
-  const all = [opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal];
+  patchBlockShader(bodySeeThrough, uniforms, options, false, true, null, true);
+  const all = [opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough];
   // the Delete tool's see-through block: an instance index per material (each pass numbers its
   // own blocks; see World.setDithered)
   for (const m of all) m.userData.dither = { value: -1 };
+  // Options → Refraction: On, Crystal (any Materials mode) and Water (Materials: Procedural)
+  // bend the scene behind them (transmission, an extra render pass); Off, they are simply
+  // see-through, alpha-blended at their shader's opacity, which is much cheaper
+  let refraction = true;
+  const applyRefraction = () => {
+    const set = (mats, transmission) => {
+      for (const m of mats) {
+        const on = transmission > 0;
+        if (m.transmission === transmission && m.depthWrite === on) continue;
+        m.transmission = transmission;
+        m.transparent = !on;
+        m.depthWrite = on;
+        m.needsUpdate = true; // recompile with / without transmission
+      }
+    };
+    set([crystal, bodyCrystal], refraction ? CRYSTAL_TRANSMISSION : 0);
+    set([translucent, bodyTranslucent], refraction && options.level === 'procedural' ? 1 : 0);
+  };
   const setMaterials = (level) => {
     if (!MATERIALS.includes(level) || options.level === level) return;
     options.level = level;
     for (const m of all) m.needsUpdate = true; // recompile with SOLID_MATERIALS, SIMPLE_MATERIALS or neither
+    applyRefraction();
   };
-  // Options → Refraction (either material mode): On, Crystal bends the scene behind it
-  // (transmission, an extra render pass); Off, it is simply see-through, alpha-blended like
-  // Water (its shader's opacity), which is much cheaper
-  let refraction = true;
   const setRefraction = (on) => {
     if (refraction === on) return;
     refraction = on;
-    for (const m of [crystal, bodyCrystal]) {
-      m.transmission = on ? CRYSTAL_TRANSMISSION : 0;
-      m.transparent = !on;
-      m.depthWrite = on;
-      m.needsUpdate = true; // recompile with / without transmission
-    }
+    applyRefraction();
   };
-  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, uniforms, setMaterials, setRefraction };
+  applyRefraction();
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, uniforms, setMaterials, setRefraction };
 }
 
 /**
@@ -293,8 +313,11 @@ export function createBlockMaterials() {
  * `subPass` (with `translucentPass`): a see-through pass for one kind only, which the plain
  * translucent pass skips: 'cloud' (CLOUD_PASS: Fog, Nimbus, writing depth) or 'crystal'
  * (CRYSTAL_PASS: refractive Crystal).
+ * `seeThrough` (with `mergedBody`): the whole body dithered (SEE_THROUGH; the camera is inside
+ * it). Instances are dithered one by one instead (the blockSeeThrough attribute). Either way,
+ * with the material double-sided (World.setSeeThrough), only see-through blocks draw back faces.
  */
-function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = false, subPass = null) {
+function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = false, subPass = null, seeThrough = false) {
   const cloudPass = subPass === 'cloud', crystalPass = subPass === 'crystal';
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
@@ -303,6 +326,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
     if (cloudPass) shader.defines = { ...shader.defines, CLOUD_PASS: '' };
     if (crystalPass) shader.defines = { ...shader.defines, CRYSTAL_PASS: '' };
     if (mergedBody) shader.defines = { ...shader.defines, MERGED_BODY: '' };
+    if (seeThrough) shader.defines = { ...shader.defines, SEE_THROUGH: '' };
     if (options.level === 'solid') shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
     if (options.level === 'simple') shader.defines = { ...shader.defines, SIMPLE_MATERIALS: '' };
     shader.vertexShader = shader.vertexShader
@@ -321,7 +345,9 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         #else
         attribute float blockMerged; // Rendering: Smooth: 1 = this block is drawn by a cluster body instead
         attribute float blockSmooth; // 1 = smooth shading (World.setSmooth, e.g. excreted blocks)
+        attribute float blockSeeThrough; // 1 = the camera is inside it (or its creature): dithered, inside faces drawn (World.setSeeThrough)
         #endif
+        varying float vSeeThrough;
         varying float vSmooth;
         varying float vDither;
         varying float vStyle;
@@ -339,7 +365,13 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         vDither = abs(blockIndex - uDitherIndex) < 0.5 ? 1.0 : 0.0;
         vec3 blockPos = localPos;
         vSmooth = 0.0; // bodies are smooth already
+        #ifdef SEE_THROUGH
+        vSeeThrough = 1.0;
         #else
+        vSeeThrough = 0.0;
+        #endif
+        #else
+        vSeeThrough = blockSeeThrough;
         vSmooth = blockSmooth * uSmoothRendering; // only with Rendering: Smooth (Blocky keeps every block flat)
         vDither = abs(float(gl_InstanceID) - uDitherIndex) < 0.5 ? 1.0 : 0.0;
         vec3 blockPos = position;
@@ -407,6 +439,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       .replace(
         '#include <common>',
         `#include <common>
+        varying float vSeeThrough;
         varying float vSmooth;
         varying float vDither;
         varying float vStyle;
@@ -437,7 +470,17 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         '#include <clipping_planes_fragment>',
         `#include <clipping_planes_fragment>
         // 50 % screen-door transparency: drop every other pixel in a checkerboard
-        if (vDither > 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0) < 1.0) discard;`
+        if (vDither > 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0) < 1.0) discard;
+        // the camera is inside it: 1/8 opaque (two staggered pixels in each 4×4 square), so you see
+        // out; the material is then double-sided (World.setSeeThrough) so its inside faces show,
+        // but only these blocks'
+        if (vSeeThrough > 0.5) {
+          vec2 q = mod(floor(gl_FragCoord.xy), 4.0);
+          if (!(q.x == q.y && mod(q.x, 2.0) < 0.5)) discard; // keeps (0, 0) and (2, 2)
+        }
+        #ifdef DOUBLE_SIDED
+        if (vSeeThrough < 0.5 && !gl_FrontFacing) discard;
+        #endif`
       )
       .replace(
         '#include <color_fragment>',
@@ -892,11 +935,22 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         reflectedLight.indirectSpecular *= specDim; // …and reflections`
       )
       .replace(
+        '#include <transmission_fragment>',
+        // refractive Water: how much of the scene behind shows through follows the shader's
+        // opacity (clear in the troughs, less so on the crests and at grazing angles)
+        translucentPass && !subPass
+          ? THREE.ShaderChunk.transmission_fragment.replace(
+            'material.transmission = transmission;',
+            'material.transmission = transmission * clamp(1.0 - diffuseColor.a, 0.0, 1.0);',
+          )
+          : '#include <transmission_fragment>',
+      )
+      .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
         totalEmissiveRadiance += crystalGlow; // Crystal's inner glow (zero for everything else)`
       );
   };
   mat.customProgramCacheKey = () =>
-    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}-${options.level}`;
+    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}${seeThrough ? '-see' : ''}-${options.level}`;
 }

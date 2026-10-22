@@ -43,14 +43,14 @@ const OBSERVER_CONTROLS = [
     xr: { g: ['xr:Y', 'sep:/', 'xr:X'], t: 'Left Y: Wander (opens the menu when nothing is selected), left X: Wait' },
   },
   {
-    action: 'Menu',
-    mk: { g: ['key:Esc', 'sep:/', 'hud:menu'], t: 'Esc or Enter, or click the ≡ button' },
+    action: 'Options (pauses)',
+    mk: { g: ['key:Esc', 'sep:/', 'hud:menu'], t: 'Esc or Enter, or click the gear button (top left)' },
     pad: { g: ['pad:start'], t: 'Start / Menu button' },
-    xr: { g: ['hud:menu', 'sep:/', 'xr:Y'], t: 'Point at ≡ on the left HUD and pull the trigger, or press Y' },
+    xr: { g: ['hud:menu', 'sep:/', 'xr:Y'], t: 'Point at the gear on the left HUD and pull the trigger, or press Y' },
   },
   {
     action: 'Rotate view',
-    mk: { g: ['mouse:R'], t: 'Right-drag' },
+    mk: { g: ['mouse:L', 'sep:/', 'mouse:R'], t: 'Left- or right-drag (a left click without dragging uses the tool)' },
     pad: { g: ['stick:R:any'], t: 'Right stick' },
     xr: { g: ['xr:grip:L', 'sep:+', 'xr:grip:R'], t: 'Hold both grips and turn your hands around each other (or walk around)' },
   },

@@ -3,6 +3,9 @@ import { cellFaces } from './geometry.js';
 import { gridMode } from './lattice.js';
 import { BLOCK, BLOCK_COLORS, TOOL } from './tools.js';
 import { renderedBlockIcon } from './iconRenderer.js';
+import { drawMenuIcon } from './menuIcons.js';
+
+export { drawMenuIcon }; // (drawn with the menu icons, so the gear matches them)
 
 const ROT = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(0.42, -0.62, 0, 'XYZ'));
 const LIGHT = new THREE.Vector3(-0.45, 0.75, 0.6).normalize();
@@ -212,30 +215,3 @@ export function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-/** Menu icon: three horizontal lines (≡). */
-export function drawMenuIcon(ctx, cx, cy, size, color = '#e8ecf2') {
-  const w = size * 0.62, t = size * 0.1, gap = size * 0.2;
-  ctx.save();
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = color;
-  ctx.lineWidth = t;
-  ctx.beginPath();
-  for (const dy of [-gap, 0, gap]) {
-    ctx.moveTo(cx - w / 2, cy + dy);
-    ctx.lineTo(cx + w / 2, cy + dy);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
-/** PNG data URL of the menu icon (for the DOM HUD). */
-export function menuIconURL(size = 96) {
-  const k = `menu:${size}`;
-  if (!cache.has(k)) {
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = size;
-    drawMenuIcon(cv.getContext('2d'), size / 2, size / 2, size * 0.9);
-    cache.set(k, cv.toDataURL());
-  }
-  return cache.get(k);
-}

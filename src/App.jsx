@@ -1,14 +1,15 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, useLayoutEffect } from 'react';
 import { Engine } from './game/engine.js';
 import { TOOLS } from './game/tools.js';
-import { toolIconURL, menuIconURL } from './game/icons.js';
+import { toolIconURL } from './game/icons.js';
 import { menuModel, splitLabel } from './game/menu.js';
 import { menuItemIconURL } from './game/menuIcons.js';
 import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './game/controls.js';
 import { cellURL } from './game/inputIcons.js';
-import { getLogs, getLogVersion } from './game/debugLog.js';
+import { getLogs } from './game/debugLog.js';
 import { claudePrompt } from './game/claudePrompt.js';
 import { debugSections } from './game/debugSections.js';
+import { playTick } from './game/audio.js';
 
 /** How far (px) a press may move before its release no longer counts as a click. */
 const DRAG_PX = 6;
@@ -67,7 +68,13 @@ function Overlay({ engine }) {
     <>
       {s.screen === 'playing' && flat && <Hud engine={engine} s={s} />}
       {s.screen === 'playing' && !s.inXR && !s.paused && s.gamepadAim && <div className="crosshair" />}
-      {engine.isMenuOpen(s) && flat && <MenuScreen engine={engine} s={s} />}
+      {s.screen === 'playing' && flat && (
+        // the left column: Options, and the Debug panel as the next row beneath it
+        <div className="side-stack">
+          <MenuScreen engine={engine} s={s} />
+          {s.debugMode && <DebugPanel engine={engine} />}
+        </div>
+      )}
       {s.inXR && !s.handheld && !flat && <div className="xr-note">In XR — take off the headset view to return here.</div>}
       {s.handheld && <CardboardOverlay split={s.phoneStereo} onTap={() => engine.gazeTap()} onExit={() => engine.exitXR()} />}
       <Toast toast={s.toast} />
@@ -111,6 +118,14 @@ function trailingIcon(it) {
   const open = (it.dropdown ?? it.section)?.open;
   if (open !== undefined) return open ? 'dropdownOpen' : 'dropdown';
   return null;
+}
+
+/** blurThen, with the menu's click sound (the engine's menu buttons play theirs in menuAction). */
+function tickThen(fn) {
+  return blurThen((e) => {
+    playTick();
+    fn(e);
+  });
 }
 
 function blurThen(fn) {
@@ -271,14 +286,6 @@ function Hud({ engine, s }) {
                 <tr><th>Diameter</th><td>{Engine.formatDiameter(s.blockCount)}</td></tr>
               </tbody>
             </table>
-
-            <button
-              className={`slot menu-slot${s.paused ? ' selected' : ''}`}
-              title="Menu (Esc)"
-              onClick={blurThen(() => engine.toggleMenu())}
-            >
-              <img src={menuIconURL()} alt="Menu" draggable={false} />
-            </button>
           </div>
           <div className="panel hud hud-right" ref={rightRef} style={rightSize}>
             <ResizeGrip place="grip-top-left" title="Drag to resize (double-click: reset)" {...rightGrip} />
@@ -311,125 +318,163 @@ function Hud({ engine, s }) {
           </div>
         </div>
       </div>
-      {s.debugMode && <DebugPanel engine={engine} />}
     </>
   );
 }
 
-/** The Debug dock's width (px; drag its bottom-right corner), and its limits (px, and a fraction of the window). */
-const DEBUG_WIDTH = { initial: 280, min: 170, max: 0.7 };
-/** …and its height (px; drag its bottom-right corner): at first, and its limits (px; the max leaves a margin of the window). */
-const DEBUG_HEIGHT = { initial: 480, min: 120, margin: 32 };
+/** Side panel sizes (px): drag a panel's bottom-right corner; its contents keep their size. 0 = automatic. */
+const PANEL_SIZE = { minWidth: 220, minHeight: 120, margin: 24 };
 
 /**
- * A collapsible section of the Debug dock: a header (title, a short `summary` shown while
- * collapsed, and a toggle), then its content. Each section remembers being collapsed in this
- * browser. `grow`: it takes the dock's leftover height (Logging).
+ * Resizing for a side panel (Options, Debug): returns [style, grip props]. Dragging the grip
+ * down makes it taller, right wider; double-click goes back to the automatic size. Remembered
+ * in this browser under `key`.
  */
-function DebugSection({ id, title, summary, grow = false, children }) {
-  // shared with the XR debug tablet (debugSections.js)
+function usePanelSize(key, panelRef) {
+  const [width, setWidth] = useStoredNumber(`${key}.width`, 0);
+  const [height, setHeight] = useStoredNumber(`${key}.height`, 0);
+  const start = useRef(null);
+  const grip = {
+    onStart: () => (start.current = { width: panelRef.current?.offsetWidth || 300, height: panelRef.current?.offsetHeight || 300 }),
+    onDrag: (up, right) => {
+      const s0 = start.current;
+      if (!s0) return;
+      setWidth(Math.round(clamp(s0.width + right, PANEL_SIZE.minWidth, window.innerWidth - PANEL_SIZE.margin)));
+      setHeight(Math.round(clamp(s0.height - up, PANEL_SIZE.minHeight, window.innerHeight - PANEL_SIZE.margin)));
+    },
+    onReset: () => {
+      setWidth(0);
+      setHeight(0);
+    },
+  };
+  const style = { ...(width ? { width } : {}), ...(height ? { height } : {}) };
+  return [style, grip];
+}
+
+/**
+ * One of the Debug panel's sections, drawn like an Options section: a menu button ("Title:
+ * summary", a chevron) that opens its content beneath it, indented. Open or closed is shared
+ * with the XR debug tablet (debugSections.js) and remembered in this browser.
+ */
+function DebugSection({ id, icon, title, summary, children }) {
   const collapsed = useSyncExternalStore(debugSections.subscribe, debugSections.getSnapshot)[id];
-  const setCollapsed = () => debugSections.toggle(id);
   return (
-    <section className={`debug-section-box${grow && !collapsed ? ' grow' : ''}`}>
-      <button className="debug-section-head" onClick={blurThen(setCollapsed)} title={collapsed ? 'Expand' : 'Collapse'}>
-        <span className="debug-section">{title}</span>
-        {collapsed && summary ? <span className="debug-summary">{summary}</span> : null}
-        <span className="debug-arrow">{collapsed ? '▸' : '▾'}</span>
+    <>
+      <button className="btn menu-btn" aria-expanded={!collapsed} onClick={tickThen(() => debugSections.toggle(id))}>
+        <img className="menu-icon" src={menuItemIconURL(icon)} alt="" draggable={false} />
+        <MenuLabel text={summary ? `${title}: ${summary}` : title} />
+        <img className="menu-icon menu-arrow" src={menuItemIconURL(collapsed ? 'dropdown' : 'dropdownOpen')} alt="" draggable={false} />
       </button>
-      {!collapsed && <div className="debug-section-body">{children}</div>}
-    </section>
+      {!collapsed && <div className="menu-section debug-section-body">{children}</div>}
+    </>
   );
 }
 
 /**
- * Options → Debug (browser): a panel docked to the window's top-left corner. Performance (FPS and timings), the Inspector (the selected /
- * targeted block's properties), Claude (a placeholder for now) and Logging (the recent console log) stack vertically, each
- * collapsible; Logging takes the leftover height. Resized from its bottom-right corner (width
- * and height; double-click resets). Polls the engine a few times a second rather than every frame.
+ * Options → Debug (browser): a side panel under Options, the next row of the left column. Its
+ * terminal button opens and closes it (closed, only the button shows); open, Performance (FPS
+ * and timings), the Inspector (the selected / targeted block's properties), Claude (a
+ * placeholder for now) and Logging (the recent console log) each open beneath their buttons.
+ * Resized from its bottom-right corner (double-click resets). Polls the engine a few times a
+ * second rather than every frame.
  */
 function DebugPanel({ engine }) {
   const [, setTick] = useState(0);
-  const [width, setWidth] = useStoredNumber('debugWidth', DEBUG_WIDTH.initial);
-  const [height, setHeight] = useStoredNumber('debugHeight2', DEBUG_HEIGHT.initial);
-  const start = useRef({ width, height });
+  const [open, setOpen] = useStoredNumber('debugOpen', 1);
+  const panelRef = useRef(null);
+  const [size, grip] = usePanelSize('debugPanel', panelRef);
   const logRef = useRef(null);
   const stick = useRef(true); // keep the log scrolled to the bottom unless the user scrolled up
   useEffect(() => {
+    if (!open) return;
     const id = setInterval(() => setTick((n) => n + 1), 250);
     return () => clearInterval(id);
-  }, []);
-  const info = engine.debugInfo();
-  const logs = getLogs(1000);
-  const version = getLogVersion();
+  }, [open]);
   useEffect(() => {
     const el = logRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
+  const button = (
+    <button
+      className="btn side-toggle"
+      title="Debug (` / ~ hides it)"
+      aria-label={open ? 'Collapse debug' : 'Debug'}
+      aria-expanded={!!open}
+      onClick={tickThen(() => setOpen(open ? 0 : 1))}
+    >
+      <img src={menuItemIconURL('debug')} alt="" draggable={false} />
+    </button>
+  );
+  if (!open) {
+    return (
+      <aside className="side-panel collapsed">
+        <header className="side-header">{button}</header>
+      </aside>
+    );
+  }
+  const info = engine.debugInfo();
+  const logs = getLogs(1000);
   const ms = (v, digits) => (v == null ? '—' : `${v.toFixed(digits)} ms`);
   return (
-    <div className="panel debug-dock" style={{ width, height: Math.min(height, window.innerHeight - DEBUG_HEIGHT.margin) }}>
-      <ResizeGrip
-        place="grip-bottom-right"
-        title="Drag to resize (double-click: reset)"
-        onStart={() => (start.current = { width, height })}
-        onDrag={(up, right) => {
-          setWidth(Math.round(clamp(start.current.width + right, DEBUG_WIDTH.min, window.innerWidth * DEBUG_WIDTH.max)));
-          setHeight(Math.round(clamp(start.current.height - up, DEBUG_HEIGHT.min, window.innerHeight - DEBUG_HEIGHT.margin)));
-        }}
-        onReset={() => {
-          setWidth(DEBUG_WIDTH.initial);
-          setHeight(DEBUG_HEIGHT.initial);
-        }}
-      />
-      <DebugSection id="performance" title="Performance" summary={`${engine.fps.toFixed(0)} FPS`}>
-        <table className="debug-table">
-          <tbody>
-            <tr><th>FPS</th><td>{engine.fps.toFixed(0)}</td></tr>
-            <tr><th>Turn</th><td>{ms(engine.turnMs, 1)}</td></tr>
-            <tr><th>Anim</th><td>{ms(engine.animMs, 2)}</td></tr>
-            <tr><th>Render</th><td>{ms(engine.renderMs, 2)}</td></tr>
-          </tbody>
-        </table>
-      </DebugSection>
-      <DebugSection id="inspector" title="Inspector" summary={info.title}>
-        <div className="debug-title">{info.title}</div>
-        <table className="debug-table">
-          <tbody>
-            {info.rows.map(([k, v]) => (
-              <tr key={k}>
-                <th>{k}</th>
-                <td>{String(v)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </DebugSection>
-      {/* Claude: a placeholder for now — not wired to the Claude bridge (claudeBridge.js) yet */}
-      <DebugSection id="claude" title="Claude" summary="Not connected">
-        <ClaudePrompt />
-      </DebugSection>
-      <DebugSection id="logging" title="Logging" summary={`${logs.length} lines`} grow>
-        <div
-          className="debug-log"
-          ref={logRef}
-          onScroll={(ev) => {
-            const el = ev.currentTarget;
-            stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
-          }}
-        >
-          {logs.length ? (
-            logs.map((entry, i) => (
-              <div key={i} className={`log-${entry.level}`}>
-                <span className="log-time">{entry.t}</span> {entry.text}
-              </div>
-            ))
-          ) : (
-            <div className="log-empty">No log output yet</div>
-          )}
-        </div>
-      </DebugSection>
-    </div>
+    <aside className="side-panel debug-panel" ref={panelRef} style={size}>
+      <ResizeGrip place="grip-bottom-right" title="Drag to resize (double-click: reset)" {...grip} />
+      <header className="side-header">
+        {button}
+        <h2>Debug</h2>
+      </header>
+      <div className="side-body menu-items">
+        <DebugSection id="performance" icon="performance" title="Performance" summary={`${engine.fps.toFixed(0)} FPS`}>
+          <div className="debug-box">
+            <table className="debug-table">
+              <tbody>
+                <tr><th>FPS</th><td>{engine.fps.toFixed(0)}</td></tr>
+                <tr><th>Turn</th><td>{ms(engine.turnMs, 1)}</td></tr>
+                <tr><th>Anim</th><td>{ms(engine.animMs, 2)}</td></tr>
+                <tr><th>Render</th><td>{ms(engine.renderMs, 2)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </DebugSection>
+        <DebugSection id="inspector" icon="inspector" title="Inspector" summary={info.title}>
+          <div className="debug-box">
+            <table className="debug-table">
+              <tbody>
+                {info.rows.map(([k, v]) => (
+                  <tr key={k}>
+                    <th>{k}</th>
+                    <td>{String(v)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </DebugSection>
+        {/* Claude: a placeholder for now — not wired to the Claude bridge (claudeBridge.js) yet */}
+        <DebugSection id="claude" icon="claude" title="Claude" summary="Not connected">
+          <ClaudePrompt />
+        </DebugSection>
+        <DebugSection id="logging" icon="logging" title="Logging" summary={`${logs.length} lines`}>
+          <div
+            className="debug-log"
+            ref={logRef}
+            onScroll={(ev) => {
+              const el = ev.currentTarget;
+              stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+            }}
+          >
+            {logs.length ? (
+              logs.map((entry, i) => (
+                <div key={i} className={`log-${entry.level}`}>
+                  <span className="log-time">{entry.t}</span> {entry.text}
+                </div>
+              ))
+            ) : (
+              <div className="log-empty">No log output yet</div>
+            )}
+          </div>
+        </DebugSection>
+      </div>
+    </aside>
   );
 }
 
@@ -449,7 +494,7 @@ function ClaudePrompt() {
       <div className="claude-buttons">
         <button
           className={`btn icon-btn${speaking ? ' speaking' : ''}`}
-          onClick={blurThen(() => claudePrompt.toggleSpeech())}
+          onClick={tickThen(() => claudePrompt.toggleSpeech())}
           disabled={!speechSupported}
           title={speechSupported ? (speaking ? 'Stop reading' : 'Read aloud') : 'Reading aloud isn’t supported in this browser'}
         >
@@ -460,13 +505,13 @@ function ClaudePrompt() {
       <div className="claude-buttons">
         <button
           className={`btn icon-btn${listening ? ' listening' : ''}`}
-          onClick={blurThen(() => claudePrompt.toggleDictation())}
+          onClick={tickThen(() => claudePrompt.toggleDictation())}
           disabled={!micSupported}
           title={micSupported ? (listening ? 'Stop dictating' : 'Dictate') : 'No dictation in this browser: use the keyboard’s mic'}
         >
           <img src={menuItemIconURL('mic')} alt="Dictate" draggable={false} />
         </button>
-        <button className="btn icon-btn" onClick={blurThen(() => claudePrompt.clear())} title="Clear">
+        <button className="btn icon-btn" onClick={tickThen(() => claudePrompt.clear())} title="Clear">
           <img src={menuItemIconURL('clear')} alt="Clear" draggable={false} />
         </button>
         <button className="btn send-btn" disabled>Send</button>
@@ -484,8 +529,36 @@ function ClaudePrompt() {
   );
 }
 
-/** Start panel (title screen) and pause panel share this component. */
+/**
+ * Options, in the top-left corner: its gear button opens it (pausing the game) and closes it
+ * again (resuming); closed, only the gear shows. Load and Save (Options → File) open in it too.
+ */
 function MenuScreen({ engine, s }) {
+  const open = engine.isMenuOpen(s);
+  const panelRef = useRef(null);
+  const [size, grip] = usePanelSize('optionsPanel', panelRef);
+  const gear = (
+    <button
+      className="btn side-toggle"
+      title="Options (Esc)"
+      aria-label={open ? 'Close options' : 'Options'}
+      aria-expanded={open}
+      onClick={blurThen(() => engine.toggleMenu())}
+    >
+      <img src={menuItemIconURL('gear')} alt="" draggable={false} />
+    </button>
+  );
+  if (!open) {
+    return (
+      <aside className="side-panel collapsed">
+        <header className="side-header">{gear}</header>
+      </aside>
+    );
+  }
+  return <MenuBody engine={engine} s={s} gear={gear} panelRef={panelRef} size={size} grip={grip} />;
+}
+
+function MenuBody({ engine, s, gear, panelRef, size, grip }) {
   const model = menuModel(s);
   const [name, setName] = useState('');
   const fileRef = useRef(null);
@@ -579,9 +652,13 @@ function MenuScreen({ engine, s }) {
   const rest = (back ? model.items.slice(1) : model.items).filter((it) => !(s.menu === 'save' && it.id === 'savenew'));
 
   return (
-    <div className={`screen-center${s.screen === 'playing' ? ' dim' : ''}`}>
-      <div className={`panel menu-panel${s.menu === 'options' && s.section === 'controls' ? ' controls-panel' : ''}`}>
+    <aside className={`side-panel menu-panel${s.menu === 'main' && s.section === 'controls' ? ' controls-panel' : ''}`} ref={panelRef} style={size}>
+      <ResizeGrip place="grip-bottom-right" title="Drag to resize (double-click: reset)" {...grip} />
+      <header className="side-header">
+        {gear}
         <h2>{model.title}</h2>
+      </header>
+      <div className="side-body">
         {back && <div className="menu-items menu-back">{renderItem(back)}</div>}
         {s.menu === 'save' && !s.savesError && (
           <div className="save-row">
@@ -615,7 +692,7 @@ function MenuScreen({ engine, s }) {
           </div>
         )}
       </div>
-    </div>
+    </aside>
   );
 }
 

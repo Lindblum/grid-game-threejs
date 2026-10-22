@@ -193,6 +193,7 @@ export class ClusterBodies {
     this.bodies = new Set();
     this._byBlock = new Map(); // block -> its body
     this._bodyAtCell = new Map(); // cell key -> the body that had a block there when built
+    this._seeThrough = new Set(); // bodies drawn see-through (setSeeThrough)
     this._revision = -1; // world.revision the bodies were last brought up to date for
     this._world = null;
   }
@@ -243,6 +244,22 @@ export class ClusterBodies {
       body.moving = body.blocks.some((block) => world.anims.has(cellKey(block.x, block.y, block.z)));
       this._pose(world, body, now);
     }
+  }
+
+  /**
+   * Draws the bodies holding any of `blocks` (a Set) see-through: dithered all over, inside
+   * faces too (the camera is inside them; see World.setSeeThrough). Opaque bodies only. Call
+   * every frame: rebuilt bodies start out with their own material.
+   */
+  setSeeThrough(blocks) {
+    const want = new Set();
+    for (const block of blocks) {
+      const body = this._byBlock.get(block);
+      if (body?.mesh.material === this.materials.body || body?.mesh.material === this.materials.bodySeeThrough) want.add(body);
+    }
+    for (const body of this._seeThrough) if (!want.has(body)) body.mesh.material = this.materials.body;
+    for (const body of want) body.mesh.material = this.materials.bodySeeThrough;
+    this._seeThrough = want;
   }
 
   /** Throws every body away and builds them all again (Smooth turned on, a new world, a huge change). */

@@ -1,7 +1,9 @@
 import { CONTROL_SCHEMAS } from './controls.js';
 import { GRIDS, GRID_IDS } from './grids.js';
 import { MATERIALS } from './geometry.js';
-// Start/pause-menu model shared by the DOM menu (desktop) and the canvas panel (XR).
+// The Options menu model, shared by the DOM panel (top-left, under its gear button) and the
+// canvas panel (XR, docked to the left controller). Opening it pauses the game.
+// Screens (state.menu): 'main' (Options), and File's 'load' and 'save'.
 
 export const PAGE_SIZE = 5;
 
@@ -183,7 +185,7 @@ const BACK = { id: 'back', label: 'Back', icon: 'back' };
 const GRID_LABELS = Object.fromEntries(GRID_IDS.map((id) => [id, GRIDS[id].name]));
 const GRID_ICONS = { to: 'gridTo', rd: 'gridRd', cube: 'gridCube' };
 
-/** Main menu → New: a dropdown of the grid modes (grids.js); picking one starts a new world in it. */
+/** Options → File → New: a dropdown of the grid modes (grids.js); picking one starts a new world in it. */
 function newItem(state) {
   return { id: 'new', label: 'New', icon: 'new', dropdown: dropdown(state, 'new', GRID_IDS, state.gridMode, GRID_LABELS, GRID_ICONS) };
 }
@@ -221,8 +223,8 @@ function videoItems(state) {
 }
 
 /**
- * Options → Accessibility: the page UI's text size, and which way each camera orbits (Observer
- * controls, and Creature controls: Normal or Invert).
+ * Options → Accessibility: the page UI's text size, the game's speed, which way each camera orbits (Observer
+ * controls, and Creature controls: Normal or Invert), and Music and Sounds on / off.
  */
 function accessibilityItems(state) {
   const camera = (id, name, invert) => ({ id, label: `${name}: ${invert ? 'Invert' : 'Normal'}`, icon: invert ? 'cameraInvert' : 'cameraNormal', toggle: true });
@@ -233,8 +235,25 @@ function accessibilityItems(state) {
       icon: 'textSize',
       slider: { min: TEXT_SIZE.min, max: TEXT_SIZE.max, step: TEXT_SIZE.step, value: state.textSize },
     },
+    {
+      id: 'speed',
+      label: `Speed: ${state.speed}x${state.speed === 0 ? ' (stopped)' : ''}`,
+      icon: 'speed',
+      slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
+    },
     camera('observerCamera', 'Observer Camera', state.observerCameraInvert),
     camera('controlCamera', 'Control Camera', state.controlCameraInvert),
+    { id: 'music', label: `Music: ${state.musicOn ? 'On' : 'Off'}`, icon: state.musicOn ? 'musicOn' : 'musicOff', toggle: true },
+    { id: 'sound', label: `Sounds: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff', toggle: true },
+  ];
+}
+
+/** Options → File: a new world, or loading / saving one (their own screens; Back returns here). */
+function fileItems(state) {
+  return [
+    newItem(state),
+    { id: 'load', label: 'Load', icon: 'load', submenu: true },
+    { id: 'save', label: 'Save', icon: 'save', submenu: true },
   ];
 }
 
@@ -247,42 +266,22 @@ function accessibilityItems(state) {
  * entries (indented), and `table` the Controls table of that control schema (id).
  * `toggle`: the button switches a setting (On / Off, or the next choice); Right on the keyboard presses it too.
  * Every submenu lists Back first; renderers draw it at the very top of the panel
- * (above the save-name row).
+ * (above the save-name row). The Options screen itself has none: its gear button closes it.
  */
 export function menuModel(state) {
   const { menu, saves, savesError, page } = state;
-  if (menu === 'options') {
-    // Controls, Video and Accessibility open in place, beneath their buttons (one at a time)
-    const schema = CONTROL_SCHEMAS[state.controlSchema] ?? CONTROL_SCHEMAS.observer;
-    return {
-      title: 'Options',
-      items: [
-        BACK,
-        { id: 'controls', label: `Controls: ${schema.name}`, icon: 'controls', section: { open: state.section === 'controls', table: schema.id, items: [] } },
-        { id: 'video', label: 'Video', icon: 'video', section: { open: state.section === 'video', items: videoItems(state) } },
-        { id: 'accessibility', label: 'Accessibility', icon: 'accessibility', section: { open: state.section === 'accessibility', items: accessibilityItems(state) } },
-        { id: 'music', label: `Music: ${state.musicOn ? 'On' : 'Off'}`, icon: state.musicOn ? 'musicOn' : 'musicOff', toggle: true },
-        { id: 'sound', label: `Sounds: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff', toggle: true },
-        {
-          id: 'speed',
-          label: `Speed: ${state.speed}x${state.speed === 0 ? ' (stopped)' : ''}`,
-          icon: 'speed',
-          slider: { min: SPEED.min, max: SPEED.max, step: SPEED.step, value: state.speed }, // drawn as a slider, not a button
-        },
-        { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff', toggle: true },
-        { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug', toggle: true },
-      ],
-    };
-  }
   if (menu === 'main') {
+    // File, Controls, Video and Accessibility open in place, beneath their buttons (one at a time)
+    const schema = CONTROL_SCHEMAS[state.controlSchema] ?? CONTROL_SCHEMAS.observer;
     return {
       title: GAME_TITLE,
       items: [
-        { id: 'resume', label: 'Resume', icon: 'resume', accent: true },
-        newItem(state),
-        { id: 'load', label: 'Load', icon: 'load', submenu: true },
-        { id: 'save', label: 'Save', icon: 'save', submenu: true },
-        { id: 'options', label: 'Options', icon: 'options', submenu: true },
+        { id: 'file', label: 'File', icon: 'file', section: { open: state.section === 'file', items: fileItems(state) } },
+        { id: 'controls', label: `Controls: ${schema.name}`, icon: 'controls', section: { open: state.section === 'controls', table: schema.id, items: [] } },
+        { id: 'video', label: 'Video', icon: 'video', section: { open: state.section === 'video', items: videoItems(state) } },
+        { id: 'accessibility', label: 'Accessibility', icon: 'accessibility', section: { open: state.section === 'accessibility', items: accessibilityItems(state) } },
+        { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff', toggle: true },
+        { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug', toggle: true },
       ],
     };
   }
