@@ -27,6 +27,9 @@ export const GAME_TITLE = 'Grid Game';
 /** Options → Speed: a multiplier, 0x (the simulation stands still) to 4x in steps of 0.25x; 1x is 60 turns a minute. */
 export const SPEED = Object.freeze({ min: 0, max: 4, step: 0.25, default: 1, turnsPerMinute: 60 });
 
+/** Options → Accessibility → Text Size: a multiplier on the page UI's text, 75% to 200% in steps of 25%. */
+export const TEXT_SIZE = Object.freeze({ min: 0.75, max: 2, step: 0.25, default: 1 });
+
 /** Options → Background, in the order its dropdown lists them (passthrough last). */
 export const BACKGROUNDS = ['solid', 'skybox', 'passthrough'];
 const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Passthrough (XR Only)' };
@@ -218,6 +221,24 @@ function videoItems(state) {
 }
 
 /**
+ * Options → Accessibility: the page UI's text size, and which way each camera orbits (Observer
+ * controls, and Creature controls: Normal or Invert).
+ */
+function accessibilityItems(state) {
+  const camera = (id, name, invert) => ({ id, label: `${name}: ${invert ? 'Invert' : 'Normal'}`, icon: invert ? 'cameraInvert' : 'cameraNormal', toggle: true });
+  return [
+    {
+      id: 'textSize',
+      label: `Text Size: ${Math.round(state.textSize * 100)}%`,
+      icon: 'textSize',
+      slider: { min: TEXT_SIZE.min, max: TEXT_SIZE.max, step: TEXT_SIZE.step, value: state.textSize },
+    },
+    camera('observerCamera', 'Observer Camera', state.observerCameraInvert),
+    camera('controlCamera', 'Control Camera', state.controlCameraInvert),
+  ];
+}
+
+/**
  * Returns { title, items: [{ id, label, icon, sub?, disabled?, accent?, slider?, submenu?, toggle?, dropdown?, section? }] } for the current
  * menu screen. `submenu`: the button opens another menu screen (drawn with a right arrow at its far right).
  * `dropdown`: { open, options: [{ id, label, icon, selected }] }: the button opens or closes a list of
@@ -231,7 +252,7 @@ function videoItems(state) {
 export function menuModel(state) {
   const { menu, saves, savesError, page } = state;
   if (menu === 'options') {
-    // Controls and Video open in place, beneath their buttons (one at a time)
+    // Controls, Video and Accessibility open in place, beneath their buttons (one at a time)
     const schema = CONTROL_SCHEMAS[state.controlSchema] ?? CONTROL_SCHEMAS.observer;
     return {
       title: 'Options',
@@ -239,6 +260,7 @@ export function menuModel(state) {
         BACK,
         { id: 'controls', label: `Controls: ${schema.name}`, icon: 'controls', section: { open: state.section === 'controls', table: schema.id, items: [] } },
         { id: 'video', label: 'Video', icon: 'video', section: { open: state.section === 'video', items: videoItems(state) } },
+        { id: 'accessibility', label: 'Accessibility', icon: 'accessibility', section: { open: state.section === 'accessibility', items: accessibilityItems(state) } },
         { id: 'music', label: `Music: ${state.musicOn ? 'On' : 'Off'}`, icon: state.musicOn ? 'musicOn' : 'musicOff', toggle: true },
         { id: 'sound', label: `Sounds: ${state.soundOn ? 'On' : 'Off'}`, icon: state.soundOn ? 'soundOn' : 'soundOff', toggle: true },
         {

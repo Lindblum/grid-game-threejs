@@ -282,6 +282,7 @@ export class World {
    *   'berryGrow' (berry block) — a tree grew a Berry
    *   'creatureArrived' (creature)  — a walking creature reached its target
    *   'creatureTrapped' (creature)  — a creature got walled in (Trapped behavior)
+   *   'creatureBlocked' (creature)  — a controlled creature was steered where it can't go (sim.js steeredCell)
    *   'creatureFreed' (creature)    — a Trapped creature found a gap (back to Wander)
    *   'creatureDied' ({ creature, x, y, z }) — a creature died (its block is already removed)
    *   'blockConsumed' ({ by, block, sound, slot }) — `by` consumed `block` (see consume)
@@ -659,12 +660,22 @@ export class World {
     return this._slidePosition(block, now, out).multiplyScalar(GRID.scale);
   }
 
-  /** Where `block` is right now (mid-slide while it is moving), in lattice units. */
+  /**
+   * Where `block` is right now (mid-slide while it is moving), in lattice units. A slide lasts
+   * the whole turn and goes at an even speed, so a block moving turn after turn glides on
+   * without slowing at each cell; one setting off from rest (`easeIn`) picks up speed first.
+   */
   _slidePosition(block, now, out) {
     const a = this.anims.get(cellKey(block.x, block.y, block.z));
     if (!a) return out.set(block.x, block.y, block.z);
     const t = Math.min(1, (now - a.t0) / a.dur);
-    return out.lerpVectors(a.from, a.to, t * t * (3 - 2 * t)); // smoothstep ease in/out
+    // ease in: from standing still up to the even speed (slope 1) by the end
+    return out.lerpVectors(a.from, a.to, a.easeIn ? t * t * (2 - t) : t);
+  }
+
+  /** Whether `block` is moving on from a slide it made last turn (or earlier this turn), rather than setting off. */
+  _movingOn(block) {
+    return block.movedTurn != null && block.movedTurn >= this.turn - 1;
   }
 
   _dirty() {
@@ -865,8 +876,9 @@ export class World {
       block.z = to.z;
       const tk = cellKey(to.x, to.y, to.z);
       this.blocks.set(tk, block);
+      const easeIn = !this._movingOn(block);
       block.movedTurn = this.turn;
-      this.anims.set(tk, { from: froms[i], to: new THREE.Vector3(to.x, to.y, to.z), t0, dur: durationS * 1000 });
+      this.anims.set(tk, { from: froms[i], to: new THREE.Vector3(to.x, to.y, to.z), t0, dur: durationS * 1000, easeIn });
       this._logChange(froms[i].x, froms[i].y, froms[i].z);
       this._logChange(to.x, to.y, to.z);
     });
@@ -901,8 +913,9 @@ export class World {
     this.blocks.set(tk, b);
     this._logChange(fromPos.x, fromPos.y, fromPos.z);
     this._logChange(to.x, to.y, to.z);
+    const easeIn = !this._movingOn(b);
     b.movedTurn = this.turn; // lets rules tell settled blocks from moving ones
-    this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), t0: this.time, dur: durationS * 1000 });
+    this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), t0: this.time, dur: durationS * 1000, easeIn });
     // a creature now faces the way it moved (unless it was carried, e.g. by a falling group);
     // its old and new neighbours may change floors
     // a creature moving under its own power (not carried; a one-block creature, not a body
@@ -1111,7 +1124,8 @@ export class World {
    * block grows in from the tail to its cell (appear) while the sound `sound` plays
    * ('blockExcreted' event; the engine plays it). `cell` ({ x, y, z }, optional) picks the cell
    * instead (a Nimbus raining straight down). A creature's eaten creatures and Berries come out
-   * as Plop. Returns the new block, or null if the tail's slot
+   * as Plop, unless its type says otherwise (blocks.js excretes: a Crawly's Wood comes out as
+   * Dirt). Returns the new block, or null if the tail's slot
    * is empty or it has no empty neighbouring cell (or `cell` is taken).
    */
   excrete(cluster, sound, { cell: into = null } = {}) {
@@ -1135,7 +1149,10 @@ export class World {
     if (!cell) return null;
     const type = tail.inventory;
     tail.inventory = null;
-    const excreted = isCreature(tail.type) && (isCreature(type) || type === BLOCK.BERRY) ? BLOCK.PLOP : type; // digested
+    // digested: as its type says (excretes), else eaten creatures and Berries come out as Plop,
+    // and Crystal as Stone
+    const excreted = !isCreature(tail.type) ? type
+      : blockProps(tail.type).excretes?.[type] ?? (isCreature(type) || type === BLOCK.BERRY ? BLOCK.PLOP : type === BLOCK.CRYSTAL ? BLOCK.STONE : type);
     // the rest of the items move along the queue toward the tail
     const items = cluster.map((block) => block.inventory).filter(Boolean);
     cluster.forEach((block, i) => (block.inventory = items[i - (cluster.length - items.length)] ?? null));

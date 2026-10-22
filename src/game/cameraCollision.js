@@ -9,9 +9,13 @@
 // surface, the part of the step heading into the surface is dropped, so the camera slides
 // along walls; it can't tunnel through thin ones or jump. A block that arrives at the
 // camera (placed, falling, sliding) eases it out over EASE_OUT_S; only a camera caught inside
-// a block snaps out.
+// a block snaps out. Water doesn't count (PASSABLE): the camera moves through it as through air.
 import * as THREE from 'three';
 import { GRID, cellKey, isValidCell } from './lattice.js';
+import { BLOCK } from './blocks.js';
+
+/** Blocks the camera passes through as if they were empty: it can move in Water as in air. */
+const PASSABLE = new Set([BLOCK.WATER]);
 
 /**
  * How close the camera may come to a block surface, cm: room to sit in a one-cell pocket (its
@@ -63,8 +67,8 @@ export class CameraCollider {
     this.centres = []; // flat x, y, z of the blocks that could matter this frame (drawn positions)
   }
 
-  /** Collects the blocks near the segment a–b (cm), at their drawn positions. */
-  _gather(a, b, now) {
+  /** Collects the blocks near the segment a–b (cm), at their drawn positions (but not those in `skip`). */
+  _gather(a, b, now, skip) {
     this.centres.length = 0;
     // the box around the segment, in lattice units
     const s = GRID.scale;
@@ -75,7 +79,7 @@ export class CameraCollider {
         for (let z = Math.ceil(lo.z); z <= hi.z; z++) {
           if (!isValidCell(x, y, z)) continue;
           const blk = blocks.get(cellKey(x, y, z));
-          if (!blk || blk.vanishing) continue;
+          if (!blk || blk.vanishing || PASSABLE.has(blk.type) || skip?.has(blk)) continue;
           this.world.renderedPosition(blk, now, _v);
           this.centres.push(_v.x, _v.y, _v.z);
         }
@@ -130,13 +134,14 @@ export class CameraCollider {
   /**
    * Moves the camera from `from` (where it safely was; null after a reset) toward `to` (where
    * the controls want it), both in cm (worldRoot space). `away` is the fallback direction out when the
-   * camera sits dead in a block's centre. Returns { pos, blocked } (blocked: some of the
-   * motion was stopped by a surface).
+   * camera sits dead in a block's centre. `skip`: blocks that don't count (a Set; e.g. the
+   * creature a third-person camera sweeps out from). Returns { pos, blocked } (blocked: some of
+   * the motion was stopped by a surface).
    */
-  resolve(from, to, now, dt, away) {
+  resolve(from, to, now, dt, away, skip = null) {
     const teleport = !from || from.distanceTo(to) > LONG_MOVE_CM;
     const start = teleport ? to.clone() : from.clone();
-    if (!this._gather(start, to, now)) return { pos: to.clone(), blocked: false };
+    if (!this._gather(start, to, now, skip)) return { pos: to.clone(), blocked: false };
     const clear = CAMERA_CLEARANCE_CM;
     let blocked = false;
     const pos = start.clone();

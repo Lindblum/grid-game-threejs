@@ -518,7 +518,7 @@ function MenuScreen({ engine, s }) {
           max={it.slider.max}
           step={it.slider.step}
           value={it.slider.value}
-          onChange={(e) => engine.setSpeed(e.target.value)}
+          onChange={(e) => engine._setSlider(it.id, Number(e.target.value))}
         />
       </label>
     ) : (

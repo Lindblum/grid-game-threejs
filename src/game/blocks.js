@@ -38,6 +38,8 @@
 //   behaviorList    the behaviors it can have (from BEHAVIOR)
 //   defaultBehavior the behavior it starts with
 //   eyeScale        eye size relative to a block
+//   excretes        { foodKey: blockKey }: that food comes out as that block when it excretes it
+//                   (World.excrete; otherwise eaten creatures and Berries come out as Plop, the rest as eaten)
 //   eatBuffs        { foodKey: { buff, turns, charges } }: eating that food gives it that buff
 //                   (BUFF_TYPES), lasting `turns` turns (null: no time limit) and/or `charges`
 //                   uses (see below; null or left out: no limit)
@@ -78,6 +80,7 @@ export const BLOCK_TYPES = [
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED],
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
+    excretes: { WOOD: 'DIRT' },
     eatBuffs: { BERRY: { buff: 'rockbiter', turns: null, charges: 5 } },
   },
   {
@@ -170,6 +173,15 @@ export const BUFF_TYPES = Object.freeze({
   },
   flight: { name: 'Flight', fly: true }, // any empty cell is a floor to it, and it never falls
 });
+
+// excretes is written with keys too: turn it into ids
+for (const t of BLOCK_TYPES) {
+  if (!t.excretes) continue;
+  t.excretes = Object.fromEntries(Object.entries(t.excretes).map(([k, v]) => {
+    if (!BLOCK[k] || !BLOCK[v]) throw new Error(`BLOCK_TYPES: ${t.name}.excretes has unknown key ${BLOCK[k] ? v : k}`);
+    return [BLOCK[k], BLOCK[v]];
+  }));
+}
 
 // eatBuffs are written with food keys too; check they name real foods and buffs
 for (const t of BLOCK_TYPES) {

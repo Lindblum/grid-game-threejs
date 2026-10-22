@@ -1,6 +1,6 @@
 // Control schemas: which input does what, and the tables the Options → Controls panel shows
-// (DOM and XR). The Observer schema is the default; with a creature selected, the gamepad's L3
-// switches to the Creature schema (and back).
+// (DOM and XR). The Observer schema is the default; with a creature selected, the gamepad's R3
+// switches to the Creature schema, taking on that creature's view (and back).
 // Each binding: { g: glyph tokens (see inputIcons.js), t: text for tooltips / screen readers }.
 
 export const CONTROL_COLUMNS = ['Action', 'Mouse / Keyboard', 'Gamepad', 'XR Controller'];
@@ -86,14 +86,6 @@ const OBSERVER_CONTROLS = [
   },
 ];
 
-/** R3: the selected creature's first-person view (either schema). */
-const CREATURE_VIEW_ROW = {
-  action: "Creature's view",
-  mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-  pad: { g: ['stick:R:press'], t: "R3 (press the right stick): see through the selected creature's eyes (the right stick looks around); R3 again: back" },
-  xr: { g: ['text:—'], t: 'Not in XR (the headset is the camera)' },
-};
-
 /** The default controls: looking around, building, and giving creatures orders. */
 export const ObserverControlSchema = {
   id: 'observer',
@@ -102,19 +94,19 @@ export const ObserverControlSchema = {
     ...OBSERVER_CONTROLS,
     {
       action: 'Control schema',
-      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-      pad: { g: ['stick:L:press'], t: 'L3 (press the left stick): Creature controls for the selected creature' },
+      mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click a creature: control it; the camera orbits it, up close' },
+      pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): control the selected creature; the camera orbits it, up close' },
       xr: { g: ['text:—'], t: 'No XR controller binding yet' },
     },
-    CREATURE_VIEW_ROW,
   ],
 };
 
 /**
- * Controlling the selected creature (L3 with a creature selected; L3 again, or deselecting
- * it, goes back to Observer): as Observer, but the gamepad's left stick moves the creature,
- * relative to the camera (on its turn), so zooming is LT / RT only; and no tools (using,
- * aiming or switching them): those belong to the Observer.
+ * Controlling the selected creature (R3 with a creature selected; R3 again, or deselecting
+ * it, goes back to Observer): the camera orbits the creature's head, up close, and follows it
+ * (no panning); the gamepad's left stick moves the creature, relative to the camera (on its
+ * turn), so zooming is LT / RT only; and no tools (using, aiming or switching them): those
+ * belong to the Observer.
  */
 const TOOL_ACTIONS = new Set(['Use tool', 'Aim', 'Change tool']);
 export const CreatureControlSchema = {
@@ -127,16 +119,21 @@ export const CreatureControlSchema = {
       pad: { g: ['stick:L:any'], t: 'Left stick: moves the selected creature, relative to the camera (on its turn)' },
       xr: { g: ['text:—'], t: 'No XR controller binding yet' },
     },
+    {
+      action: 'Move away from camera',
+      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+      pad: { g: ['stick:L:press'], t: 'L3 (hold the left stick in): the creature steps the way most nearly away from the camera' },
+      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+    },
     ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action)).map((row) =>
       row.action === 'Zoom' ? { ...row, pad: { g: ['pad:LT', 'sep:/', 'pad:RT'], t: 'LT: zoom out, RT: zoom in' } } : row,
     ),
     {
       action: 'Control schema',
-      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-      pad: { g: ['stick:L:press'], t: 'L3 (press the left stick): back to Observer controls' },
+      mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click the creature: back to Observer controls (another creature: control that one instead)' },
+      pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): back to Observer controls; the camera orbits the world again' },
       xr: { g: ['text:—'], t: 'No XR controller binding yet' },
     },
-    CREATURE_VIEW_ROW,
   ],
 };
 

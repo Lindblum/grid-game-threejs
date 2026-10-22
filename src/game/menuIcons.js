@@ -94,6 +94,21 @@ function musicNote(ctx, P, s) {
 
 const SHAPE_VIEW = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(0.42, -0.62, 0, 'XYZ'));
 
+/** The camera settings' glyph: a dot (what it orbits) with an arrow round it, clockwise (`dir` 1) or anticlockwise (-1). */
+function orbitArrow(ctx, P, dir) {
+  const pts = [];
+  for (let i = 0; i <= 12; i++) {
+    const a = (dir * (-150 + i * 22.5) * Math.PI) / 180; // a 270° arc
+    pts.push([0.5 + 0.32 * Math.cos(a), 0.5 + 0.32 * Math.sin(a)]);
+  }
+  line(ctx, P, pts);
+  const [u, v] = pts[pts.length - 1], [pu, pv] = pts[pts.length - 2];
+  const tu = u - pu, tv = v - pv, len = Math.hypot(tu, tv);
+  const du = (tu / len) * 0.14, dv = (tv / len) * 0.14; // the arrowhead, along the arc's end
+  line(ctx, P, [[u - du - dv * 0.7, v - dv + du * 0.7], [u, v], [u - du + dv * 0.7, v - dv - du * 0.7]]);
+  circle(ctx, P, 0.5, 0.5, 0.07, P(1, 0)[0] - P(0, 0)[0], { fill: true });
+}
+
 /** Grid mode `id`'s cell as a line drawing: the outlines of its front faces, seen from above right. */
 function cellGlyph(ctx, P, id) {
   const { faces, vertices } = GRIDS[id];
@@ -436,6 +451,27 @@ const DRAW = {
       arc.push([0.5 + 0.22 * Math.cos(r), 0.5 + 0.22 * Math.sin(r)]);
     }
     line(ctx, P, arc);
+  },
+  accessibility(ctx, P, s) {
+    // a figure with open arms, in a circle
+    circle(ctx, P, 0.5, 0.5, 0.4, s);
+    circle(ctx, P, 0.5, 0.27, 0.06, s, { fill: true });
+    line(ctx, P, [[0.26, 0.4], [0.74, 0.4]]); // arms
+    line(ctx, P, [[0.5, 0.4], [0.5, 0.58]]); // body
+    line(ctx, P, [[0.38, 0.78], [0.5, 0.58], [0.62, 0.78]]); // legs
+  },
+  textSize(ctx, P) {
+    // a small and a large "A"
+    line(ctx, P, [[0.12, 0.78], [0.26, 0.42], [0.4, 0.78]]);
+    line(ctx, P, [[0.18, 0.64], [0.34, 0.64]]);
+    line(ctx, P, [[0.46, 0.8], [0.67, 0.2], [0.88, 0.8]]);
+    line(ctx, P, [[0.54, 0.58], [0.8, 0.58]]);
+  },
+  cameraNormal(ctx, P) {
+    orbitArrow(ctx, P, 1);
+  },
+  cameraInvert(ctx, P) {
+    orbitArrow(ctx, P, -1);
   },
   info(ctx, P, s) {
     circle(ctx, P, 0.5, 0.5, 0.36, s);

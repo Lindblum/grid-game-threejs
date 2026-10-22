@@ -3,7 +3,7 @@ import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { CameraCollider } from './cameraCollision.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, isSaveData, parseTemplate } from './world.js';
-import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEatNearby, SELECT_WAIT_TURNS } from './sim.js';
+import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEatNearby, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
@@ -18,7 +18,7 @@ import {
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
 import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet, dockAboveController } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE, SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
 import { Interlaced } from './interlaced.js';
@@ -44,13 +44,15 @@ const _sbsSize = new THREE.Vector2();
 const DESKTOP_RAY_LENGTH = 50;
 const WHEEL_TOOL_REARM_MS = 200; // horizontal-scroll tool switching: quiet gap that ends one push
 const BG = new THREE.Color('#1b2029');
-// R3: the creature's first-person view: the camera sits between its eyes (its own frame, cm:
-// x = right, y = up, z = front), and the right stick looks around by up to these angles
-const POV_EYE = new THREE.Vector3(0, 0.15, 0.95);
-const POV_MAX_PITCH = 1.3; // rad, up / down
-const _povPos = new THREE.Vector3(), _povQ = new THREE.Quaternion(), _povLook = new THREE.Quaternion();
+// Creature controls (R3): the creature's view, the Observer camera orbiting the creature's head. It starts
+// two cells (4 cm) away, above and behind it at 45° (cm, the camera's own frame: y = up,
+// z = back), and may zoom in to POV_MIN_DISTANCE_M (m; just clear of the head)
+const POV_BOOM = new THREE.Vector3(0, 1, 1).setLength(4);
+const ZOOM_OUT_S = 0.8; // back to Observer: the camera moves out to its old distance over this long
+const ROTATE_SPEED = 5; // the trackball's mouse orbiting, about as fast as the old orbit controls
+const POV_MIN_DISTANCE_M = 0.018;
+const _povQ = new THREE.Quaternion();
 const _povTurn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI); // the camera looks down -z, a creature faces +z
-const _povEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 // scratch for the listener (positional sound)
 const _earPos = new THREE.Vector3(), _earFwd = new THREE.Vector3(), _earUp = new THREE.Vector3();
 const _earQuat = new THREE.Quaternion(), _earScale = new THREE.Vector3();
@@ -65,6 +67,12 @@ const FLY_M_PER_WHEEL_PX = 0.00005; // zoomed all the way in, scrolling flies fo
 const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's left stick flies up to 8 cm/s
 // Select tool wireframes (selected / pointed-at creatures, the target cell and its pulses): thin tubes.
 const SELECT_WIRE_RADIUS = EDGE_WIDTH_CM / 2;
+/** Creature controls: the next-step dot's radius (cm; a cell's inradius is 1 cm), small enough not to hide the cell. */
+const STEP_MARKER_RADIUS_CM = 0.05;
+/** Creature controls: the lines to the cells a creature could step into, room for this many at once (all controlled creatures). */
+const STEP_LINES_MAX = 256;
+/** Creature controls: the stick picks the step line nearest its direction on screen, within this (cosine: ~70°). */
+const STEER_SCREEN_COS = 0.35;
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
 
 /** Thick wireframe of a block (the grid mode's cell) made from thin cylinders (visible in XR too). */
@@ -122,7 +130,7 @@ export class Engine {
       menu: 'main', // 'main' | 'load' | 'save' | 'options'
       gridMode: gridMode(), // the world's grid mode (grids.js): chosen from New's dropdown, or by the save loaded
       soundOn: true, // Options → Sounds
-      controlSchema: 'observer', // 'observer' (default) or 'creature' (L3 with a creature selected): controls.js
+      controlSchema: 'observer', // 'observer' (default) or 'creature' (R3 with a creature selected; the camera takes on its view): controls.js
       musicOn: true, // Options → Music: plays while the game is running (quieter in the pause menu)
       gameTime: -COUNTDOWN_SECONDS, // whole seconds (turns) since New / Load; negative = countdown
       background: 'passthrough', // Options → Background: 'solid', 'skybox' or 'passthrough' (XR passthrough; solid elsewhere)
@@ -134,6 +142,9 @@ export class Engine {
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
       refraction: true, // Options → Refraction: Crystal bends what's behind it (Off: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
+      textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
+      observerCameraInvert: false, // Options → Accessibility → Observer Camera: Invert turns orbiting the other way
+      controlCameraInvert: true, // Options → Accessibility → Control Camera: the same, under Creature controls
       saves: null,
       savesError: null,
       page: 0,
@@ -154,7 +165,7 @@ export class Engine {
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
       dropdown: null, // the menu dropdown whose list is open ('new' | 'view' | 'background'), see menu.js
-      section: null, // the Options section open beneath its button ('controls' | 'video'), see menu.js
+      section: null, // the Options section open beneath its button ('controls' | 'video' | 'accessibility'), see menu.js
       selectPhase: 'select', // Select tool: 'select' (pick a creature) or 'target' (pick where it walks)
     };
     this._toastId = 0;
@@ -209,7 +220,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction'];
+  static OPTION_KEYS = ['musicOn', 'soundOn', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'textSize', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Debug, or ` / ~ while playing: the Debug panel (XR: the debug tablet) on / off; remembered. */
   toggleDebug() {
@@ -257,7 +268,8 @@ export class Engine {
     }
     // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
-    for (const k of ['rain', 'debugMode', 'smoothRendering']) if (bool(k)) this.setState({ [k]: saved[k] });
+    for (const k of ['rain', 'debugMode', 'smoothRendering', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
+    if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
     if (bool('fog')) this.setFog(saved.fog);
   }
@@ -314,7 +326,7 @@ export class Engine {
     controls.target.set(0, 0, 0);
     controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }; // left: tools
     controls.keys = ['', '', '']; // no A / S / D mode keys (the game uses the keyboard)
-    controls.rotateSpeed = 5; // about as fast as the old orbit controls
+    controls.rotateSpeed = ROTATE_SPEED; // (negated each frame while inverted: see _cameraSign)
     controls.zoomSpeed = 1.2;
     controls.panSpeed = 0.3;
     controls.staticMoving = false; // eases out after a drag
@@ -341,6 +353,7 @@ export class Engine {
     this.world.on('berryGrow', (berry) => playBerryGrow(at(berry)));
     this.world.on('creatureArrived', (creature) => playCreatureDone(at(creature)));
     this.world.on('creatureTrapped', (creature) => playCreatureTrapped(at(creature)));
+    this.world.on('creatureBlocked', (creature) => playSfx('bump', 150, at(creature))); // steered where it can't go
     this.world.on('creatureTurned', (creature) => playSfx('buzz', 150, at(creature)));
     // a creature moving under its own power: a Crawly skitters, a Buzzy buzzes, a Squirmy slithers
     const MOVE_SOUNDS = { [BLOCK.CRAWLY]: 'skitter', [BLOCK.BUZZY]: 'buzz', [BLOCK.SQUIRMY]: 'slither', [BLOCK.SLITHER]: 'slither' };
@@ -393,6 +406,18 @@ export class Engine {
     this._hoverCreature = null;
     this.targetHL = makeWireframe(SELECT_GREEN, SELECT_WIRE_RADIUS);
     root.add(this.targetHL);
+    // Creature controls: a small dot on the cell each steered creature will step into next turn
+    this._stepMarkerGeo = new THREE.SphereGeometry(STEP_MARKER_RADIUS_CM, 16, 12);
+    this._stepMarkerMat = new THREE.MeshBasicMaterial({ color: SELECT_GREEN, transparent: true, opacity: 0.75, depthWrite: false });
+    this.stepMarkers = [];
+    // …and thin lines from its cell's centre to each cell it could step into
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(STEP_LINES_MAX * 6), 3).setUsage(THREE.DynamicDrawUsage));
+    this.stepLines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: SELECT_GREEN, transparent: true, opacity: 0.45, depthWrite: false }));
+    this.stepLines.frustumCulled = false;
+    this.stepLines.renderOrder = 3;
+    this.stepLines.visible = false;
+    root.add(this.stepLines);
     // a new grid mode (World.setGridMode): every wireframe takes the new block shape
     onGridChange(() => {
       for (const hl of [this.placeHL, this.deleteHL, this.targetHL, ...this.selectHLs, ...this.hoverHLs, ...this._pulses.map((p) => p.obj)]) buildWireframe(hl);
@@ -562,6 +587,11 @@ export class Engine {
         this.useTool();
       }
     };
+    this._onDoubleClick = (e) => {
+      if (e.button !== 0 || this.state.screen !== 'playing' || this.state.paused || this.state.inXR) return;
+      this._onPointerMove(e);
+      this._doubleClickCreature();
+    };
     this._onContextMenu = (e) => e.preventDefault();
     this._onKeyDown = (e) => this._handleKey(e);
     // Horizontal scroll switches tools. In the Quest Browser's window mode the Touch
@@ -605,6 +635,7 @@ export class Engine {
     el.addEventListener('pointermove', this._onPointerMove);
     el.addEventListener('pointerleave', this._onPointerLeave);
     el.addEventListener('pointerdown', this._onPointerDown);
+    el.addEventListener('dblclick', this._onDoubleClick);
     el.addEventListener('contextmenu', this._onContextMenu);
     window.addEventListener('keydown', this._onKeyDown);
   }
@@ -910,8 +941,10 @@ export class Engine {
     this.selected = list;
     // Creature controls follow the selection; with nothing selected, back to Observer
     if (this.state.controlSchema === 'creature') {
-      if (list.length) this._setControlled(list);
-      else this.setControlSchema('observer');
+      if (list.length) {
+        this._setControlled(list);
+        if (this._pov && !list.includes(this._pov.creature)) this._startCreatureView(list[0]); // the view follows
+      } else this.setControlSchema('observer');
     }
     const phase = list.length ? 'target' : 'select';
     if (this.state.selectPhase !== phase) this.setState({ selectPhase: phase });
@@ -962,73 +995,108 @@ export class Engine {
     return true;
   }
 
-  // ---------------------------------------------------------------- creature view (R3)
+  // ---------------------------------------------------------------- creature view (Creature controls)
 
   /**
-   * R3: switches to the selected creature's first-person view (the camera between its eyes,
-   * turning with it as it moves and turns; the right stick looks around), or back to the
-   * orbiting camera where it was. Not in XR (the headset is the camera there).
+   * Creature controls' camera: the Observer camera, but orbiting `creature`'s head and carried
+   * along with it; it starts close, above and behind it (see _updateCreatureView). Already in
+   * the view: it moves to `creature` (placed close again). Not in XR (the headset is the
+   * camera there).
    */
-  toggleCreatureView() {
-    if (this._pov) return this._endCreatureView();
-    const creature = this.selected[0];
-    if (!creature || this._immersive) {
-      playSfx('ineffective', 0);
-      return false;
+  _startCreatureView(creature) {
+    if (this._immersive) return;
+    if (this._pov) {
+      Object.assign(this._pov, { creature, desired: null, head: null });
+      return;
     }
+    const c = this.controls;
     this._pov = {
-      creature, yaw: 0, pitch: 0,
-      saved: { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() },
+      creature,
+      desired: null, // where the orbit puts the camera (world space; before collisions pull it in)
+      head: null, // the head's position last frame (world space)
+      saved: { pos: this.camera.position.clone(), target: c.target.clone(), up: this.camera.up.clone(), minDistance: c.minDistance },
     };
-    this.controls.enabled = false;
-    this.setState({ creatureView: true });
-    this.toast(`${blockProps(creature.type).name}'s view (R3: back)`);
-    playTick();
-    return true;
+    c.noPan = true; // (it stays on the head)
+    c.minDistance = POV_MIN_DISTANCE_M;
   }
 
-  /** Back to the orbiting camera, where it was before the creature's view. */
-  _endCreatureView() {
+  /**
+   * Back to the orbiting camera, where it was before the creature's view. `zoomOut`: instead it
+   * stays where it is, turns to orbit the world's origin, and moves out from there to the
+   * distance it had before (see _stepZoomOut).
+   */
+  _endCreatureView({ zoomOut = false } = {}) {
     const p = this._pov;
     if (!p) return false;
     this._pov = null;
-    const { pos, target, up } = p.saved;
+    const { pos, target, up, minDistance } = p.saved;
+    if (zoomOut) {
+      this.controls.noPan = false;
+      this.controls.minDistance = minDistance;
+      this._orbitOrigin();
+      this._camSafe = this.worldRoot.worldToLocal(this.camera.position.clone()); // sweeps on from here
+      const from = this.camera.position.distanceTo(this.controls.target), to = pos.distanceTo(this.controls.target);
+      this._zoomOut = to > from ? { from, to, t: 0 } : null;
+      return true;
+    }
     this.camera.position.copy(pos);
     this.camera.up.copy(up);
     this.controls.target.copy(target);
+    this.controls.noPan = false;
+    this.controls.minDistance = minDistance;
     this.camera.lookAt(target);
     this._camSafe = null; // a jump: no collision sweep from the creature's head
-    this.controls.enabled = true;
+    this._stopControlsMomentum();
     this.controls.update();
-    this.setState({ creatureView: false });
-    playTick();
     return true;
   }
 
-  /** Per frame: the camera rides between the creature's eyes, facing its front (plus the look-around). */
+  /**
+   * Per frame (instead of the Observer camera's own update): the orbit target is the creature's
+   * head as drawn (sliding), and the camera is carried along by however far it moved, so it
+   * keeps its own heading as the creature turns. The trackball, the right stick and the zoom
+   * then orbit and zoom about it as in Observer controls. Where the orbit wants the camera
+   * (`desired`) is kept apart from where it's drawn: the camera is swept out from the head to
+   * there through the camera collider (the creature's own blocks left out), so walls and
+   * ceilings pull it in, and it goes back out once they're gone.
+   */
   _updateCreatureView(now) {
-    const { creature: c, yaw, pitch } = this._pov;
-    if (this.world.get(c.x, c.y, c.z) !== c) return this._endCreatureView(); // it's gone (died, deleted, a new world)
-    // its frame as drawn: the eyes' rotation (eased as it turns) and its sliding position
-    const q = this.world.eyes.state.get(c)?.q ?? _povQ.identity();
-    this.world.renderedPosition(c, now, _povPos);
-    _povPos.add(POV_EYE.clone().multiplyScalar(this.world.drawnScale(c, now)).applyQuaternion(q));
-    this.camera.position.copy(this.worldRoot.localToWorld(_povPos));
-    _povLook.setFromEuler(_povEuler.set(pitch, yaw, 0));
-    this.camera.quaternion.copy(this.worldRoot.getWorldQuaternion(_povQ)).multiply(q).multiply(_povTurn).multiply(_povLook);
-    this.camera.up.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-  }
-
-  /** Right stick in the creature's view: turn the head (yaw: any way round, pitch: up to POV_MAX_PITCH). */
-  _lookAround(dt, rx, ry) {
-    const p = this._pov;
-    p.yaw -= rx * 2.2 * dt;
-    p.pitch = THREE.MathUtils.clamp(p.pitch - ry * 1.6 * dt, -POV_MAX_PITCH, POV_MAX_PITCH);
+    const p = this._pov, c = p.creature;
+    if (this.world.get(c.x, c.y, c.z) !== c) {
+      // it's gone (died, deleted, a new world): on to another controlled creature, else back to Observer
+      const next = (this._controlled ?? []).find((o) => o !== c && this.world.get(o.x, o.y, o.z) === o);
+      if (next) this._startCreatureView(next);
+      else if (this.state.controlSchema === 'creature') this.setControlSchema('observer');
+      else this._endCreatureView();
+      return;
+    }
+    const root = this.worldRoot;
+    const centre = this.world.renderedPosition(c, now, new THREE.Vector3()); // cm, lattice space
+    const head = root.localToWorld(centre.clone());
+    if (!p.desired) {
+      // first frame: close above and behind it, its up as up
+      const q = this.world.eyes.state.get(c)?.q ?? _povQ.identity();
+      const frame = q.clone().multiply(_povTurn);
+      p.desired = root.localToWorld(POV_BOOM.clone().applyQuaternion(frame).add(centre));
+      this.camera.up.set(0, 1, 0).applyQuaternion(frame).applyQuaternion(root.getWorldQuaternion(_povQ));
+      this._stopControlsMomentum();
+    } else p.desired.add(head.clone().sub(p.head));
+    p.head = head;
+    this.controls.target.copy(head);
+    this.camera.position.copy(p.desired);
+    this.controls.update();
+    p.desired.copy(this.camera.position);
+    const want = root.worldToLocal(p.desired.clone());
+    this.cameraCollider ??= new CameraCollider(this.world);
+    // (dt Infinity: a block that comes near pushes it straight out; it's swept afresh each frame anyway)
+    const { pos } = this.cameraCollider.resolve(centre, want, now, Infinity, want.clone().sub(centre), new Set(this._bodyOf(c)));
+    this.camera.position.copy(root.localToWorld(pos));
+    this.camera.lookAt(head);
   }
 
   // ---------------------------------------------------------------- control schemas
 
-  /** L3: Observer → Creature controls (needs a selected creature), or back. */
+  /** R3: Observer → Creature controls (needs a selected creature), or back. */
   toggleControlSchema() {
     if (this.state.controlSchema === 'creature') return this.setControlSchema('observer');
     if (!this.selected.length) {
@@ -1038,14 +1106,71 @@ export class Engine {
     return this.setControlSchema('creature');
   }
 
-  /** Switches control schema (controls.js): 'creature' puts the selected creatures under the player's control. */
+  /**
+   * Switches control schema (controls.js): 'creature' puts the selected creatures under the
+   * player's control and takes on the first one's view (the camera orbits it, up close).
+   * Back to 'observer' leaves that view: the camera goes back where it was, orbiting the
+   * world's origin.
+   */
   setControlSchema(id) {
     if (this.state.controlSchema === id) return false;
+    if (id === 'observer') {
+      if (!this._endCreatureView({ zoomOut: true })) this._orbitOrigin();
+    } else if (this.selected[0]) this._startCreatureView(this.selected[0]);
     this._setControlled(id === 'creature' ? this.selected : []);
     this.setState({ controlSchema: id });
     this.toast(id === 'creature' ? 'Creature controls: the left stick moves the selected creature' : 'Observer controls');
-    playTick();
+    playSfx(id === 'creature' ? 'controlCreature' : 'controlObserver', 0);
     return true;
+  }
+
+  /**
+   * Double-clicking a creature (any block of it, under the mouse) switches the mode. In
+   * Observer controls: it becomes the selection and you take control of it (its view). In
+   * Creature controls: one you're controlling lets go (back to Observer); another creature
+   * is taken over instead (the view moves to it).
+   */
+  _doubleClickCreature() {
+    if (!this.mouse) return false;
+    this.raycaster.setFromCamera(this._viewMouse(), this.camera);
+    this.raycaster.far = DESKTOP_RAY_LENGTH;
+    const creature = this._creatureOf(this._pick()?.block);
+    if (!creature) return false;
+    const creatureControls = this.state.controlSchema === 'creature';
+    if (creatureControls && this._controlled?.includes(creature)) return this.setControlSchema('observer');
+    if (this.selected.length !== 1 || this.selected[0] !== creature) this._setSelected([creature]);
+    if (creatureControls) {
+      playSfx('controlCreature', 0); // (the view followed the selection)
+      return true;
+    }
+    return this.setControlSchema('creature');
+  }
+
+  /**
+   * Per frame after leaving a creature's view: the camera moves out from the origin (along
+   * the line it's on) to its old distance over ZOOM_OUT_S, easing in and out. The trackball,
+   * the sticks and collisions still apply on top; a new creature view ends it.
+   */
+  _stepZoomOut(dt) {
+    const z = this._zoomOut;
+    if (!z) return;
+    if (this._pov) return void (this._zoomOut = null);
+    const before = z.from + (z.to - z.from) * THREE.MathUtils.smootherstep(z.t, 0, 1);
+    z.t = Math.min(1, z.t + dt / ZOOM_OUT_S);
+    const after = z.from + (z.to - z.from) * THREE.MathUtils.smootherstep(z.t, 0, 1);
+    const off = this.camera.position.clone().sub(this.controls.target);
+    off.setLength(off.length() * (after / before)); // (relative: zooming meanwhile still counts)
+    this.camera.position.copy(this.controls.target).add(off);
+    if (z.t >= 1) this._zoomOut = null;
+  }
+
+  /** The camera stays where it is, but turns to orbit (and look at) the world's origin. */
+  _orbitOrigin() {
+    const origin = this.worldRoot.localToWorld(new THREE.Vector3());
+    this.controls.target.copy(origin);
+    this.camera.lookAt(origin);
+    this._stopControlsMomentum();
+    this.controls.update();
   }
 
   /** The creatures the player controls (Creature controls): flagged for the sim (isControlled, steer). */
@@ -1061,12 +1186,16 @@ export class Engine {
   /**
    * Creature controls: the left stick (`sx`, `sy`: right, down) steers each controlled
    * creature relative to the camera: up is away from the camera, right is screen right. A
-   * walker's direction is kept along the ground (perpendicular to "up", away from the world's
-   * centre); a flyer goes straight where the camera looks. Kept (`creature.steer`) until its
-   * next turn uses it (sim: steeredCell), so a quick flick between turns still counts.
+   * walker's direction is kept along the ground it's on (perpendicular to "up": away from its
+   * floor block, or from the world's centre when it has none); a flyer goes straight where the
+   * camera looks. But when one of the cells it could step into (the step lines) lies that way
+   * on screen, it goes there: the line nearest the stick's direction as drawn, so a step up a
+   * ledge or a wall goes where it looks like it goes. Kept (`creature.steer`) until its next
+   * turn uses it (sim: steeredCell), so a quick flick between turns still counts.
    */
   _steerControlled(sx, sy) {
     if (!sx && !sy) return;
+    this._steerStick = [sx, sy]; // (for the step lines; cleared each gamepad poll)
     const toLattice = this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert();
     const look = this.camera.getWorldDirection(new THREE.Vector3()).applyQuaternion(toLattice);
     const screenRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(toLattice);
@@ -1074,7 +1203,8 @@ export class Engine {
     for (const c of this._controlled ?? []) {
       const fwd = look.clone(), right = screenRight.clone();
       if (!canFly(c)) {
-        const up = new THREE.Vector3(c.x, c.y, c.z);
+        // (on a wall or under a ledge "up" is away from that, not from the world's centre)
+        const up = c.floor ? new THREE.Vector3(...c.floor).negate() : new THREE.Vector3(c.x, c.y, c.z);
         if (up.lengthSq() < 1e-6) up.set(0, 1, 0);
         up.normalize();
         fwd.addScaledVector(up, -fwd.dot(up));
@@ -1085,8 +1215,117 @@ export class Engine {
       const dir = right.normalize().multiplyScalar(sx).addScaledVector(fwd.normalize(), -sy);
       if (dir.lengthSq() < 1e-6) continue;
       dir.normalize();
+      c.steer = this._steerAlongLine(c, sx, sy) ?? [dir.x, dir.y, dir.z];
+    }
+  }
+
+  /**
+   * Creature controls, L3 held: each controlled creature steps the way that goes most nearly
+   * away from the camera (the largest share of the view direction, in 3D) of the cells it could
+   * step into; with none it's steered straight along the view, so it bumps.
+   */
+  _steerAway() {
+    const toLattice = this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const look = this.camera.getWorldDirection(new THREE.Vector3()).applyQuaternion(toLattice);
+    for (const c of this._controlled ?? []) {
+      let best = null, bestDot = 0; // (never toward the camera)
+      for (const t of steppableCells(this.world, c)) {
+        const d = new THREE.Vector3(t.x - c.x, t.y - c.y, t.z - c.z).normalize();
+        const dot = d.dot(look);
+        if (dot <= bestDot) continue;
+        best = d;
+        bestDot = dot;
+      }
+      const dir = best ?? look;
       c.steer = [dir.x, dir.y, dir.z];
     }
+  }
+
+  /**
+   * The step (lattice offset) from `c` to the cell it could step into whose line on screen is
+   * nearest the stick's direction (`sx`, `sy`: right, down), within STEER_SCREEN_COS; null if
+   * none.
+   */
+  _steerAlongLine(c, sx, sy) {
+    let best = null, bestCos = STEER_SCREEN_COS;
+    for (const { t, cos } of this._stepCosines(c, sx, sy) ?? []) {
+      if (cos <= bestCos) continue;
+      const d = Math.hypot(t.x - c.x, t.y - c.y, t.z - c.z);
+      best = [(t.x - c.x) / d, (t.y - c.y) / d, (t.z - c.z) / d];
+      bestCos = cos;
+    }
+    return best;
+  }
+
+  /**
+   * Each cell `c` could step into (`t`) with the cosine (`cos`) between the stick's direction
+   * (`sx`, `sy`: right, down) and its step line as drawn on screen; null when `c` is behind the
+   * camera. A line seen end-on, or reaching behind the camera, is left out.
+   */
+  _stepCosines(c, sx, sy) {
+    const s = GRID.scale;
+    const toScreen = (x, y, z) => {
+      const p = this.worldRoot.localToWorld(new THREE.Vector3(x * s, y * s, z * s)).project(this.camera);
+      return p.z < 1 ? p : null; // (behind the camera: no use)
+    };
+    const from = toScreen(c.x, c.y, c.z);
+    if (!from) return null;
+    const stick = Math.hypot(sx, sy);
+    const out = [];
+    for (const t of steppableCells(this.world, c)) {
+      const to = toScreen(t.x, t.y, t.z);
+      if (!to) continue;
+      const vx = (to.x - from.x) * this.camera.aspect, vy = to.y - from.y; // NDC y is up
+      const len = Math.hypot(vx, vy);
+      if (len < 1e-6) continue;
+      out.push({ t, cos: (vx * sx - vy * sy) / (len * stick) });
+    }
+    return out;
+  }
+
+  /**
+   * Creature controls: a dot on the cell each controlled creature will step into on its next
+   * turn as it is being steered (sim.js nextSteppedCell); none while it isn't steered, or can't
+   * go that way (it bumps instead). While the stick is pushed, lines run from each one's cell
+   * toward the cells it could step into (sim.js steppableCells), as far as the stick points
+   * along each (its cosine with the line on screen; with the step in 3D if the creature is
+   * behind the camera): all the way when it points right along it, not at all at 90° or more.
+   */
+  _updateStepMarkers() {
+    const on = this.state.controlSchema === 'creature' && this.state.screen === 'playing';
+    const controlled = on ? (this._controlled ?? []).filter((c) => this.world.get(c.x, c.y, c.z) === c) : [];
+    const cells = controlled.map((c) => nextSteppedCell(this.world, c)).filter(Boolean);
+    const pos = this.stepLines.geometry.getAttribute('position');
+    const s = GRID.scale;
+    const stick = this._steerStick;
+    let n = 0;
+    for (const c of stick ? controlled : []) {
+      const steps = this._stepCosines(c, ...stick) ?? steppableCells(this.world, c).map((t) => {
+        const d = [t.x - c.x, t.y - c.y, t.z - c.z];
+        const st = c.steer ?? [0, 0, 0];
+        return { t, cos: (d[0] * st[0] + d[1] * st[1] + d[2] * st[2]) / Math.hypot(...d) };
+      });
+      for (const { t, cos } of steps) {
+        if (n >= STEP_LINES_MAX) break;
+        if (cos <= 0) continue;
+        pos.setXYZ(n * 2, c.x * s, c.y * s, c.z * s);
+        pos.setXYZ(n * 2 + 1, (c.x + (t.x - c.x) * cos) * s, (c.y + (t.y - c.y) * cos) * s, (c.z + (t.z - c.z) * cos) * s);
+        n++;
+      }
+    }
+    pos.needsUpdate = n > 0;
+    this.stepLines.geometry.setDrawRange(0, n * 2);
+    this.stepLines.visible = n > 0;
+    while (this.stepMarkers.length < cells.length) {
+      const m = new THREE.Mesh(this._stepMarkerGeo, this._stepMarkerMat);
+      m.renderOrder = 3; // after the see-through passes
+      this.worldRoot.add(m);
+      this.stepMarkers.push(m);
+    }
+    this.stepMarkers.forEach((m, i) => {
+      m.visible = i < cells.length;
+      if (m.visible) m.position.set(cells[i].x, cells[i].y, cells[i].z).multiplyScalar(GRID.scale);
+    });
   }
 
   /**
@@ -1222,8 +1461,8 @@ export class Engine {
         if (b) this.world.renderedPosition(b, now, hl.position);
       });
     };
-    const watched = this._pov?.creature; // (seen from inside, its own wireframe would frame the view)
-    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)).filter((b) => b !== watched), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
+    const watched = new Set(this._pov ? this._bodyOf(this._pov.creature) : []); // (this close, its own wireframe would crowd the view)
+    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)).filter((b) => !watched.has(b)), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
     place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], '#9be8a8', SELECT_WIRE_RADIUS * 0.8, 1.04);
     for (const p of this._pulses) {
       if (!p.obj.visible) continue;
@@ -1280,6 +1519,22 @@ export class Engine {
   _setSlider(id, value) {
     if (value == null) return;
     if (id === 'speed') this.setSpeed(value);
+    if (id === 'textSize') this.setTextSize(value);
+  }
+
+  /** Options → Accessibility → Text Size: scales the page UI's text (styles.css --text-scale), snapped to the slider's steps. */
+  setTextSize(multiplier) {
+    const n = Number(multiplier);
+    const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : TEXT_SIZE.default, TEXT_SIZE.min, TEXT_SIZE.max);
+    const v = Math.round(raw / TEXT_SIZE.step) * TEXT_SIZE.step;
+    document.documentElement.style.setProperty('--text-scale', String(v));
+    if (v !== this.state.textSize) this.setState({ textSize: v });
+  }
+
+  /** -1 when the camera's orbiting is inverted (Options → Accessibility: Observer or Control Camera, by the control schema), else 1. */
+  _cameraSign() {
+    const s = this.state;
+    return (s.controlSchema === 'creature' ? s.controlCameraInvert : s.observerCameraInvert) ? -1 : 1;
   }
 
   /**
@@ -1464,8 +1719,10 @@ export class Engine {
       return this.refreshSaves();
     }
     if (id === 'options') return this.setState({ menu: 'options', section: null });
-    // Controls and Video open (or close) their sections, closing the other one
-    if (id === 'controls' || id === 'video') return this.setState({ section: s.section === id ? null : id });
+    // Controls, Video and Accessibility open (or close) their sections, closing any other
+    if (id === 'controls' || id === 'video' || id === 'accessibility') return this.setState({ section: s.section === id ? null : id });
+    if (id === 'observerCamera') return this.setState({ observerCameraInvert: !s.observerCameraInvert });
+    if (id === 'controlCamera') return this.setState({ controlCameraInvert: !s.controlCameraInvert });
     if (id === 'sound') return this.setSound(!s.soundOn);
     if (id === 'music') return this.setState({ musicOn: !s.musicOn });
     if (id === 'ao') {
@@ -2401,7 +2658,7 @@ export class Engine {
   _flyForward(metres, radius = null) {
     const c = this.controls, cam = this.camera;
     const dist = radius ?? cam.position.distanceTo(c.target);
-    if (dist > c.minDistance * 1.05 || metres <= 0) return;
+    if (dist > c.minDistance * 1.05 || metres <= 0 || this._pov) return; // (the creature's view stays on its head)
     const fwd = c.target.clone().sub(cam.position).normalize().multiplyScalar(metres);
     c.target.add(fwd);
     cam.position.add(fwd);
@@ -2415,6 +2672,7 @@ export class Engine {
 
   // ---------------------------------------------------------------- browser gamepad
   _pollBrowserGamepad(dt) {
+    this._steerStick = null; // set again below while the left stick steers a creature
     const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter((p) => p && p.connected) : [];
     // Touch controllers (e.g. Quest Browser / Link in window mode) are not standard
     // gamepads: only the right stick is used, to switch tools, same as in XR.
@@ -2448,10 +2706,10 @@ export class Engine {
     if (s.screen !== 'playing') return;
     if (!s.gamepadAim) this.setState({ gamepadAim: true });
     if (edge(9)) return this.toggleMenu(); // Start
-    if (edge(10)) this.toggleControlSchema(); // L3: Observer ↔ Creature controls
-    if (edge(11)) this.toggleCreatureView(); // R3: the selected creature's first-person view, or back
+    if (edge(11)) this.toggleControlSchema(); // R3: Observer ↔ Creature controls (and its view)
     const steering = this.state.controlSchema === 'creature'; // the left stick moves the creature, not the camera
-    if (steering) this._steerControlled(ax(0), ax(1));
+    if (steering && pressed[10]) this._steerAway(); // L3 held: straight away from the camera
+    else if (steering) this._steerControlled(ax(0), ax(1));
     if (edge(0)) {
       // A: use the tool (at the crosshair; Observer controls only)
       this._updateTarget();
@@ -2462,9 +2720,8 @@ export class Engine {
     if (edge(2)) this.selectedToggleWait(); // X: selected creatures wait, or resume what they were doing
     if (edge(4)) this.cycleTool(-1); // LB
     if (edge(5)) this.cycleTool(1); // RB
-    // in the creature's view the right stick looks around (no orbiting, zooming or panning)
-    if (this._pov) return this._lookAround(dt, ax(2), ax(3));
-    // left stick up / down and the triggers zoom (LT out, RT in)
+    // left stick up / down and the triggers zoom (LT out, RT in); in the creature's view the
+    // camera orbits its head the same way (no panning: see _padCamera)
     this._padCamera(dt, ax(2), ax(3), THREE.MathUtils.clamp((steering ? 0 : ax(1)) + zoom, -1, 1), [pressed[12], pressed[13], pressed[14], pressed[15]]);
   }
 
@@ -2514,10 +2771,15 @@ export class Engine {
   _padCamera(dt, rx, ry, ly, [du, dd, dl, dr]) {
     if (!rx && !ry && !ly && !du && !dd && !dl && !dr) return;
     const c = this.controls, cam = this.camera;
+    const pov = this._pov?.desired ? this._pov : null; // the creature's view: orbit where it wants the camera, not where walls pulled it in
+    if (pov) cam.position.copy(pov.desired);
     const off = cam.position.clone().sub(c.target);
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
     const upv = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
-    // stick right: round the camera's up axis; stick down: over its right axis
+    const sign = this._cameraSign();
+    rx *= sign;
+    ry *= sign;
+    // stick right: round the camera's up axis; stick down: over its right axis (the other way when inverted)
     const turn = new THREE.Quaternion().setFromAxisAngle(upv, rx * 2.2 * dt)
       .multiply(new THREE.Quaternion().setFromAxisAngle(right, ry * 1.6 * dt));
     off.applyQuaternion(turn);
@@ -2526,7 +2788,7 @@ export class Engine {
     if (ly < 0) this._flyForward(-ly * FLY_M_PER_PAD_S * dt, radius); // stick past the zoom limit: fly forward
     off.setLength(radius);
     const pan = new THREE.Vector3();
-    if (du || dd || dl || dr) {
+    if ((du || dd || dl || dr) && !this._pov) {
       const speed = radius * 0.8 * dt;
       pan.addScaledVector(right, ((dr ? 1 : 0) - (dl ? 1 : 0)) * speed);
       pan.addScaledVector(upv, ((du ? 1 : 0) - (dd ? 1 : 0)) * speed);
@@ -2534,6 +2796,7 @@ export class Engine {
     c.target.add(pan);
     cam.position.copy(c.target).add(off);
     cam.lookAt(c.target);
+    if (pov) pov.desired.copy(cam.position);
   }
 
   /**
@@ -2579,12 +2842,15 @@ export class Engine {
     this.world.updateAnimations(sceneNow); // every 3D object's per-frame update (see World.updateAnimations)
     this._animTotal += performance.now() - a0;
     this._updateSelectionVisuals(sceneNow);
+    this._updateStepMarkers();
     if (this.state.handheld) this.cardboard.update(); // the camera follows the phone
     const xr = this._immersive;
     if (!xr) {
       this._pollBrowserGamepad(dt);
+      this.controls.rotateSpeed = ROTATE_SPEED * this._cameraSign(); // mouse orbiting, inverted or not
       if (this._pov) this._updateCreatureView(sceneNow);
       else {
+        this._stepZoomOut(dt);
         this.controls.update();
         this._collideCamera(now, dt);
       }
@@ -2666,6 +2932,7 @@ export class Engine {
     el.removeEventListener('pointermove', this._onPointerMove);
     el.removeEventListener('pointerleave', this._onPointerLeave);
     el.removeEventListener('pointerdown', this._onPointerDown);
+    el.removeEventListener('dblclick', this._onDoubleClick);
     el.removeEventListener('contextmenu', this._onContextMenu);
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('dragover', this._onDragOver);

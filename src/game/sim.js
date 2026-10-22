@@ -5,7 +5,7 @@
 // only take Water that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
-import { EDGE_STEPS, NEIGHBOR_DIRS, cellKey, randomCellOnSphere } from './lattice.js';
+import { EDGE_STEPS, NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
 import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly } from './blocks.js';
 
 
@@ -292,12 +292,14 @@ export function stepSquirmies(world, skip = new Set()) {
     const own = new Set(sq.segments);
     const ok = (x, y, z, steps) => squirmyCellOk(world, head, own, x, y, z, steps === 1);
     if (head.isControlled) {
-      // Creature controls: its head goes where the player steers it (else stays put)
-      const to = steeredCell(head, (x, y, z) => ok(x, y, z, 1));
+      // Creature controls: its head goes where the player steers it (else stays put; steered
+      // somewhere it can't go: 'creatureBlocked')
+      const steered = !!head.steer;
+      const to = steerTo(world, head);
       if (to) {
         moveChain(world, sq.segments, to);
         moved++;
-      }
+      } else if (steered) world.emit('creatureBlocked', head);
       continue;
     }
     // left to itself, a Squirmy goes for Berries it can see (and eats one next to it)
@@ -362,10 +364,11 @@ function hasEmptyNeighbor(world, block) {
 
 /**
  * Now and then (EXCRETE_CHANCE a turn) a creature carrying something excretes it, out behind
- * its tail (World.excrete: eaten creatures and Berries come out as Plop).
+ * its tail (World.excrete: eaten creatures and Berries come out as Plop). Not one the player
+ * controls: it excretes only when told to (B).
  */
 function maybeExcrete(world, creature) {
-  if (Math.random() >= EXCRETE_CHANCE) return;
+  if (creature.isControlled || Math.random() >= EXCRETE_CHANCE) return;
   const body = world.clusterOf(creature);
   if (body.some((block) => block.inventory)) world.excrete(body, 'excrete');
 }
@@ -1040,15 +1043,16 @@ function endWalk(creature) {
 /**
  * Creature controls (the player steering `creature`: `creature.steer`, a direction in lattice
  * space set by the engine): of the neighbouring cells `ok(x, y, z)` allows, the one most nearly
- * in the steer direction (within about 70° of it); null if none, or not steered. The steer is
- * used up: the player's input since the last turn moves it one step. `dirs`: the offsets it
- * may step along (default: its neighbours).
+ * in the steer direction (within about 70° of it; `anyWay`: whichever way it's steered); null
+ * if none, or not steered. The steer is used up (unless `keep`: a preview, see
+ * nextSteppedCell): the player's input since the last turn moves it one step. `dirs`: the
+ * offsets it may step along (default: its neighbours).
  */
-export function steeredCell(creature, ok, dirs = NEIGHBOR_DIRS) {
+export function steeredCell(creature, ok, dirs = NEIGHBOR_DIRS, { keep = false, anyWay = false } = {}) {
   const s = creature.steer;
-  delete creature.steer;
+  if (!keep) delete creature.steer;
   if (!s) return null;
-  let best = null, bestDot = 0.35;
+  let best = null, bestDot = anyWay ? -Infinity : 0.35; // anyWay: steered at all is enough
   for (const [dx, dy, dz] of dirs) {
     const dot = (dx * s[0] + dy * s[1] + dz * s[2]) / Math.hypot(dx, dy, dz);
     if (dot <= bestDot) continue;
@@ -1058,6 +1062,68 @@ export function steeredCell(creature, ok, dirs = NEIGHBOR_DIRS) {
     bestDot = dot;
   }
   return best;
+}
+
+/**
+ * Where a controlled creature (one-block, or a chain's head) may step when steered:
+ * { ok(x, y, z), dirs, anyWay } for steeredCell, the same rules its turn uses (a chain's head:
+ * squirmyCellOk next step; a one-block creature: isWalkable, with Cube mode's edge steps).
+ * With nowhere to walk, it may drop into the empty cell straight below its head (dropCell),
+ * whichever way it's steered (anyWay), and gravity takes it from there.
+ */
+function steerRules(world, creature) {
+  const rules = isChainCreature(creature.type)
+    ? (() => {
+        const own = new Set(world.squirmyOf.get(creature)?.segments ?? [creature]);
+        return { ok: (x, y, z) => squirmyCellOk(world, creature, own, x, y, z, true), dirs: NEIGHBOR_DIRS };
+      })()
+    : { ok: (x, y, z) => isWalkable(world, x, y, z, creature), dirs: stepOffsets(world, creature.x, creature.y, creature.z, creature) };
+  if (rules.dirs.some(([dx, dy, dz]) => rules.ok(creature.x + dx, creature.y + dy, creature.z + dz))) return rules;
+  const drop = dropCell(world, creature);
+  if (!drop) return rules;
+  return { ok: (x, y, z) => x === drop.x && y === drop.y && z === drop.z, dirs: [[drop.x - creature.x, drop.y - creature.y, drop.z - creature.z]], anyWay: true };
+}
+
+/**
+ * The empty cell beside `creature` in the most downward direction (toward the origin: the
+ * lattice direction(s) nearest the line to it), or null if that's taken, or it is at the origin.
+ */
+function dropCell(world, creature) {
+  const { x, y, z } = creature;
+  const len = Math.hypot(x, y, z);
+  if (!len) return null;
+  let bestCos = -Infinity, cells = [];
+  for (const d of NEIGHBOR_DIRS) {
+    const cos = -(d[0] * x + d[1] * y + d[2] * z) / (Math.hypot(...d) * len);
+    if (cos > bestCos + 1e-9) {
+      bestCos = cos;
+      cells = [];
+    }
+    if (cos >= bestCos - 1e-9) cells.push({ x: x + d[0], y: y + d[1], z: z + d[2] });
+  }
+  return cells.find((c) => isValidCell(c.x, c.y, c.z) && !world.has(c.x, c.y, c.z)) ?? null; // (ties: the first that's free, so the preview agrees with the turn)
+}
+
+/** steeredCell under the creature's steer rules (steerRules); `keep`: a preview. */
+function steerTo(world, creature, keep = false) {
+  const { ok, dirs, anyWay } = steerRules(world, creature);
+  return steeredCell(creature, ok, dirs, { keep, anyWay });
+}
+
+/** The cell a controlled creature will step into on its next turn, as steered right now (its `steer` is kept); null if none. */
+export function nextSteppedCell(world, creature) {
+  return creature.steer ? steerTo(world, creature, true) : null;
+}
+
+/** The cells a controlled creature could step into on its next turn, whichever way it is steered. */
+export function steppableCells(world, creature) {
+  const { ok, dirs } = steerRules(world, creature);
+  const cells = [];
+  for (const [dx, dy, dz] of dirs) {
+    const x = creature.x + dx, y = creature.y + dy, z = creature.z + dz;
+    if (ok(x, y, z)) cells.push({ x, y, z });
+  }
+  return cells;
 }
 
 /** A creature trapped for this many turns in a row dies. */
@@ -1148,9 +1214,12 @@ export function stepSoloCreatures(world, skip = new Set()) {
     if (skip.has(c)) continue;
     maybeExcrete(world, c);
     if (c.isControlled) {
-      // Creature controls: it goes where the player steers it (else stays put), nothing else
-      const to = steeredCell(c, (x, y, z) => isWalkable(world, x, y, z, c), stepOffsets(world, c.x, c.y, c.z, c));
+      // Creature controls: it goes where the player steers it (else stays put; steered
+      // somewhere it can't go: 'creatureBlocked'), nothing else
+      const steered = !!c.steer;
+      const to = steerTo(world, c);
       if (to && world.move(c, to, world.stepSeconds)) moved++;
+      else if (steered) world.emit('creatureBlocked', c);
       continue;
     }
     // left to itself, a creature goes for the food it wants that it can see (and eats one next to it)

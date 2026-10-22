@@ -15,7 +15,7 @@ Requires [Node.js](https://nodejs.org) 20+.
 
 ```bash
 npm install
-npm run dev       # http://localhost:5172/grid-game-threejs/
+npm run dev       # http://localhost:5172/
 npm run dev:xr    # HTTPS on your LAN, for Quest or phone
 ```
 

@@ -283,6 +283,15 @@ export const SOUND_EFFECTS = {
       { wave: WAVE_TYPES.NOISE, f0: NOTE.F5, q: 0.6, t0: 0, dur: 0.14, gain: 0.25 },
     ],
   },
+  bump: { // soft, muted low "bonk": a controlled creature was steered where it can't go
+    tones: [
+      { wave: WAVE_TYPES.SINE, f0: NOTE.A3, f1: NOTE.E3, t0: 0, dur: 0.09, gain: 0.14 },
+      { wave: WAVE_TYPES.NOISE, f0: NOTE.C5, q: 0.7, t0: 0, dur: 0.04, gain: 0.05 },
+    ],
+  },
+  // the controls (R3): two bell notes, rising as you take control of the creature (and its view), falling as you let go
+  controlCreature: { tones: [...bell(NOTE.E5, 0, 0.16, 0.1), ...bell(NOTE.A5, 0.08, 0.25, 0.1)] },
+  controlObserver: { tones: [...bell(NOTE.A5, 0, 0.16, 0.1), ...bell(NOTE.E5, 0.08, 0.25, 0.1)] },
   tick: { tones: [{ wave: WAVE_TYPES.SINE, f0: NOTE.Fs6, f1: NOTE.F6, t0: 0, dur: 0.035, gain: 0.05 }] }, // menu navigation, tool change
   // the countdown: "ready" on A5, "go" an octave higher
   ready: { whenRunning: true, tones: [{ wave: WAVE_TYPES.SINE, f0: NOTE.A5, f1: NOTE.A5, t0: 0, dur: 0.16, gain: 0.16 }] }, // countdown, each second before 0
