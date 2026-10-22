@@ -12,7 +12,7 @@ import { debugSections } from './debugSections.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
 import { GRID, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
-import { EDGE_SHADE, EDGE_WIDTH_CM, MATERIALS, cellFaces } from './geometry.js';
+import { EDGE_SHADE, MATERIALS, cellFaces } from './geometry.js';
 import {
   playPlace, playDelete, playTick, playResume, playPause, playLoad, playSave, playError, unlockAudio, setSoundVolume,
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
@@ -53,6 +53,7 @@ const ZOOM_OUT_S = 0.8; // back to Observer: the camera moves out to its old dis
 const ROTATE_SPEED = 5; // the trackball's mouse orbiting, about as fast as the old orbit controls
 const POV_MIN_DISTANCE_M = 0.018;
 const _povQ = new THREE.Quaternion();
+const _povLook = new THREE.Vector3();
 const _povTurn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI); // the camera looks down -z, a creature faces +z
 // scratch for the listener (positional sound)
 const _earPos = new THREE.Vector3(), _earFwd = new THREE.Vector3(), _earUp = new THREE.Vector3();
@@ -76,8 +77,6 @@ const SETTLE_S = 4;
 const SETTLE_MAX_DEG_S = 10;
 const _setOrigin = new THREE.Vector3(), _setGround = new THREE.Vector3(), _setOff = new THREE.Vector3();
 const _setAxis = new THREE.Vector3(), _setFwd = new THREE.Vector3(), _setWant = new THREE.Vector3(), _setCur = new THREE.Vector3();
-// Select tool wireframes (selected / pointed-at creatures): thin tubes.
-const SELECT_WIRE_RADIUS = EDGE_WIDTH_CM / 2;
 /** Creature controls: the next-step dot's radius (cm; a cell's inradius is 1 cm), small enough not to hide the cell. */
 const STEP_MARKER_RADIUS_CM = 0.05;
 /** Creature controls: the lines to the cells a creature could step into, room for this many at once (all controlled creatures). */
@@ -94,7 +93,57 @@ const SEE_THROUGH_REACH_CM = 0.45;
 /** How far (px) the pointer may move between a left press and its release for it to be a click (the tool) rather than a drag (the camera). */
 const CLICK_MAX_MOVE_PX = 6;
 const STEER_SCREEN_COS = 0.35;
+/** Keyboard creature controls: each direction key as a left stick push ([right, down], like the gamepad's axes). */
+const KEY_STICK = {
+  KeyW: [0, -1], ArrowUp: [0, -1],
+  KeyS: [0, 1], ArrowDown: [0, 1],
+  KeyA: [-1, 0], ArrowLeft: [-1, 0],
+  KeyD: [1, 0], ArrowRight: [1, 0],
+};
+/** XR: two right-trigger presses this close together (ms) on a creature are a double press (like a double-click). */
+const XR_DOUBLE_PRESS_MS = 400;
 const START_CAMERA = new THREE.Vector3(0.22, 0.26, 0.4).normalize().multiplyScalar(0.5); // 50 cm from origin
+
+/**
+ * Select tool: a selected (or pointed-at) creature's soft, blurry outline round its perimeter. Each
+ * of its blocks gets a sphere GLOW_RADIUS times the block's own size (a ball of the cell's volume),
+ * drawn inside out (back faces), added on, brightest next to the body and fading to nothing at
+ * the sphere's edge. The body (opaque, in front of each sphere's far side) hides all of it but the
+ * part out past its silhouette: a halo, with no post-processing pass (so XR too).
+ */
+const GLOW_RADIUS = 1.5;
+const GLOW_SPHERE = new THREE.SphereGeometry(1, 24, 16);
+
+function makeGlowMaterial(color, opacity) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(color) }, uOpacity: { value: opacity } },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vView;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vNormal = normalize(normalMatrix * normal);
+        vView = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      void main() {
+        // facing the view: the middle of the sphere (by the body); edge-on: its rim, faded out
+        float facing = abs(dot(normalize(vNormal), normalize(vView)));
+        gl_FragColor = vec4(uColor, pow(facing, 1.5) * uOpacity);
+        #include <colorspace_fragment>
+      }`,
+    side: THREE.BackSide,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+}
 
 /** Thick wireframe of a block (the grid mode's cell) made from thin cylinders (visible in XR too). */
 function makeWireframe(color, radiusCm) {
@@ -441,8 +490,10 @@ export class Engine {
     root.add(this.placeHL, this.deleteHL);
     // Select tool: green wireframes around selected creatures, a lighter one around a creature
     // you could select, and the target cell's dot (plus its per-turn spreading copies)
-    this.selectHLs = [];
-    this.hoverHLs = []; // light green, around every block of a creature you could select
+    this.selectHLs = []; // glow spheres (makeGlowMaterial): one per block of each selected creature…
+    this.hoverHLs = []; // …and, lighter, of a creature you could select
+    this._selectGlow = makeGlowMaterial(SELECT_GREEN, 0.55);
+    this._hoverGlow = makeGlowMaterial('#9be8a8', 0.35);
     this._hoverCreature = null;
     this._targetDotGeo = new THREE.SphereGeometry(TARGET_DOT_RADIUS_CM, 16, 12);
     this.targetHL = new THREE.Mesh(this._targetDotGeo, new THREE.MeshBasicMaterial({ color: SELECT_GREEN, toneMapped: false }));
@@ -489,7 +540,7 @@ export class Engine {
     this.inventoryView = new InventoryView(this.world, root);
     // a new grid mode (World.setGridMode): every wireframe takes the new block shape
     onGridChange(() => {
-      for (const hl of [this.placeHL, this.deleteHL, ...this.selectHLs, ...this.hoverHLs]) buildWireframe(hl);
+      for (const hl of [this.placeHL, this.deleteHL]) buildWireframe(hl);
       // (after every other listener: the tool icons' own World must have its new shape first)
       queueMicrotask(() => this.setState({ gridMode: gridMode() }));
     });
@@ -718,6 +769,8 @@ export class Engine {
     el.addEventListener('dblclick', this._onDoubleClick);
     el.addEventListener('contextmenu', this._onContextMenu);
     window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('keyup', this._onKeyUp);
+    window.addEventListener('blur', this._onBlur);
   }
 
   _handleKey(e) {
@@ -739,6 +792,10 @@ export class Engine {
       e.preventDefault();
       this.toggleDebug();
       playTick();
+      return;
+    }
+    if (this._keyCreatureDown(e)) {
+      e.preventDefault();
       return;
     }
     if (e.code === 'KeyG') {
@@ -1049,7 +1106,7 @@ export class Engine {
   }
 
   /**
-   * Gamepad / Touch A: each selected creature eats the block in front of it (its `front`
+   * Gamepad Y / Touch B: each selected creature eats the block in front of it (its `front`
    * side; for a Squirmy, its head's), or else the edible block next to it closest to its front, if its
    * head's inventory slot is free. If none of them can, "ineffective" plays.
    */
@@ -1103,8 +1160,10 @@ export class Engine {
    */
   _startCreatureView(creature) {
     if (this._immersive) return;
-    // the camera flies in from where it is now (the reverse of the zoom out back to Observer)
-    const zoomIn = { pos: this.camera.position.clone(), up: this.camera.up.clone(), t: 0 };
+    // the camera flies in from where it is now (the reverse of the zoom out back to Observer),
+    // turning from what it looks at now to the head as it goes
+    const zoomIn = { pos: this.camera.position.clone(), up: this.camera.up.clone(), look: this._lookPoint(), t: 0 };
+    this._lookBlend = null;
     if (this._pov) {
       Object.assign(this._pov, { creature, desired: null, head: null, zoomIn });
       return;
@@ -1134,7 +1193,7 @@ export class Engine {
     if (zoomOut) {
       this.controls.noPan = false;
       this.controls.minDistance = minDistance;
-      this._orbitOrigin();
+      this._orbitOrigin(); // (turning to it over the zoom out)
       this._camSafe = this.worldRoot.worldToLocal(this.camera.position.clone()); // sweeps on from here
       const from = this.camera.position.distanceTo(this.controls.target), to = pos.distanceTo(this.controls.target);
       this._zoomOut = to > from ? { from, to, t: 0 } : null;
@@ -1204,8 +1263,28 @@ export class Engine {
     this.camera.position.lerpVectors(z.pos, this.camera.position, e);
     this.camera.up.lerpVectors(z.up, orbitUp, e);
     if (this.camera.up.lengthSq() < 1e-6) this.camera.up.copy(orbitUp); // (turning right over: no blend half way)
-    this.camera.lookAt(head);
+    this.camera.lookAt(_povLook.lerpVectors(z.look, head, e));
     this.camera.up.copy(orbitUp);
+  }
+
+  /** Where the camera is looking: the point on its view line as far off as its orbit target. */
+  _lookPoint() {
+    const cam = this.camera;
+    return cam.getWorldDirection(new THREE.Vector3()).multiplyScalar(cam.position.distanceTo(this.controls.target)).add(cam.position);
+  }
+
+  /**
+   * Per frame (Observer controls, after the orbit's own update): after leaving a creature's view
+   * the camera turns from what it was looking at (the head) to its new orbit target (the origin)
+   * over ZOOM_OUT_S, eased, instead of all at once. The orbit itself already orbits the new
+   * target; this only turns the view.
+   */
+  _applyLookBlend(dt) {
+    const b = this._lookBlend;
+    if (!b) return;
+    b.t = Math.min(1, b.t + dt / ZOOM_OUT_S);
+    if (b.t >= 1) this._lookBlend = null;
+    this.camera.lookAt(_povLook.lerpVectors(b.from, this.controls.target, THREE.MathUtils.smootherstep(b.t, 0, 1)));
   }
 
   // ---------------------------------------------------------------- control schemas
@@ -1249,7 +1328,14 @@ export class Engine {
     if (!this.mouse) return false;
     this.raycaster.setFromCamera(this._viewMouse(), this.camera);
     this.raycaster.far = DESKTOP_RAY_LENGTH;
-    const creature = this._creatureOf(this._pick()?.block);
+    return this._switchToCreature(this._creatureOf(this._pick()?.block));
+  }
+
+  /**
+   * A double-click (XR: a double trigger press) on `creature` switches the mode, as
+   * _doubleClickCreature says. Returns whether it did anything (nothing for no creature).
+   */
+  _switchToCreature(creature) {
     if (!creature) return false;
     const creatureControls = this.state.controlSchema === 'creature';
     if (creatureControls && this._controlled?.includes(creature)) return this.setControlSchema('observer');
@@ -1279,13 +1365,16 @@ export class Engine {
     if (z.t >= 1) this._zoomOut = null;
   }
 
-  /** The camera stays where it is, but turns to orbit (and look at) the world's origin. */
+  /**
+   * The camera stays where it is, but orbits the world's origin from now on, turning to look at
+   * it over ZOOM_OUT_S (_applyLookBlend), not at once.
+   */
   _orbitOrigin() {
-    const origin = this.worldRoot.localToWorld(new THREE.Vector3());
-    this.controls.target.copy(origin);
-    this.camera.lookAt(origin);
+    this._lookBlend = this._immersive ? null : { from: this._lookPoint(), t: 0 }; // (XR: the headset is the camera)
+    this.controls.target.copy(this.worldRoot.localToWorld(new THREE.Vector3()));
     this._stopControlsMomentum();
     this.controls.update();
+    this._applyLookBlend(0); // (this frame still looks where it did)
   }
 
   /** The creatures the player controls (Creature controls): flagged for the sim (isControlled, steer). */
@@ -1515,10 +1604,11 @@ export class Engine {
   _padAim(pressed, prev, ax) {
     const s = this.state;
     const ok = s.screen === 'playing' && !this.isMenuOpen(s);
+    if (this._aim && this._aim.source !== 'pad') return false; // (the keyboard's: _pollKeys)
     if (!this._aim && ok) {
       for (const [button, kind] of [[3, 'eat'], [1, 'excrete']]) {
         if (pressed[button] && !prev[button]) {
-          this._aim = { kind, button, stick: null };
+          this._aim = { kind, source: 'pad', button, stick: null };
           break;
         }
       }
@@ -1531,7 +1621,13 @@ export class Engine {
       if (sx || sy) a.stick = [sx, sy]; // (the last way it was pushed counts)
       return true;
     }
-    this._aim = null; // let go: do it
+    this._finishAim(a); // let go: do it
+    return false;
+  }
+
+  /** Carries out aim `a` (its button / key let go): the way it was aimed, or, never aimed, the usual Eat / Excrete. */
+  _finishAim(a) {
+    this._aim = null;
     if (!a.stick) return void (a.kind === 'eat' ? this.selectedEat() : this.selectedExcrete());
     if (!this.selected.length || !this.toolsReady()) return void playSfx('ineffective', 0);
     let did = false;
@@ -1541,7 +1637,65 @@ export class Engine {
     }
     if (did) this._syncCount();
     else playSfx('ineffective', 0);
-    return false;
+  }
+
+  // ---------------------------------------------------------------- keyboard creature controls
+  // WASD / the arrow keys are a left stick (Creature controls: they steer, like _steerControlled;
+  // with E or Q held they aim it instead); Shift held is L3 (straight away from the camera: _steerAway). E eats, Q excretes (any controls), on letting go: held
+  // with a direction, the way it was aimed (like holding the gamepad's Y / B).
+
+  /** keydown (not typing, playing, not paused): E / Q start an aimed Eat / Excrete; the rest are remembered as held (_pollKeys). Returns whether it used the key. */
+  _keyCreatureDown(e) {
+    if (e.code === 'KeyE' || e.code === 'KeyQ') {
+      if (!e.repeat && !this._aim) this._aim = { kind: e.code === 'KeyE' ? 'eat' : 'excrete', source: 'key', key: e.code, stick: null };
+      return true;
+    }
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+      if (this.state.controlSchema !== 'creature') return false;
+      this._keysHeld.add(e.code);
+      return true;
+    }
+    if (!KEY_STICK[e.code]) return false;
+    if (this.state.controlSchema !== 'creature' && !this._aim && e.code.startsWith('Arrow')) return false; // (Observer: ← / → change tools)
+    this._keysHeld.add(e.code);
+    return true;
+  }
+
+  _keysHeld = new Set(); // direction keys held down (_keyCreatureDown)
+
+  _onKeyUp = (e) => {
+    this._keysHeld.delete(e.code);
+    if (this._aim?.source === 'key' && this._aim.key === e.code) {
+      const s = this.state;
+      if (s.screen === 'playing' && !this.isMenuOpen(s)) this._finishAim(this._aim);
+      else this._aim = null;
+    }
+  };
+
+  /** The window lost focus: no key is held any more (its keyup would never come); a key-held aim is dropped. */
+  _onBlur = () => {
+    this._keysHeld.clear();
+    if (this._aim?.source === 'key') this._aim = null;
+  };
+
+  /** Per frame (after the gamepad): the held direction keys steer the controlled creatures (Shift: away from the camera), or aim a key-held Eat / Excrete. */
+  _pollKeys() {
+    const s = this.state;
+    if (s.screen !== 'playing' || this.isMenuOpen(s)) return this._keysHeld.clear();
+    const shift = this._keysHeld.has('ShiftLeft') || this._keysHeld.has('ShiftRight');
+    if (shift && !this._aim && s.controlSchema === 'creature') return this._steerAway(); // Shift: the way most nearly away from the camera
+    let sx = 0, sy = 0;
+    for (const code of this._keysHeld) {
+      if (!KEY_STICK[code]) continue;
+      sx += KEY_STICK[code][0];
+      sy += KEY_STICK[code][1];
+    }
+    const len = Math.hypot(sx, sy);
+    if (!len) return;
+    sx /= len;
+    sy /= len;
+    if (this._aim?.source === 'key') this._aim.stick = [sx, sy];
+    else if (!this._aim && s.controlSchema === 'creature') this._steerControlled(sx, sy);
   }
 
   /** Per frame: the aimed Eat / Excrete's guide lines, and a dot on the chosen block / cell (both over the blocks); only with Direction Guides on. */
@@ -1590,7 +1744,7 @@ export class Engine {
   }
 
   /**
-   * Gamepad / Touch B: each selected creature excretes the item in its tail's inventory slot
+   * Gamepad B / Touch A: each selected creature excretes the item in its tail's inventory slot
    * (World.excrete on its cluster). If none of them can, "ineffective" plays.
    */
   selectedExcrete() {
@@ -1704,24 +1858,27 @@ export class Engine {
     // a selected creature that was deleted, or changed type, drops out of the selection
     const alive = this.selected.filter((creature) => this.world.get(creature.x, creature.y, creature.z) === creature && this._creatureOf(creature));
     if (alive.length !== this.selected.length) this._setSelected(alive, this._targeting);
-    // wireframes around every block of each selected creature (a Squirmy's whole chain),
-    // and lighter ones around a creature you are pointing at
-    const place = (pool, blocks, colour, radius, scale) => {
+    // a soft outline (glow spheres, makeGlowMaterial) round each selected creature (a Squirmy's
+    // whole chain), and a lighter one round a creature you are pointing at
+    const radius = GLOW_RADIUS * Math.cbrt((3 * GRID.volumeCm3) / (4 * Math.PI)); // (a ball of the cell's volume, scaled)
+    const place = (pool, blocks, material) => {
       while (pool.length < blocks.length) {
-        const hl = makeWireframe(colour, radius);
-        hl.scale.setScalar(scale);
-        this.worldRoot.add(hl);
-        pool.push(hl);
+        const glow = new THREE.Mesh(GLOW_SPHERE, material);
+        glow.renderOrder = 3; // after the see-through passes
+        this.worldRoot.add(glow);
+        pool.push(glow);
       }
-      pool.forEach((hl, i) => {
+      pool.forEach((glow, i) => {
         const b = blocks[i];
-        hl.visible = !!b;
-        if (b) this.world.renderedPosition(b, now, hl.position);
+        glow.visible = !!b;
+        if (!b) return;
+        this.world.renderedPosition(b, now, glow.position);
+        glow.scale.setScalar(radius);
       });
     };
-    const watched = new Set(this._pov ? this._bodyOf(this._pov.creature) : []); // (this close, its own wireframe would crowd the view)
-    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)).filter((b) => !watched.has(b)), SELECT_GREEN, SELECT_WIRE_RADIUS, 1.06);
-    place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], '#9be8a8', SELECT_WIRE_RADIUS * 0.8, 1.04);
+    const watched = new Set(this._pov ? this._bodyOf(this._pov.creature) : []); // (this close, its own outline would crowd the view)
+    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)).filter((b) => !watched.has(b)), this._selectGlow);
+    place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], this._hoverGlow);
     for (const p of this._pulses) {
       if (!p.obj.visible) continue;
       const k = (now - p.t0) / (this.world.stepSeconds * 1000);
@@ -2634,7 +2791,18 @@ export class Engine {
       else if (!this._menuPanelHover) this.resume(); // clicked outside the pause panel
       return;
     }
-    if (this.state.screen === 'playing') this.useTool();
+    if (this.state.screen === 'playing') {
+      this.useTool();
+      // a second press soon after, on the same creature: a double press (like a double-click)
+      const creature = this._creatureOf(this.target?.block);
+      const now = performance.now();
+      const prev = this._lastTrigger;
+      this._lastTrigger = { t: now, creature };
+      if (creature && prev?.creature === creature && now - prev.t < XR_DOUBLE_PRESS_MS) {
+        this._lastTrigger = null;
+        this._switchToCreature(creature);
+      }
+    }
   }
 
   /**
@@ -2657,12 +2825,15 @@ export class Engine {
     if (rgp) {
       this._touchStickTools(rgp);
       const playing = this.state.screen === 'playing' && !this.state.paused;
-      const a = !!rgp.buttons[4]?.pressed; // A: eat
-      if (a && !this._rightAWas && playing) this.selectedEat();
+      const a = !!rgp.buttons[4]?.pressed; // A: excrete
+      if (a && !this._rightAWas && playing) this.selectedExcrete();
       this._rightAWas = a;
-      const b = !!rgp.buttons[5]?.pressed; // B: excrete
-      if (b && !this._rightBWas && playing) this.selectedExcrete();
+      const b = !!rgp.buttons[5]?.pressed; // B: eat
+      if (b && !this._rightBWas && playing) this.selectedEat();
       this._rightBWas = b;
+      const stick = !!rgp.buttons[3]?.pressed; // thumbstick click: Observer ↔ Creature controls (like the gamepad's R3)
+      if (stick && !this._rightStickWas && playing) this.toggleControlSchema();
+      this._rightStickWas = stick;
     }
     // The Quest Browser uses the left Menu (≡) button as "Back" (it leaves XR: _trapBackButton),
     // so the menu is opened with the Menu button on the left HUD; the Y button is a shortcut for it.
@@ -3218,6 +3389,7 @@ export class Engine {
     const xr = this._immersive;
     if (!xr) {
       this._pollBrowserGamepad(dt);
+      this._pollKeys(); // WASD / arrows: steer (or aim E / Q)
       this.controls.rotateSpeed = ROTATE_SPEED * this.state.cameraSpeed * this._cameraSign(); // mouse orbiting, at Camera Speed, inverted or not
       if (this._pov) this._updateCreatureView(sceneNow, dt);
       else {
@@ -3226,6 +3398,7 @@ export class Engine {
         this._settleCamera(dt, this.camera.position, this.controls.target);
         this.camera.lookAt(this.controls.target);
         this._collideCamera(now, dt);
+        this._applyLookBlend(dt); // (just after leaving a creature's view: still turning to the origin)
       }
     }
     this._updateSeeThrough(sceneNow);
@@ -3312,6 +3485,8 @@ export class Engine {
     el.removeEventListener('dblclick', this._onDoubleClick);
     el.removeEventListener('contextmenu', this._onContextMenu);
     window.removeEventListener('keydown', this._onKeyDown);
+    window.removeEventListener('keyup', this._onKeyUp);
+    window.removeEventListener('blur', this._onBlur);
     window.removeEventListener('dragover', this._onDragOver);
     window.removeEventListener('drop', this._onDrop);
     this._uiRoot?.removeEventListener('beforexrselect', this._onBeforeXRSelect);

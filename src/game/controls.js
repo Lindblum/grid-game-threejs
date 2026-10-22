@@ -26,15 +26,15 @@ const OBSERVER_CONTROLS = [
   },
   {
     action: 'Eat (selected creature)',
-    mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+    mk: { g: ['key:E'], t: 'E: the selected creature eats the block in front of it. Hold E and press WASD / the arrows to choose which block (it eats on letting go)' },
     pad: { g: ['pad:Y', 'sep:+', 'stick:L:any'], t: 'Y: the selected creature eats the block in front of it. Hold Y and push the left stick to choose which block (it eats on letting go)' },
-    xr: { g: ['xr:A'], t: 'A: the selected creature eats the block in front of it' },
+    xr: { g: ['xr:B'], t: 'B: the selected creature eats the block in front of it' },
   },
   {
     action: 'Excrete (selected creature)',
-    mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+    mk: { g: ['key:Q'], t: 'Q: the selected creature excretes the item in its tail slot. Hold Q and press WASD / the arrows to choose where (it excretes on letting go)' },
     pad: { g: ['pad:B', 'sep:+', 'stick:L:any'], t: 'B: the selected creature excretes the item in its tail slot. Hold B and push the left stick to choose where (it excretes on letting go)' },
-    xr: { g: ['xr:B'], t: 'B: the selected creature excretes the item in its tail slot' },
+    xr: { g: ['xr:A'], t: 'A: the selected creature excretes the item in its tail slot' },
   },
   {
     action: 'Wander / Wait (selected creature)',
@@ -102,7 +102,7 @@ export const ObserverControlSchema = {
       action: 'Control schema',
       mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click a creature: control it; the camera orbits it, up close' },
       pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): control the selected creature; the camera orbits it, up close' },
-      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: control the selected creature; or double-press the right trigger on a creature: control it' },
     },
   ],
 };
@@ -121,13 +121,13 @@ export const CreatureControlSchema = {
   controls: [
     {
       action: 'Move creature',
-      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+      mk: { g: ['key:W', 'key:A', 'key:S', 'key:D', 'sep:/', 'key:↑', 'key:←', 'key:↓', 'key:→'], t: 'WASD or the arrow keys: move the controlled creature, relative to the camera (on its turn)' },
       pad: { g: ['stick:L:any'], t: 'Left stick: moves the selected creature, relative to the camera (on its turn)' },
       xr: { g: ['text:—'], t: 'No XR controller binding yet' },
     },
     {
       action: 'Move away from camera',
-      mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
+      mk: { g: ['key:Shift'], t: 'Shift (held): the creature steps the way most nearly away from the camera' },
       pad: { g: ['stick:L:press'], t: 'L3 (hold the left stick in): the creature steps the way most nearly away from the camera' },
       xr: { g: ['text:—'], t: 'No XR controller binding yet' },
     },
@@ -136,7 +136,7 @@ export const CreatureControlSchema = {
       action: 'Control schema',
       mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click the creature: back to Observer controls (another creature: control that one instead)' },
       pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): back to Observer controls; the camera orbits the world again' },
-      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: back to Observer controls; or double-press the right trigger on the creature (another creature: control that one instead)' },
     },
   ],
 };

@@ -45,7 +45,7 @@ as Truncated Octahedron. See `src/game/grids.js`.
 | Options (pauses) | Esc / Enter, or the gear (top left) | Start | The gear on the Left HUD, or Y |
 | Orbit / zoom / pan | Left- or right-drag / wheel / middle-drag | Right stick / LT, RT / D-pad | Both grips: rotate and scale; one grip: drag |
 
-With a creature selected: **A** eats, **B** excretes, **Y** wanders, **X** waits.
+With a creature selected, on the XR controllers: **B** eats, **A** excretes, **Y** wanders, **X** waits (gamepad: **Y** eats, **B** excretes; hold either and aim with the left stick; keyboard: **E** eats, **Q** excretes, held with WASD / the arrows to aim). Controlling a creature, WASD or the arrows move it.
 The full table is under **Options → Controls** in the game.
 
 ## How it works
