@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, useSyncExternalStore, useLayoutEffect } from 'react';
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Engine } from './game/engine.js';
 import { TOOLS } from './game/tools.js';
 import { toolIconURL } from './game/icons.js';
@@ -66,13 +66,19 @@ function Overlay({ engine }) {
   const flat = !s.inXR || engine.screenUI(s);
   return (
     <>
-      {s.screen === 'playing' && flat && <Hud engine={engine} s={s} />}
+      {/* (the Game panel, Hud: hidden for now) */}
       {s.screen === 'playing' && !s.inXR && !s.paused && s.gamepadAim && <div className="crosshair" />}
       {s.screen === 'playing' && flat && (
         // the left column: Options, and the Debug panel as the next row beneath it
         <div className="side-stack">
           <MenuScreen engine={engine} s={s} />
           {s.debugMode && <DebugPanel engine={engine} />}
+        </div>
+      )}
+      {s.screen === 'playing' && flat && (
+        // the right column: the Right panel (who you are: Observer or the creature; the tools)
+        <div className="side-stack side-stack-right">
+          <RightPanel engine={engine} s={s} />
         </div>
       )}
       {s.inXR && !s.handheld && !flat && <div className="xr-note">In XR — take off the headset view to return here.</div>}
@@ -245,36 +251,14 @@ function useHudSize(key, panelRef, outward) {
   return [style, grip];
 }
 
-function Hud({ engine, s }) {
-  const slotsRef = useRef(null);
-  const labelRef = useRef(null);
+/** The bottom-left HUD (Game): the game time and Mean Diameter. */
+function Hud({ s }) {
   const leftRef = useRef(null);
-  const rightRef = useRef(null);
-  const [labelPos, setLabelPos] = useState(null); // the tool name's place in the bar: { left, top } (px)
-  // each panel's size (drag its grip; double-click resets): left grows up / right, right up / left
+  // its size (drag its grip; double-click resets): it grows up / right
   const [leftSize, leftGrip] = useHudSize('hudLeft', leftRef, +1);
-  const [rightSize, rightGrip] = useHudSize('hudRight', rightRef, -1);
-  const wrapRef = useRef(null);
-  const label = engine.toolLabel(s);
-  // keep the current tool visible when the bar is scrolled (e.g. switching with the keys)
-  useEffect(() => {
-    slotsRef.current?.querySelector('.slot.selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [s.toolIndex]);
-  // put the tool name directly below the selected slot, inside the scrolling bar (so it scrolls
-  // with the icons; with the panel resized the icons wrap into rows, and it goes under the
-  // selected one's row): its place in the bar's content, kept within it at the ends
-  const placeLabel = () => {
-    const bar = slotsRef.current, lab = labelRef.current;
-    const slot = bar?.querySelector('.slot.selected');
-    if (!bar || !lab || !slot) return;
-    const half = lab.offsetWidth / 2;
-    const left = Math.min(Math.max(slot.offsetLeft + slot.offsetWidth / 2, half), bar.scrollWidth - half);
-    setLabelPos({ left, top: slot.offsetTop + slot.offsetHeight + 2 });
-  };
-  useLayoutEffect(placeLabel, [s.toolIndex, label, rightSize.width, rightSize.height]);
   return (
     <>
-      <div className="hud-wrap" ref={wrapRef}>
+      <div className="hud-wrap">
         <div className="hud-row">
           <div className="panel hud hud-left" ref={leftRef} style={leftSize}>
             <ResizeGrip place="grip-top-right" title="Drag to resize (double-click: reset)" {...leftGrip} />
@@ -287,35 +271,6 @@ function Hud({ engine, s }) {
               </tbody>
             </table>
           </div>
-          <div className="panel hud hud-right" ref={rightRef} style={rightSize}>
-            <ResizeGrip place="grip-top-left" title="Drag to resize (double-click: reset)" {...rightGrip} />
-            <div className="hud-header">{engine.toolsAvailable(s) ? 'Tools' : 'Creature'}</div>
-            {engine.toolsAvailable(s) && <div
-              className={`slots${rightSize.width ? ' wrap' : ''}`} // resized: the icons wrap into rows
-              ref={slotsRef}
-              onWheel={(e) => {
-                // a plain mouse wheel scrolls the bar sideways
-                if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
-              }}
-            >
-              {TOOLS.map((t, i) => (
-                <button
-                  key={t.id}
-                  className={`slot${i === s.toolIndex ? ' selected' : ''}`}
-                  title={`${t.label} (${(i + 1) % 10})`}
-                  onClick={blurThen(() => engine.selectTool(i))}
-                >
-                  <img src={toolIconURL(t, 96, { materials: s.materials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
-                </button>
-              ))}
-              {/* the current tool's name, under its slot (scrolls with the icons) */}
-              <span ref={labelRef} className="tool-label" style={labelPos ?? undefined}>
-                {label}
-              </span>
-            </div>}
-            {/* Creature controls: no toolbar, just who you're controlling */}
-            {!engine.toolsAvailable(s) && <div className="hud-label creature-label">{label}</div>}
-          </div>
         </div>
       </div>
     </>
@@ -326,11 +281,11 @@ function Hud({ engine, s }) {
 const PANEL_SIZE = { minWidth: 220, minHeight: 120, margin: 24 };
 
 /**
- * Resizing for a side panel (Options, Debug): returns [style, grip props]. Dragging the grip
- * down makes it taller, right wider; double-click goes back to the automatic size. Remembered
- * in this browser under `key`.
+ * Resizing for a side panel (Options, Debug, the Right panel): returns [style, grip props].
+ * Dragging the grip down makes it taller, outward (`outward` = +1 right, -1 left) wider;
+ * double-click goes back to the automatic size. Remembered in this browser under `key`.
  */
-function usePanelSize(key, panelRef) {
+function usePanelSize(key, panelRef, outward = +1) {
   const [width, setWidth] = useStoredNumber(`${key}.width`, 0);
   const [height, setHeight] = useStoredNumber(`${key}.height`, 0);
   const start = useRef(null);
@@ -339,7 +294,7 @@ function usePanelSize(key, panelRef) {
     onDrag: (up, right) => {
       const s0 = start.current;
       if (!s0) return;
-      setWidth(Math.round(clamp(s0.width + right, PANEL_SIZE.minWidth, window.innerWidth - PANEL_SIZE.margin)));
+      setWidth(Math.round(clamp(s0.width + right * outward, PANEL_SIZE.minWidth, window.innerWidth - PANEL_SIZE.margin)));
       setHeight(Math.round(clamp(s0.height - up, PANEL_SIZE.minHeight, window.innerHeight - PANEL_SIZE.margin)));
     },
     onReset: () => {
@@ -526,6 +481,111 @@ function ClaudePrompt() {
         onInput={(e) => claudePrompt.setPrompt(e.currentTarget.value)}
       />
     </>
+  );
+}
+
+/** The glyph of the button that does something (inputIcons.js tokens), at the menu's icon height. */
+function ActionGlyph({ tokens }) {
+  const glyph = cellURL(tokens, 64);
+  return <img className="action-glyph" src={glyph.url} style={{ aspectRatio: `${glyph.w} / ${glyph.h}` }} alt="" draggable={false} />;
+}
+
+/**
+ * The Right panel, in the top-right corner (the XR Right HUD's twin, on the right controller):
+ * its eye button shows it or hides all but the button (remembered); its title says who you are,
+ * Observer or, under Creature controls, the controlled creature's type; the selected creature's
+ * actions, when it has any (Eat: the button for it on the input in use, and the blocks it could
+ * eat; Excrete: the button and the block that would come out; clicking one does it); under
+ * Observer controls, a Tools dropdown showing the current tool, which opens the tool selector
+ * beneath it in a dark well (like the Inspector's). Resized from its bottom-left corner (double-click resets).
+ */
+function RightPanel({ engine, s }) {
+  const open = s.rightHudOpen;
+  const panelRef = useRef(null);
+  const [size, grip] = usePanelSize('rightPanel', panelRef, -1);
+  const eye = (
+    <button
+      className="btn side-toggle"
+      title={open ? 'Hide' : 'Show'}
+      aria-label={open ? 'Hide the panel' : 'Show the panel'}
+      aria-expanded={!!open}
+      onClick={blurThen(() => engine.toggleRightHud())}
+    >
+      <img src={menuItemIconURL('eye')} alt="" draggable={false} />
+    </button>
+  );
+  if (!open) {
+    return (
+      <aside className="side-panel collapsed">
+        <header className="side-header">{eye}</header>
+      </aside>
+    );
+  }
+  const tools = engine.toolsAvailable(s);
+  const { eat, excrete } = s.actions;
+  const glyphs = Engine.ACTION_GLYPHS[s.inputDevice] ?? Engine.ACTION_GLYPHS.mk;
+  const style = { materials: s.materials, smooth: s.smoothRendering };
+  const blockIcon = (type) => toolIconURL(TOOLS.find((t) => t.block === type) ?? { id: type, block: type }, 64, style);
+  // an action: its button's glyph, its name, the blocks it concerns at the right
+  const action = (name, tokens, types, run) => {
+    return (
+      <button className="btn menu-btn action-btn" onClick={blurThen(run)}>
+        <ActionGlyph tokens={tokens} />
+        <span className="label"><span className="name">{name}</span></span>
+        <span className="action-blocks">
+          {types.map((type) => {
+            const name = TOOLS.find((t) => t.block === type)?.label ?? type;
+            return <img key={type} className="menu-icon" src={blockIcon(type)} alt={name} title={name} draggable={false} />;
+          })}
+        </span>
+      </button>
+    );
+  };
+  const body = tools || eat.length > 0 || excrete;
+  return (
+    <aside className="side-panel right-panel" ref={panelRef} style={size}>
+      <ResizeGrip place="grip-bottom-left" title="Drag to resize (double-click: reset)" {...grip} />
+      <header className={`side-header${body ? '' : ' alone'}`}>
+        {eye}
+        <h2>{engine.rightHudTitle(s)}</h2>
+      </header>
+      {body && (
+        <div className="side-body menu-items">
+          {eat.length > 0 && action('Consume', glyphs.eat, eat, () => engine.selectedEat())}
+          {excrete && action('Excrete', glyphs.excrete, [excrete], () => engine.selectedExcrete())}
+          {tools && <>
+          {/* the Tool dropdown: the use-the-tool button's glyph, "Tool", the current tool (its icon, its name) */}
+          <button className="btn menu-btn action-btn" aria-expanded={!!s.toolsOpen} onClick={tickThen(() => engine.toggleToolsOpen())}>
+            <ActionGlyph tokens={glyphs.tool} />
+            <span className="label">
+              <span className="name">Tool:</span>
+              <span className="value tool-value">
+                <img className="menu-icon" src={toolIconURL(TOOLS[s.toolIndex], 64, style)} alt="" draggable={false} />
+                {engine.toolLabel(s)}
+              </span>
+            </span>
+            <img className="menu-icon menu-arrow" src={menuItemIconURL(s.toolsOpen ? 'dropdownOpen' : 'dropdown')} alt="" draggable={false} />
+          </button>
+          {s.toolsOpen && (
+            <div className="menu-section">
+              <div className="debug-box tool-slots">
+                {TOOLS.map((t, i) => (
+                  <button
+                    key={t.id}
+                    className={`slot${i === s.toolIndex ? ' selected' : ''}`}
+                    title={`${t.label} (${(i + 1) % 10})`}
+                    onClick={blurThen(() => engine.selectTool(i))}
+                  >
+                    <img src={toolIconURL(t, 96, { materials: s.materials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          </>}
+        </div>
+      )}
+    </aside>
   );
 }
 

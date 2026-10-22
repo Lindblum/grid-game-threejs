@@ -106,57 +106,172 @@ export class LeftHudPanel extends CanvasPanel {
   }
 }
 
-/** Right HUD (docked to the right controller): the tool selector. */
+// the Right HUD's layout (px): its header (the eye button, the title), the actions (Eat, Excrete:
+// up to two rows), the Tools dropdown, then (open) the tools' well beneath it, indented
+const RH_PAD = 24, RH_BTN = 60, RH_HEAD = RH_PAD + RH_BTN + 14, RH_ROW = 72, RH_GAP = 12, RH_INDENT = 40, RH_WELL_PAD = 18;
+const RH_TOOLS_W = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP;
+const RH_FONT = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
+
+/**
+ * Right HUD (docked to the right controller), like the windowed Right panel: an eye button that
+ * shows or hides the rest (hidden: only the button), the title (Observer, or the controlled
+ * creature's type), the selected creature's actions when it has any (Eat: the button for it
+ * and the blocks it could eat; Excrete: the button and the block that would come out; the
+ * trigger on one does it), and, under Observer controls, a Tools dropdown showing the current
+ * tool (a message instead, for a moment) that opens the tool selector beneath it, in a dark well.
+ * The plane keeps its full size; what isn't drawn is clear.
+ */
 export class RightHudPanel extends CanvasPanel {
   constructor() {
-    const W = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP + 72;
-    super(W, 200, W * PX_TO_M);
+    const W = RH_INDENT + RH_TOOLS_W + 2 * (RH_PAD + RH_WELL_PAD);
+    const H = RH_HEAD + 3 * (RH_ROW + RH_GAP) + 2 * RH_WELL_PAD + SLOT + RH_PAD; // (two action rows, the dropdown, the well)
+    super(W, H, W * PX_TO_M);
     this.mesh.name = 'xr-hud-right';
     dockAboveController(this.mesh);
+    this.button = { x: RH_PAD, y: RH_PAD, w: RH_BTN, h: RH_BTN };
+    this.slotsX = RH_PAD + RH_INDENT + RH_WELL_PAD;
+    this.rows = []; // the pressable rows drawn last ({ id: 'eat' | 'excrete' | 'tools', x, y, w, h })
+    this.slotsY = null; // the tool slots' top, when they're drawn
     this._last = '';
   }
 
-  /** `style`: the icons' look ({ materials, smooth }, see drawToolIcon). `hover`: the slot under the gaze, if any. */
-  draw(toolIndex, message, label = TOOLS[toolIndex].label, style = {}, hover = null) {
-    const sig = `${toolIndex}|${message || ''}|${label}|${style.materials}|${!!style.smooth}|${hover}|${gridMode()}`; // (icons show the grid's block shape)
+  /**
+   * d = { open, title, actions ({ eat: [block types], excrete: block type | null }), glyphs (the
+   * input glyphs for them: { eat, excrete }, inputIcons.js tokens), tools (the dropdown shows:
+   * Observer controls), toolsOpen (its selector shows), toolIndex, label (the tool's name),
+   * message (instead of it, for a moment), style (the icons' look: { materials, smooth }, see
+   * drawToolIcon), hover ('toggle', 'eat', 'excrete', 'tools', a tool slot's index, or null) }.
+   */
+  draw(d) {
+    const { open, title, actions = { eat: [], excrete: null }, glyphs, tools, toolsOpen, toolIndex, label, message, style = {}, hover = null } = d;
+    const sig = `${open}|${title}|${actions.eat.join(',')}|${actions.excrete}|${tools}|${toolsOpen}|${toolIndex}|${label}|${message || ''}|${style.materials}|${!!style.smooth}|${hover}|${gridMode()}`; // (icons show the grid's block shape)
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
-    hudBackground(ctx, W, H);
-    const total = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP;
-    const x0 = (W - total) / 2;
-    if (message) {
-      hudLabel(ctx, message, W / 2, '#ffd166'); // messages stay centred
-    } else {
-      // tool name directly above the selected slot, kept inside the panel
-      ctx.font = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
-      const half = ctx.measureText(label).width / 2;
-      const cx = x0 + toolIndex * (SLOT + SLOT_GAP) + SLOT / 2;
-      hudLabel(ctx, label, Math.min(Math.max(cx, 28 + half), W - 28 - half));
-    }
-    TOOLS.forEach((t, i) => {
-      const x = x0 + i * (SLOT + SLOT_GAP);
-      roundRect(ctx, x, SLOT_Y, SLOT, SLOT, 16);
-      ctx.fillStyle = i === hover ? 'rgba(90, 160, 255, 0.55)' : i === toolIndex ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
+    ctx.clearRect(0, 0, W, H);
+    this.rows = [];
+    this.slotsY = null;
+    // laid out top to bottom: the rows there are, then the well (when open)
+    let y = RH_HEAD;
+    const rowAt = (id) => {
+      const r = { id, x: RH_PAD, y, w: W - 2 * RH_PAD, h: RH_ROW };
+      y += RH_ROW + RH_GAP;
+      this.rows.push(r);
+      return r;
+    };
+    const eatRow = open && actions.eat.length ? rowAt('eat') : null;
+    const excreteRow = open && actions.excrete ? rowAt('excrete') : null;
+    const toolsRow = open && tools ? rowAt('tools') : null;
+    const wellY = y;
+    if (open && tools && toolsOpen) y += 2 * RH_WELL_PAD + SLOT + RH_GAP;
+    // the panel: just the button when hidden, else down to its last row (or the well)
+    const panelW = open ? W : RH_BTN + 2 * RH_PAD;
+    const panelH = !open ? RH_BTN + 2 * RH_PAD : this.rows.length ? y - RH_GAP + RH_PAD : RH_HEAD + RH_PAD - 14;
+    roundRect(ctx, 4, 4, panelW - 8, Math.min(H, panelH) - 8, 34);
+    ctx.fillStyle = 'rgba(18, 22, 30, 0.6)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    // the eye button
+    const b = this.button;
+    const pressable = (x, y, w, h, hot) => {
+      roundRect(ctx, x, y, w, h, 14);
+      ctx.fillStyle = hot ? 'rgba(90, 160, 255, 0.55)' : 'rgba(255,255,255,0.09)';
       ctx.fill();
-      drawToolIcon(ctx, t, x + SLOT / 2, SLOT_Y + SLOT / 2, SLOT * 0.78, style);
-      if (i === toolIndex || i === hover) {
-        roundRect(ctx, x - 3, SLOT_Y - 3, SLOT + 6, SLOT + 6, 18);
-        ctx.strokeStyle = i === hover ? '#9cc8ff' : '#ffffff';
-        ctx.lineWidth = 7;
+      if (hot) {
+        ctx.strokeStyle = '#9cc8ff';
+        ctx.lineWidth = 5;
         ctx.stroke();
       }
-    });
+    };
+    pressable(b.x, b.y, b.w, b.h, hover === 'toggle');
+    drawMenuItemIcon(ctx, 'eye', b.x + b.w / 2, b.y + b.h / 2, b.w * 0.66);
+    if (!open) return void (this.texture.needsUpdate = true);
+    ctx.fillStyle = '#e8ecf2';
+    ctx.font = '650 38px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(fit(ctx, title, W - (b.x + b.w + 20) - RH_PAD), b.x + b.w + 20, b.y + b.h / 2);
+    // an action: its button's glyph, its name, the blocks it concerns at the right
+    const actionRow = (r, name, tokens, types) => {
+      const cy = r.y + r.h / 2;
+      pressable(r.x, r.y, r.w, r.h, hover === r.id);
+      const gh = 50;
+      drawCell(ctx, tokens, r.x + 14, cy, gh);
+      const gx = r.x + 14 + cellWidth(ctx, tokens, gh) + 16;
+      ctx.font = RH_FONT;
+      ctx.fillStyle = '#e8ecf2';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(name, gx, cy);
+      const icon = 52;
+      types.forEach((type, i) => {
+        const tool = TOOLS.find((t) => t.block === type) ?? { id: type, block: type };
+        drawToolIcon(ctx, tool, r.x + r.w - 14 - icon / 2 - i * (icon + 8), cy, icon, style);
+      });
+    };
+    if (eatRow) actionRow(eatRow, 'Consume', glyphs.eat, actions.eat);
+    if (excreteRow) actionRow(excreteRow, 'Excrete', glyphs.excrete, [actions.excrete]);
+    if (toolsRow) {
+      // the Tool dropdown: the use-the-tool button's glyph, "Tool", at the right the current tool
+      // (its icon left of its name; a message instead, for a moment), the chevron
+      const r = toolsRow, cy = r.y + r.h / 2;
+      pressable(r.x, r.y, r.w, r.h, hover === 'tools');
+      const gh = 50;
+      drawCell(ctx, glyphs.tool, r.x + 14, cy, gh);
+      const tx = r.x + 14 + cellWidth(ctx, glyphs.tool, gh) + 16;
+      ctx.font = RH_FONT;
+      ctx.fillStyle = '#e8ecf2';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Tool:', tx, cy);
+      const chevron = 36, valueRight = r.x + r.w - 16 - chevron - 12, icon = 44;
+      const room = valueRight - (tx + ctx.measureText('Tool: ').width);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = message ? '#ffd166' : '#e8ecf2';
+      const text = fit(ctx, message || label, message ? room : room - icon - 10);
+      ctx.fillText(text, valueRight, cy);
+      if (!message) drawToolIcon(ctx, TOOLS[toolIndex], valueRight - ctx.measureText(text).width - 10 - icon / 2, cy, icon, style);
+      drawMenuItemIcon(ctx, toolsOpen ? 'dropdownOpen' : 'dropdown', r.x + r.w - 16 - chevron / 2, cy, chevron);
+    }
+    if (toolsRow && toolsOpen) {
+      // the selector's well (like Debug's readouts), indented under the dropdown
+      const wx = RH_PAD + RH_INDENT, wy = wellY, ww = W - RH_PAD - wx, wh = 2 * RH_WELL_PAD + SLOT;
+      this.slotsY = wy + RH_WELL_PAD;
+      roundRect(ctx, wx, wy, ww, wh, 16);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      TOOLS.forEach((t, i) => {
+        const x = this.slotsX + i * (SLOT + SLOT_GAP), y = this.slotsY;
+        roundRect(ctx, x, y, SLOT, SLOT, 16);
+        ctx.fillStyle = i === hover ? 'rgba(90, 160, 255, 0.55)' : i === toolIndex ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
+        ctx.fill();
+        drawToolIcon(ctx, t, x + SLOT / 2, y + SLOT / 2, SLOT * 0.78, style);
+        if (i === toolIndex || i === hover) {
+          roundRect(ctx, x - 3, y - 3, SLOT + 6, SLOT + 6, 18);
+          ctx.strokeStyle = i === hover ? '#9cc8ff' : '#ffffff';
+          ctx.lineWidth = 7;
+          ctx.stroke();
+        }
+      });
+    }
     this.texture.needsUpdate = true;
   }
 
-  /** uv from a raycast hit -> the index of the tool slot under it, or null. */
+  /** uv from a raycast hit -> 'toggle' (the eye button), 'eat' / 'excrete' (an action), 'tools' (the dropdown), the index of the tool slot under it, or null. */
   hitTest(uv) {
     const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
-    const x0 = (this.canvas.width - (TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP)) / 2;
-    if (py < SLOT_Y - 6 || py > SLOT_Y + SLOT + 6) return null;
-    const i = Math.floor((px - x0 + SLOT_GAP / 2) / (SLOT + SLOT_GAP));
+    const inside = (q, m = 0) => px >= q.x - m && px <= q.x + q.w + m && py >= q.y - m && py <= q.y + q.h + m;
+    if (inside(this.button, 8)) return 'toggle';
+    const row = this.rows.find((r) => inside(r));
+    if (row) return row.id;
+    if (this.slotsY == null || py < this.slotsY - 6 || py > this.slotsY + SLOT + 6) return null;
+    const i = Math.floor((px - this.slotsX + SLOT_GAP / 2) / (SLOT + SLOT_GAP));
     return i >= 0 && i < TOOLS.length ? i : null;
   }
 }

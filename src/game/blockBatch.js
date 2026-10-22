@@ -9,7 +9,7 @@ const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
 
 /** Per-instance attributes a batch keeps, and their sizes (see World and the block shader). */
-const INSTANCE_ATTRIBUTES = { blockStyle: 4, blockMerged: 1, blockSmooth: 1, blockSeeThrough: 1 };
+const INSTANCE_ATTRIBUTES = { blockStyle: 4, blockMerged: 1, blockSmooth: 1, blockSeeThrough: 1, blockTexOrigin: 3 };
 
 /**
  * Draws geometry `g` twice, each draw its own group: first with material 0 (a depth-only

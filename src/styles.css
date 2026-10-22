@@ -109,6 +109,18 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   user-select: none;
 }
 .side-panel.collapsed { width: auto; }
+/* the right column: the Right panel, in the top-right corner (resized from its bottom-left) */
+.side-stack.side-stack-right { left: auto; right: max(12px, env(safe-area-inset-right)); align-items: flex-end; }
+.right-panel { width: min(300px, calc(100vw - 24px)); }
+.side-header.alone { margin-bottom: 0; } /* (Creature controls: just the title) */
+/* its actions (Eat, Excrete): the button's glyph, the name, the blocks at the right */
+.action-btn .action-glyph { height: var(--ui-icon); width: auto; flex: none; }
+.action-btn .label { flex: 1; }
+.action-blocks { display: flex; gap: 4px; flex: none; }
+.action-btn .label .tool-value { display: flex; align-items: center; gap: var(--ui-pad-x); } /* (the current tool: its icon left of its name) */
+/* its Tools dropdown opens the tools in a dark well, the icons in rows */
+.tool-slots { display: flex; flex-wrap: wrap; gap: var(--ui-gap); }
+.tool-slots > .slot { width: 44px; flex: none; }
 .side-header { display: flex; align-items: center; gap: var(--ui-pad-x); margin-bottom: var(--ui-gap); flex: none; }
 .side-panel.collapsed .side-header { margin-bottom: 0; }
 .side-header h2 { flex: 1; margin: 0; font-size: calc(16px * var(--text-scale)); font-weight: 650; letter-spacing: 0.02em; }
@@ -228,6 +240,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .resize-grip.grip-top-right, .resize-grip.grip-top-left { top: 3px; width: 14px; height: 14px; opacity: 0.45; }
 .resize-grip.grip-top-right { right: 3px; cursor: nesw-resize; border-top: 2px solid var(--muted); border-right: 2px solid var(--muted); border-top-right-radius: 6px; }
 .resize-grip.grip-top-left { left: 3px; cursor: nwse-resize; border-top: 2px solid var(--muted); border-left: 2px solid var(--muted); border-top-left-radius: 6px; }
+.resize-grip.grip-bottom-left { bottom: 3px; left: 3px; width: 14px; height: 14px; opacity: 0.45; cursor: nesw-resize; border-bottom: 2px solid var(--muted); border-left: 2px solid var(--muted); border-bottom-left-radius: 6px; }
 .resize-grip.grip-bottom-right { bottom: 3px; right: 3px; width: 14px; height: 14px; opacity: 0.45; cursor: nwse-resize; border-bottom: 2px solid var(--muted); border-right: 2px solid var(--muted); border-bottom-right-radius: 6px; }
 .resize-grip.grip-right-edge { top: 40px; bottom: 40px; right: -4px; width: 10px; cursor: ew-resize; }
 .resize-grip.grip-right-edge::after {
@@ -235,36 +248,24 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   border-radius: 2px; background: var(--muted); opacity: 0.45;
 }
 .resize-grip:hover, .resize-grip:hover::after { opacity: 1; }
-/* the tool bar scrolls sideways when the tools don't fit the window */
-.hud-row > .hud-right { min-width: 0; display: flex; flex-direction: column; }
-/* the tool bar; room underneath for the current tool's name, which scrolls with the icons */
-.slots { display: flex; gap: 8px; overflow-x: auto; position: relative; padding-bottom: calc(1.6em + 6px); margin-bottom: -6px; }
-.slots > .slot { flex: none; }
-/* the panel resized (its width set): the icons wrap into rows, a gap under each for the tool
-   name, scrolling up / down when they don't all fit */
-.slots.wrap { flex-wrap: wrap; overflow-x: hidden; overflow-y: auto; min-height: 0; row-gap: calc(1.6em + 4px); align-content: flex-start; }
-
-/* visible, slim scrollbars (menu list, tool bar) */
-.menu-items, .slots { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.35) transparent; }
-.menu-items::-webkit-scrollbar, .slots::-webkit-scrollbar { width: 8px; height: 8px; }
-.menu-items::-webkit-scrollbar-thumb, .slots::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.35); border-radius: 4px; }
-.menu-items::-webkit-scrollbar-track, .slots::-webkit-scrollbar-track { background: transparent; }
+/* visible, slim scrollbars (menu list) */
+.menu-items { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.35) transparent; }
+.menu-items::-webkit-scrollbar { width: 8px; height: 8px; }
+.menu-items::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.35); border-radius: 4px; }
+.menu-items::-webkit-scrollbar-track { background: transparent; }
 .slot {
   width: clamp(30px, 7vw, 60px); aspect-ratio: 1;
   padding: 4px; border-radius: 10px; cursor: pointer;
   background: rgba(255, 255, 255, 0.07);
   border: 2px solid transparent;
 }
-.hud-left .hud-label, .hud-right .hud-label { justify-content: center; }
+.hud-left .hud-label { justify-content: center; }
 /* the panel's header ("Tools"), like the Debug dock's section titles */
 /* the left HUD (Game): its header and stats like Debug → Performance (left-aligned, 12 px) */
 .hud-header-left { text-align: left; padding-left: 0; }
 .hud-stats { font-size: calc(12px * var(--text-scale)); margin-bottom: 8px; }
 .hud-stats td { white-space: nowrap; }
 .hud-header { font-size: calc(11px * var(--text-scale)); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); text-align: center; padding: 0 4px 6px; }
-/* tool name directly below the selected slot, inside the bar (App positions it) */
-.tool-label { position: absolute; left: 50%; top: calc(100% - 1.6em - 6px); transform: translateX(-50%); white-space: nowrap; font-size: calc(14px * var(--text-scale)); font-weight: 600; }
-.hud-right .creature-label { padding: 4px 4px 0; }
 .hud-time { font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
 .hud-time { padding-bottom: 2px; } /* time and Mean Diameter sit together above the Menu button */
 .hud-diameter { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }

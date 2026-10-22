@@ -369,7 +369,11 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         #ifdef MERGED_BODY
         attribute vec3 localPos;
         attribute float blockIndex;
+        attribute vec3 texOrigin; // its block's texture origin (cm; see blockTexOrigin)
         #else
+        // where the block's 3D patterns are sampled from (cm): the cell it was made in, so
+        // neighbours share one texture space (no seams in a cluster), kept as it moves (World.add)
+        attribute vec3 blockTexOrigin;
         attribute float blockMerged; // Rendering: Smooth: 1 = this block is drawn by a cluster body instead
         attribute float blockSmooth; // 1 = smooth shading (World.setSmooth, e.g. excreted blocks)
         attribute float blockSeeThrough; // 1 = the camera is inside it (or its creature): dithered, inside faces drawn (World.setSeeThrough)
@@ -380,6 +384,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         varying float vStyle;
         varying float vTint; // opaque creatures: 1 = drawn in a buff's colour (see World._refreshLook)
         varying vec3 vNoisePos;
+        varying vec3 vTexOrigin;
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
         varying float vSeed;
@@ -391,6 +396,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         #ifdef MERGED_BODY
         vDither = abs(blockIndex - uDitherIndex) < 0.5 ? 1.0 : 0.0;
         vec3 blockPos = localPos;
+        vTexOrigin = texOrigin;
         vSmooth = 0.0; // bodies are smooth already
         #ifdef SEE_THROUGH
         vSeeThrough = SEE_THROUGH;
@@ -402,14 +408,16 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         vSmooth = blockSmooth * uSmoothRendering; // only with Rendering: Smooth (Blocky keeps every block flat)
         vDither = abs(float(gl_InstanceID) - uDitherIndex) < 0.5 ? 1.0 : 0.0;
         vec3 blockPos = position;
+        vTexOrigin = blockTexOrigin;
         #endif
         vStyle = blockStyle.x;
         vTint = blockStyle.z; // (for translucent blocks z is their face mask; only opaque styles read vTint)
-        // block-local position (cm), offset per block so each one's pattern differs and
-        // stays glued to the block while it slides
-        vNoisePos = blockPos + blockStyle.y * vec3(7.31, 3.17, 5.53);
+        // where the 3D patterns are sampled (cm): the block's own position plus its texture
+        // origin, so neighbouring blocks continue one pattern, and it stays glued to the block
+        // while it slides
+        vNoisePos = blockPos + vTexOrigin;
         vLocalNormal = normal; // block-local face normal (instances are only translated; bodies: the smooth normal)
-        vLocalPos = blockPos;  // block-local position without the seed offset
+        vLocalPos = blockPos;  // block-local position (without the texture origin)
         vSeed = blockStyle.y;
         // block-local directions -> view space (instances are only translated; drop the cm scale)
         {
@@ -472,6 +480,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         varying float vStyle;
         varying float vTint;
         varying vec3 vNoisePos;
+        varying vec3 vTexOrigin;
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
         varying float vSeed;
@@ -480,6 +489,10 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         uniform float uAO;
         uniform float uSmoothRendering;
         varying float vAO;
+        // wood's ring centres: one in each square this wide (cm): about one per block (a cell is 2 cm
+        // across), so each shows its rings round a pith, shared with its neighbours
+        #define WOOD_PITH_CM 2.0
+        #define WOOD_BLEND 6.0 // how sharply rings round neighbouring piths meet (higher: a tighter seam)
         ${NOISE_GLSL}
         ${WATER_GLSL}
         ${BUMP_GLSL}
@@ -570,7 +583,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           vec3 base = diffuseColor.rgb;
           vec3 col = base * (0.8 + 0.25 * billow + 0.3 * puffs);
           col *= 0.8 + 0.3 * smoothstep(0.1, 0.6, puffs);       // shadowed crevices between puffs
-          if (vStyle > ${(BLOCK_STYLE.nimbus - 0.5).toFixed(1)}) col *= mix(0.72, 1.0, smoothstep(-1.0, 0.6, vLocalPos.y));
+          if (vStyle > ${(BLOCK_STYLE.nimbus - 0.5).toFixed(1)}) col *= mix(0.72, 1.0, smoothstep(-1.0, 0.6, BODY_DIR.y)); // darker where it faces down (a merged body: its whole underside, not each block's)
           diffuseColor.rgb = col;
           // opacity: a slowly drifting 3D Perlin density field plus the puffs, around 85 %
           // opaque, so the cloud is wispy where the puffs thin out and denser in their cores
@@ -601,7 +614,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float epw = length(fwidth(vNoisePos)) * 0.6 * 1.4; // pixel footprint in border-distance units
           col += (base * 0.25 + 0.06) * lineCoverage(vor.x, 0.02, epw); // bright facet edges, antialiased
           // surface wear, as a light normal map (bump): a fine grain, and scratches: three sets
-          // of thin grooves in their own directions per block (a plane through the gem meets a
+          // of thin grooves in their own directions (a plane through the gem meets a
           // face in a straight line), broken into short random runs by noise; each scratch is
           // slightly frosted. Grooves thinner than a pixel fade out instead of shimmering.
           float grain = FINE(perlin3(vNoisePos * 38.0) * 0.6 + perlin3(vNoisePos * 83.0 + 5.1) * 0.4);
@@ -609,7 +622,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           #ifndef SIMPLE_MATERIALS
           for (int k = 0; k < 3; k++) {
             float fk = float(k);
-            vec3 dir = normalize(cellHash(vec3(vSeed * 3.7 + fk * 11.3, fk * 5.9, vSeed)) - 0.5 + 1e-3);
+            vec3 dir = normalize(cellHash(vec3(3.7 + fk * 11.3, fk * 5.9, 1.0)) - 0.5 + 1e-3); // (the same for every block: a cluster's scratches run on across it)
             float u = dot(vNoisePos, dir) * (1.7 + fk * 0.9) + perlin3(vNoisePos * 0.7 + fk * 3.3) * 0.6;
             float d = abs(fract(u) - 0.5);                       // distance to the groove, in its own units
             float fw = max(fwidth(u), 1e-4);
@@ -787,17 +800,28 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           isShell = 1.0;
           surfaceRough = 0.18;
         } else if (vStyle > 6.5 && vStyle < 7.5) {
-          // 3D wood: tight growth rings around a vertical pith (offset per block), wobbled by
+          // 3D wood: tight growth rings around vertical piths scattered through texture space (so
+          // a trunk's or a slab's blocks share their rings), wobbled by
           // noise; coarse grain fibres and pores from noise stretched along the trunk (y); matte.
           // End faces show rings, side faces long grain under bark: a bump map of vertical
           // Voronoi plates split by faint cracks, mostly roughened with noise.
-          vec3 lp = vLocalPos;
           vec3 q = vNoisePos;
-          vec3 h = cellHash(vec3(vSeed * 13.7, vSeed * 3.1, 1.7));
-          vec2 pith = (h.xy - 0.5) * 1.6;
           vec3 qs = q * vec3(1.3, 0.35, 1.3);
           vec2 wobble = vec2(perlin3(qs), perlin3(qs + 7.7));
-          float r = length(lp.xz - pith + wobble * 0.25) * 7.0 + perlin3(q * 0.8) * 0.6;
+          // the distance to the piths: one in each WOOD_PITH_CM square of texture space (xz), at a
+          // random spot in it, so neighbouring blocks share their rings; a smooth minimum of the
+          // nearby ones, so where two piths' rings meet they flow round each other (like grain
+          // round a knot) instead of meeting in a crease
+          vec2 g = (q.xz + wobble * 0.25) / WOOD_PITH_CM, gi = floor(g);
+          float near = 0.0;
+          for (int i = -1; i <= 1; i++) {
+            for (int j = -1; j <= 1; j++) {
+              vec2 c = gi + vec2(float(i), float(j));
+              near += exp(-WOOD_BLEND * length(g - c - cellHash(vec3(c, 1.7)).xy));
+            }
+          }
+          float pd = max(0.0, -log(near) / WOOD_BLEND);
+          float r = pd * WOOD_PITH_CM * 7.0 + perlin3(q * 0.8) * 0.6;
           float ring = fract(r);
           float rfw = fwidth(r);
           // dark latewood band at the end of each ring; fades to average when rings get sub-pixel
@@ -818,7 +842,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           col *= 1.0 + 0.32 * fibre;
           col *= 1.0 - 0.3 * pore;
           col *= 1.0 + 0.1 * speck;
-          col *= 0.92 + 0.16 * h.z;                               // per-block tone
+          col *= 0.92 + 0.16 * (0.5 + 0.5 * perlin3(q * 0.25));   // tone, varying slowly across the wood
           vec3 bark = col * (0.97 + 0.06 * plates.y) * (1.0 + 0.2 * rough); // plates barely differ
           bark *= mix(1.0, 0.82, crack);                          // faint, slightly shadowed cracks
           col = mix(col, bark, side);
@@ -838,7 +862,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
                           perlin3(q * 1.3 + vec3(5.2, t * 0.6, 1.7)),
                           perlin3(q * 1.3 + vec3(9.4, t * 0.6, 3.3)));
           cloudNormal = normalize(BODY_DIR + 0.45 * wig);
-          float band = 0.5 + 0.5 * sin(dot(vLocalPos, vec3(0.28, 0.93, 0.21)) * 6.0 - t * 3.0 + perlin3(q * 2.0) * 2.0);
+          float band = 0.5 + 0.5 * sin(dot(q, vec3(0.28, 0.93, 0.21)) * 6.0 - t * 3.0 + perlin3(q * 2.0) * 2.0);
           float vein = 1.0 - smoothstep(0.0, 0.08, abs(perlin3(q * 3.2 + wig * 0.3)));
           float marble = perlinFbm(q * 2.1);
           vec3 base = diffuseColor.rgb;
@@ -860,7 +884,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           vec3 n0 = BODY_DIR;
           vec3 t1 = normalize(cross(n0, abs(n0.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
           vec3 t2 = cross(n0, t1);
-          vec3 sp = vLocalPos * vec3(3.4, 2.4, 3.4);  // scale cells, ~3 mm across
+          vec3 sp = vNoisePos * vec3(3.4, 2.4, 3.4);  // scale cells, ~3 mm across (in texture space: they run on across the segments)
           float e = 0.03;
           vec2 s0 = voronoi3(sp);
           float h0 = smoothstep(0.0, 0.32, s0.x);
@@ -880,7 +904,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           vec3 yellow = vec3(0.86, 0.74, 0.16) * (0.86 + 0.28 * s0.y) * mix(0.9, 1.1, h0);
           col = mix(col, yellow, splotch * 0.85);
           col = mix(col, base * vec3(0.18, 0.3, 0.2), gap * 0.8);                            // dark seams
-          float sheen = 0.5 + 0.5 * sin(dot(vLocalPos, vec3(2.1, 3.3, 1.7)) + s0.y * 6.2831);
+          float sheen = 0.5 + 0.5 * sin(dot(vNoisePos, vec3(2.1, 3.3, 1.7)) + s0.y * 6.2831);
           col += vec3(0.02, 0.06, 0.07) * sheen * h0;      // a faint teal-gold iridescence
           diffuseColor.rgb = col;
           surfaceRough = mix(0.12, 0.6, gap);              // glossy scales, dull seams

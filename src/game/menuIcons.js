@@ -509,6 +509,17 @@ const DRAW = {
   cameraInvert(ctx, P) {
     orbitArrow(ctx, P, -1);
   },
+  eye(ctx, P, s) {
+    // the Right panel's show / hide button: an eye (almond outline, round iris and pupil)
+    ctx.beginPath();
+    ctx.moveTo(...P(0.08, 0.5));
+    ctx.quadraticCurveTo(...P(0.5, 0.06), ...P(0.92, 0.5));
+    ctx.quadraticCurveTo(...P(0.5, 0.94), ...P(0.08, 0.5));
+    ctx.closePath();
+    ctx.stroke();
+    circle(ctx, P, 0.5, 0.5, 0.17, s);
+    circle(ctx, P, 0.5, 0.5, 0.07, s, { fill: true });
+  },
   guidesOn(ctx, P, s) {
     // Direction Guides: a creature (a block), a line out from it, and the dot it's heading for
     poly(ctx, P, [[0.12, 0.6], [0.4, 0.6], [0.4, 0.88], [0.12, 0.88]]);

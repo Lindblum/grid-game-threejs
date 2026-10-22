@@ -3,7 +3,7 @@ import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { CameraCollider } from './cameraCollision.js';
 import { InventoryView } from './inventoryView.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-import { STEP_FRACTION, World, isSaveData, parseTemplate } from './world.js';
+import { STEP_FRACTION, World, excretedType, isSaveData, parseTemplate } from './world.js';
 import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
@@ -93,6 +93,9 @@ const SEE_THROUGH_REACH_CM = 0.45;
 /** How far (px) the pointer may move between a left press and its release for it to be a click (the tool) rather than a drag (the camera). */
 const CLICK_MAX_MOVE_PX = 6;
 const STEER_SCREEN_COS = 0.35;
+/** XR debug tablet, docked beside the Left HUD: the gap between them (m); dropped within this of the Left HUD (m), it docks again. */
+const TABLET_DOCK_GAP_M = 0.012;
+const TABLET_DOCK_SNAP_M = 0.3;
 /** Keyboard creature controls: each direction key as a left stick push ([right, down], like the gamepad's axes). */
 const KEY_STICK = {
   KeyW: [0, -1], ArrowUp: [0, -1],
@@ -234,7 +237,13 @@ export class Engine {
       domOverlay: false, // the XR session shows the page's UI over the view (XR: Phone AR, see screenUI)
       xrVR: false, // browser supports immersive-vr, e.g. PC Chrome with a headset over Link
       blockCount: 0,
-      blockCounts: {}, // block type -> how many are in the world (tool labels: "Stone (x100)")
+      rightHudOpen: true, // the Right panel / HUD (its eye button): shown, or only the button
+      toolsOpen: true, // its Tools dropdown: open (the tool selector shows) or closed
+      // what the selected creatures could do right now (the Right panel's actions; _updateActions):
+      // eat (the distinct block types next to them they could eat), excrete (the block type that
+      // would come out, with somewhere for it to go); input: which glyphs to show ('mk', 'pad', 'xr')
+      actions: { eat: [], excrete: null },
+      inputDevice: 'mk',
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
@@ -293,7 +302,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -350,7 +359,7 @@ export class Engine {
     // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
     if (typeof saved.movementGuides === 'boolean' && !bool('directionGuides')) this.setState({ directionGuides: saved.movementGuides }); // (its old name)
-    for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'directionGuides', 'viewInternal', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
+    for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
@@ -372,14 +381,9 @@ export class Engine {
     console.log(` | Turn ${this.world.turn} | ${blockProps(block.type).name} #${block.index} | size ${size} | ${kind} | ${detail}`);
   }
 
-  /** Refreshes the HUD's block totals (overall, and per type for the tool labels). */
+  /** Refreshes the HUD's block total (the Left HUD's Mean Diameter). */
   _syncCount() {
-    const counts = {};
-    for (const b of this.world.blocks.values()) counts[b.type] = (counts[b.type] || 0) + 1;
-    const prev = this.state.blockCounts;
-    const same = this.state.blockCount === this.world.size &&
-      Object.keys(counts).length === Object.keys(prev).length && Object.keys(counts).every((k) => prev[k] === counts[k]);
-    if (!same) this.setState({ blockCount: this.world.size, blockCounts: counts });
+    if (this.state.blockCount !== this.world.size) this.setState({ blockCount: this.world.size });
   }
 
   // ---------------------------------------------------------------- setup
@@ -652,7 +656,10 @@ export class Engine {
         this._beginGrab();
       });
       ctrl.addEventListener('squeezeend', () => {
-        if (this._tabletGrab?.slot === slot) this._tabletGrab = null;
+        if (this._tabletGrab?.slot === slot) {
+          this._tabletGrab = null;
+          this._dockTabletIfNear();
+        }
         slot.gripHeld = false;
         this._beginGrab();
       });
@@ -985,6 +992,57 @@ export class Engine {
   // on again; clicking empty space or anything else deselects it).
   // Clicking anything else in 'target' (or empty space) just clears the selection.
 
+  /** The Right panel's (and XR Right HUD's) title: Observer, or under Creature controls the controlled creature's type. */
+  rightHudTitle(s = this.state) {
+    if (s.controlSchema !== 'creature') return 'Observer';
+    const c = this._controlled?.[0];
+    return c ? blockProps(c.type).name : 'Creature';
+  }
+
+  /** The Right panel's (and XR Right HUD's) eye button: shows it, or hides all but the button; remembered. */
+  toggleRightHud() {
+    this.setState({ rightHudOpen: !this.state.rightHudOpen });
+    playTick();
+    this._saveOptions();
+  }
+
+  /**
+   * Per frame: what the selected creatures could do now (state.actions, for the Right panel /
+   * HUD): Eat, with a free head slot and something edible next to it (the distinct types); Excrete,
+   * with an item in its tail's slot and an empty cell next to the tail (what it would come out
+   * as). And which input to show their buttons for (state.inputDevice). Only set when it changes.
+   */
+  _updateActions() {
+    const s = this.state;
+    const eat = new Set();
+    let excrete = null;
+    if (s.screen === 'playing' && this.toolsReady(s)) {
+      for (const c of this.selected) {
+        if (this.world.get(c.x, c.y, c.z) !== c) continue;
+        if (this.world.freeSlotFor(c)) for (const b of edibleNeighbors(this.world, c)) eat.add(b.type);
+        const tail = this.world.clusterOf(c).at(-1);
+        if (!excrete && tail.inventory && excretableCells(this.world, c).length) excrete = excretedType(tail.type, tail.inventory);
+      }
+    }
+    const actions = { eat: [...eat].sort(), excrete };
+    const inputDevice = s.inXR && !this.screenUI(s) ? 'xr' : s.gamepadAim ? 'pad' : 'mk';
+    if (JSON.stringify(actions) !== JSON.stringify(s.actions) || inputDevice !== s.inputDevice) this.setState({ actions, inputDevice });
+  }
+
+  /** The input glyphs (inputIcons.js tokens) for Consume, Excrete and using the tool on `device` ('mk', 'pad', 'xr'). */
+  static ACTION_GLYPHS = {
+    mk: { eat: ['key:E'], excrete: ['key:Q'], tool: ['mouse:L'] },
+    pad: { eat: ['pad:Y'], excrete: ['pad:B'], tool: ['pad:A'] },
+    xr: { eat: ['xr:B'], excrete: ['xr:A'], tool: ['xr:trigger:R'] },
+  };
+
+  /** The Right panel's (and XR Right HUD's) Tools dropdown: opens or closes the tool selector; remembered. */
+  toggleToolsOpen() {
+    this.setState({ toolsOpen: !this.state.toolsOpen });
+    playTick();
+    this._saveOptions();
+  }
+
   /** HUD label for the current tool (the Select tool shows its phase). */
   toolLabel(s = this.state) {
     if (!this.toolsAvailable(s)) {
@@ -993,7 +1051,6 @@ export class Engine {
       return c ? `Controlling ${blockProps(c.type).name}` : 'Creature controls';
     }
     const tool = TOOLS[s.toolIndex];
-    if (tool.block) return `${tool.label} (x${s.blockCounts[tool.block] ?? 0})`; // e.g. "Stone (x100)"
     if (tool.id !== TOOL.SELECT) return tool.label;
     return s.selectPhase === 'target' ? 'Select: pick a target' : 'Select';
   }
@@ -1313,7 +1370,6 @@ export class Engine {
     this._setControlled(id === 'creature' ? this.selected : []);
     this.setState({ controlSchema: id });
     this._setTargeting(false); // Select: back to picking a creature, not where it walks
-    this.toast(id === 'creature' ? 'Creature controls: the left stick moves the selected creature' : 'Observer controls');
     playSfx(id === 'creature' ? 'controlCreature' : 'controlObserver', 0);
     return true;
   }
@@ -2415,7 +2471,8 @@ export class Engine {
   _beginImmersive() {
     this._xrFrames = 0;
     this._needsXRPlacement = true;
-    this._needsTabletPlacement = true; // debug tablet: re-place in front of the player each session
+    this._needsTabletPlacement = true; // debug tablet: re-placed each session…
+    this._tabletDocked = true; // …docked on the left controller
     this._gazeDockAnchor = null;
     this.gazeDwell.reset();
     this.controls.enabled = false;
@@ -2526,9 +2583,26 @@ export class Engine {
     if (id === 'speak') return claudePrompt.toggleSpeech(); // read the response feed aloud
   }
 
-  /** Puts the debug tablet in front of the player, a little to the left and below eye level. */
+  /**
+   * Places the debug tablet. Docked (the default; see _dockTabletIfNear): on the left controller,
+   * in the Left HUD's plane, beside it toward the right hand (where the right controller's ray
+   * reaches it), its top-left corner level with the HUD's top (so resizing it from its
+   * bottom-right corner keeps that corner put). Undocked, or with no left controller: in front
+   * of the player, a little to the left and below eye level.
+   */
   _placeDebugTablet() {
-    const m = this.debugTablet.mesh;
+    const tablet = this.debugTablet, m = tablet.mesh, hud = this.leftHud.mesh;
+    if (this._tabletDocked && hud.parent) {
+      if (m.parent !== hud) hud.add(m);
+      const { width: hudW, height: hudH } = hud.geometry.parameters;
+      m.position.set(hudW / 2 + TABLET_DOCK_GAP_M + tablet.width / 2, hudH / 2 - tablet.height / 2, 0);
+      m.rotation.set(0, 0, 0);
+      m.scale.setScalar(1);
+      this._needsTabletPlacement = false;
+      return;
+    }
+    if (m.parent !== this.scene) this.scene.add(m);
+    m.scale.setScalar(1);
     const { pos, dir } = this._headPose();
     const flat = new THREE.Vector3(dir.x, 0, dir.z);
     if (flat.lengthSq() < 1e-6) flat.set(0, 0, -1);
@@ -2540,19 +2614,38 @@ export class Engine {
     this._needsTabletPlacement = false;
   }
 
-  /** Starts moving the tablet with this controller's grip if it is within reach (or pointed at). */
+  /**
+   * Starts moving the tablet with this controller's grip if it is within reach (or pointed at).
+   * Docked, only the other hand's grip takes it (the left grip still grabs the world), and it
+   * comes off the hand (undocked) as it's picked up.
+   */
   _tryGrabTablet(slot) {
     const m = this.debugTablet.mesh;
     if (!m.visible) return false;
+    if (this._tabletDocked && this.leftHud.mesh.parent === slot.grip) return false;
     const local = m.worldToLocal(this._gripPos(slot));
     const { width, height } = m.geometry.parameters;
     const near = Math.abs(local.z) < 0.12 && Math.abs(local.x) < width / 2 + 0.06 && Math.abs(local.y) < height / 2 + 0.06;
     const pointed = this.hands.right === slot && this._tabletHover;
     if (!near && !pointed) return false;
+    if (this._tabletDocked) {
+      this._tabletDocked = false;
+      this.scene.attach(m); // (keeping where it is)
+    }
     slot.grip.updateMatrixWorld();
     m.updateMatrixWorld();
     this._tabletGrab = { slot, offset: slot.grip.matrixWorld.clone().invert().multiply(m.matrixWorld) };
     return true;
+  }
+
+  /** The tablet let go of: dropped near the left controller (its Left HUD), it docks there again. */
+  _dockTabletIfNear() {
+    const hud = this.leftHud.mesh;
+    if (!hud.parent) return;
+    const d = this.debugTablet.mesh.getWorldPosition(new THREE.Vector3()).distanceTo(hud.getWorldPosition(new THREE.Vector3()));
+    if (d > TABLET_DOCK_SNAP_M) return;
+    this._tabletDocked = true;
+    this._placeDebugTablet();
   }
 
   /**
@@ -2774,6 +2867,10 @@ export class Engine {
 
   _onRightTrigger() {
     if (this._hudHover === 'menu') return this.toggleMenu();
+    if (this._hudHover === 'rightHud') return this.toggleRightHud();
+    if (this._hudHover === 'tools') return this.toggleToolsOpen();
+    if (this._hudHover === 'eat') return this.selectedEat();
+    if (this._hudHover === 'excrete') return this.selectedExcrete();
     if (this._toolHover != null) return this.selectTool(this._toolHover); // hands-free XR: a tool slot
     if (this._tabletHover) {
       // pointing at the debug tablet: the trigger on its corner handle resizes it (held), else
@@ -2908,7 +3005,7 @@ export class Engine {
       this.raycaster.far = 3;
       const targets = [];
       if (this.leftHud.mesh.visible && this.leftHud.mesh.parent) targets.push(this.leftHud.mesh);
-      if (gaze && this.rightHud.mesh.visible && this.rightHud.mesh.parent) targets.push(this.rightHud.mesh);
+      if (this.rightHud.mesh.visible && this.rightHud.mesh.parent) targets.push(this.rightHud.mesh); // (its eye button; the gaze: its tools too)
       if (panelOpen) targets.push(this.menuPanel.mesh);
       if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
       for (const hit of this.raycaster.intersectObjects(targets, false)) {
@@ -2926,7 +3023,12 @@ export class Engine {
           }
         } else if (hit.object === this.rightHud.mesh) {
           const slot = this.rightHud.hitTest(hit.uv);
-          if (slot != null) {
+          if (slot === 'toggle' || slot === 'tools' || slot === 'eat' || slot === 'excrete') {
+            this._hudHover = slot === 'toggle' ? 'rightHud' : slot;
+            uiHit = hit;
+            break;
+          }
+          if (slot != null && gaze) {
             this._toolHover = slot;
             uiHit = hit;
             break;
@@ -2953,7 +3055,7 @@ export class Engine {
         if (this._menuHover) {
           const value = this.menuPanel.sliderValueAt(uiHit.uv, this._menuHover);
           key = `menu:${this._menuHover}${value != null ? `@${value}` : ''}`;
-        } else if (this._hudHover) key = 'hud:menu';
+        } else if (this._hudHover) key = `hud:${this._hudHover}`;
         else if (this._toolHover != null) key = `tool:${this._toolHover}`;
         else if (this._tabletHoverId) key = `tablet:${this._tabletHoverId}`;
         if (key) this._gazeHit = { key, point: uiHit.point, distance: uiHit.distance };
@@ -3402,6 +3504,7 @@ export class Engine {
       }
     }
     this._updateSeeThrough(sceneNow);
+    this._updateActions();
     if (xr) {
       this._xrFrames++;
       if (this._needsXRPlacement && this._xrFrames > 2) {
@@ -3416,7 +3519,9 @@ export class Engine {
       const dbg = this.state.debugMode && !flat;
       this.debugTablet.mesh.visible = dbg;
       if (dbg) {
-        if (this._needsTabletPlacement !== false && this._xrFrames > 2) this._placeDebugTablet();
+        // docked (beside the Left HUD): placed every frame (it follows the hand, and its size);
+        // undocked: once, in front of the player
+        if (this._xrFrames > 2 && (this._tabletDocked || this._needsTabletPlacement !== false)) this._placeDebugTablet();
         this._updateTabletGrab();
         this._updateTabletResize();
         this.debugTablet.draw({
@@ -3437,7 +3542,19 @@ export class Engine {
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;
       const playing = this.state.screen === 'playing';
-      this.rightHud.draw(this.state.toolIndex, msg, this.toolLabel(), { materials: this.state.materials, smooth: this.state.smoothRendering }, this._toolHover);
+      this.rightHud.draw({
+        open: this.state.rightHudOpen,
+        title: this.rightHudTitle(),
+        tools: this.toolsAvailable(),
+        toolsOpen: this.state.toolsOpen,
+        actions: this.state.actions,
+        glyphs: Engine.ACTION_GLYPHS.xr,
+        toolIndex: this.state.toolIndex,
+        label: this.toolLabel(),
+        message: msg,
+        style: { materials: this.state.materials, smooth: this.state.smoothRendering },
+        hover: this._hudHover === 'rightHud' ? 'toggle' : this._hudHover ?? this._toolHover,
+      });
       this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime), Engine.formatDiameter(this.state.blockCount));
       this.rightHud.mesh.visible = playing && !flat;
       this.leftHud.mesh.visible = playing && !flat;

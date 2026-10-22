@@ -16,6 +16,16 @@ import { CreatureEyes, orientCreature } from './creature.js';
 export const STEP_FRACTION = 1;
 
 /**
+ * What an item of `type` in a block of `holder`'s type comes out as when excreted (World.excrete):
+ * digested, as the holder's type says (blocks.js excretes: a Crawly's Wood comes out as Dirt),
+ * else eaten creatures and Berries as Plop, and Crystal as Stone. A non-creature (Wood: Water) gives back what it holds.
+ */
+export function excretedType(holder, type) {
+  if (!isCreature(holder)) return type;
+  return blockProps(holder).excretes?.[type] ?? (isCreature(type) || type === BLOCK.BERRY ? BLOCK.PLOP : type === BLOCK.CRYSTAL ? BLOCK.STONE : type);
+}
+
+/**
  * Steps of the "New" scene, in order (after the Stone at the origin). Each step adds
  * `count` blocks of `type`, seeded as `clusters` clusters (null = count: every block a seed,
  * straight onto the world, layer by layer) that grow by `sizeDistribution` and `growth`. With `count: null` and
@@ -781,6 +791,8 @@ export class World {
     this._setMatrix(b, _m.makeTranslation(x, y, z));
     b.batch.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[type]));
     this._style(b).setXYZW(b.index, blockProps(type).style, Math.random() * 40, 0, 0);
+    b.texOrigin = [x * GRID.scale, y * GRID.scale, z * GRID.scale]; // (its patterns' origin: blockTexOrigin, kept as it moves)
+    this._writeTexOrigin(b);
     b.batch.attr('blockMerged').setX(b.index, 0);
     this._writeSmooth(b);
     if (isTranslucent(type)) this._refreshTranslucentAround(x, y, z);
@@ -868,6 +880,7 @@ export class World {
       block.batch.remove(block);
       target.add(block);
       block.batch.mesh.setMatrixAt(block.index, _m); // (already in cm: not through _setMatrix)
+      this._writeTexOrigin(block);
       this._style(block).setXYZW(block.index, 0, seed, 0, 0);
       block.batch.attr('blockMerged').setX(block.index, 0);
       this._writeSmooth(block);
@@ -1085,6 +1098,35 @@ export class World {
     this._dirty();
   }
 
+  /**
+   * Chain creatures (Squirmy, Slither): each segment's texture origin is kept at its cell's
+   * offset from the head's (whose own stays where it was made), so the pattern runs on across
+   * the joints and, crawling straight, moves with the body (round a bend, the segments that
+   * turned shift a little).
+   */
+  _alignChainTextures() {
+    const s = GRID.scale;
+    for (const sq of this.squirmies) {
+      const head = sq.segments[0];
+      if (!head?.texOrigin) continue;
+      for (const b of sq.segments) {
+        if (b === head || !b.batch) continue;
+        const o = [head.texOrigin[0] + (b.x - head.x) * s, head.texOrigin[1] + (b.y - head.y) * s, head.texOrigin[2] + (b.z - head.z) * s];
+        if (b.texOrigin && o.every((v, i) => Math.abs(v - b.texOrigin[i]) < 1e-6)) continue;
+        b.texOrigin = o;
+        this._writeTexOrigin(b);
+        b.batch.attr('blockTexOrigin').needsUpdate = true;
+        this._logChange(b.x, b.y, b.z); // (Smooth rendering: its body takes it)
+        this._changed();
+      }
+    }
+  }
+
+  /** Block `block`'s texture origin (cm: the cell it was made in) into its batch's blockTexOrigin. */
+  _writeTexOrigin(block) {
+    block.batch.attr('blockTexOrigin').setXYZ(block.index, ...block.texOrigin);
+  }
+
   _writeSmooth(block) {
     block.batch.attr('blockSmooth').setX(block.index, block.shadeSmooth ? 1 : 0);
   }
@@ -1104,6 +1146,7 @@ export class World {
     this._flushRefresh(); // face / corner masks changed by this turn's adds, moves and removals
     this.materials.uniforms.uTime.value = now / 1000;
     const p = new THREE.Vector3();
+    this._alignChainTextures(); // (before the bodies are rebuilt: they copy it)
     this.eyes.update(now, (creature, out) => this.renderedPosition(creature, now, out), { turn: this.turn, flapSeconds: this.stepSeconds * 0.5, stepSeconds: this.stepSeconds, sizeOf: (creature) => this.drawnScale(creature, now) });
     this.clusterBodies.update(this, now);
     if (!this.anims.size && !this.vanishing.size && !this.appearing.size) return;
@@ -1211,10 +1254,7 @@ export class World {
     if (!cell) return null;
     const type = tail.inventory;
     tail.inventory = null;
-    // digested: as its type says (excretes), else eaten creatures and Berries come out as Plop,
-    // and Crystal as Stone
-    const excreted = !isCreature(tail.type) ? type
-      : blockProps(tail.type).excretes?.[type] ?? (isCreature(type) || type === BLOCK.BERRY ? BLOCK.PLOP : type === BLOCK.CRYSTAL ? BLOCK.STONE : type);
+    const excreted = excretedType(tail.type, type); // (digested)
     if (!this.add(cell.x, cell.y, cell.z, excreted)) {
       tail.inventory = type; // couldn't place it after all: undo
       return null;

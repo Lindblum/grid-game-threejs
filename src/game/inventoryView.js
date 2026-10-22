@@ -144,6 +144,7 @@ export class InventoryView {
     batch.mesh.setMatrixAt(item.index, _m.compose(pos, _q.identity(), _s.setScalar(Math.max(scale, 1e-4))));
     batch.mesh.setColorAt(item.index, _c.set(BLOCK_COLORS[type]));
     batch.attr('blockStyle').setXYZW(item.index, blockProps(type).style, seed, 0, 0);
+    batch.attr('blockTexOrigin').setXYZ(item.index, seed * 7.31, seed * 3.17, seed * 5.53); // (each its own patch of pattern)
     batch.attr('blockMerged').setX(item.index, 0);
     batch.attr('blockSmooth').setX(item.index, 1); // rounded, like an excreted block
   }

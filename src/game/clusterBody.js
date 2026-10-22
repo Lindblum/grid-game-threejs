@@ -423,6 +423,7 @@ export class ClusterBodies {
     g.setAttribute('blockStyle', new THREE.BufferAttribute(new Float32Array(n * 4), 4));
     g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
     g.setAttribute('blockIndex', new THREE.BufferAttribute(new Float32Array(n), 1));
+    g.setAttribute('texOrigin', new THREE.BufferAttribute(new Float32Array(n * 3), 3)); // each vertex's block's (World.add)
     return g;
   }
 
@@ -472,7 +473,9 @@ export class ClusterBodies {
       C[v * 3 + 2] = per[o + 6];
       I[v] = per[o + 7];
     }
-    style.needsUpdate = color.needsUpdate = index.needsUpdate = true;
+    const tex = g.getAttribute('texOrigin'), T = tex.array;
+    for (let v = 0; v < rBlock.length; v++) T.set(body.blocks[rBlock[v]].texOrigin, v * 3);
+    style.needsUpdate = color.needsUpdate = index.needsUpdate = tex.needsUpdate = true;
     body.indices = body.blocks.map((block) => block.index);
   }
 
