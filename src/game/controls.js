@@ -27,13 +27,13 @@ const OBSERVER_CONTROLS = [
   {
     action: 'Eat (selected creature)',
     mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-    pad: { g: ['pad:Y'], t: 'Y: the selected creature eats the block in front of it' },
+    pad: { g: ['pad:Y', 'sep:+', 'stick:L:any'], t: 'Y: the selected creature eats the block in front of it. Hold Y and push the left stick to choose which block (it eats on letting go)' },
     xr: { g: ['xr:A'], t: 'A: the selected creature eats the block in front of it' },
   },
   {
     action: 'Excrete (selected creature)',
     mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-    pad: { g: ['pad:B'], t: 'B: the selected creature excretes the item in its tail slot' },
+    pad: { g: ['pad:B', 'sep:+', 'stick:L:any'], t: 'B: the selected creature excretes the item in its tail slot. Hold B and push the left stick to choose where (it excretes on letting go)' },
     xr: { g: ['xr:B'], t: 'B: the selected creature excretes the item in its tail slot' },
   },
   {
@@ -77,6 +77,12 @@ const OBSERVER_CONTROLS = [
     mk: { g: ['key:`', 'sep:/', 'key:~'], t: '` or ~ (the key left of 1): Debug panel on / off' },
     pad: { g: ['text:—'], t: 'Options → Debug' },
     xr: { g: ['text:—'], t: 'Options → Debug' },
+  },
+  {
+    action: 'Direction guides',
+    mk: { g: ['key:G'], t: 'G: Direction Guides on / off (the lines and dots showing where a creature can step, eat or excrete)' },
+    pad: { g: ['text:—'], t: 'Options → Accessibility → Direction Guides' },
+    xr: { g: ['text:—'], t: 'Options → Accessibility → Direction Guides' },
   },
   {
     action: 'Menu back',

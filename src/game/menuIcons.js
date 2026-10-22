@@ -510,7 +510,7 @@ const DRAW = {
     orbitArrow(ctx, P, -1);
   },
   guidesOn(ctx, P, s) {
-    // Movement Guides: a creature (a block), a line out from it, and the dot it's heading for
+    // Direction Guides: a creature (a block), a line out from it, and the dot it's heading for
     poly(ctx, P, [[0.12, 0.6], [0.4, 0.6], [0.4, 0.88], [0.12, 0.88]]);
     line(ctx, P, [[0.26, 0.74], [0.74, 0.26]]);
     circle(ctx, P, 0.76, 0.24, 0.09, s, { fill: true });

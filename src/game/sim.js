@@ -1200,6 +1200,23 @@ export function steppableCells(world, creature) {
   return cells;
 }
 
+/** The blocks next to `creature` it could eat right now (its diet, or a buff's; not the one right behind it): what an aimed Eat chooses from. */
+export function edibleNeighbors(world, creature) {
+  const out = [];
+  for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+    const n = world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz));
+    if (n && !n.vanishing && canEat(creature, n.type) && !isBehind(creature, n)) out.push(n);
+  }
+  return out;
+}
+
+/** The empty cells next to `creature`'s tail (its own block, if it has no body), which an aimed Excrete chooses from (World.excrete's `cell`). */
+export function excretableCells(world, creature) {
+  const tail = world.clusterOf(creature).at(-1);
+  return NEIGHBOR_DIRS.map(([dx, dy, dz]) => ({ x: tail.x + dx, y: tail.y + dy, z: tail.z + dz }))
+    .filter((c) => isValidCell(c.x, c.y, c.z) && !world.blocks.has(cellKey(c.x, c.y, c.z)));
+}
+
 /** A creature trapped for this many turns in a row dies. */
 export const TRAPPED_DEATH_TURNS = 15;
 

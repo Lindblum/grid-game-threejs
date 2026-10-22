@@ -238,7 +238,8 @@ function videoItems(state) {
 /**
  * Options → Accessibility: the Music and Sounds volumes, the page UI's text size, the game's speed, how fast
  * the camera turns, which way each camera orbits (Observer controls, and Creature controls: Normal or Invert),
- * Movement Guides (Creature controls' step dots and lines) and View Internal (creatures' inventories) on / off.
+ * Direction Guides (Creature controls' step lines and dots, aimed Eat / Excrete's; G) and View Internal (creatures'
+ * inventories) on / off.
  */
 function accessibilityItems(state) {
   const camera = (id, name, invert) => ({ id, label: `${name}: ${invert ? 'Invert' : 'Normal'}`, icon: invert ? 'cameraInvert' : 'cameraNormal', toggle: true });
@@ -271,7 +272,7 @@ function accessibilityItems(state) {
     },
     camera('observerCamera', 'Observer Camera', state.observerCameraInvert),
     camera('controlCamera', 'Control Camera', state.controlCameraInvert),
-    { id: 'movementGuides', label: `Movement Guides: ${state.movementGuides ? 'On' : 'Off'}`, icon: state.movementGuides ? 'guidesOn' : 'guidesOff', toggle: true },
+    { id: 'directionGuides', label: `Direction Guides: ${state.directionGuides ? 'On' : 'Off'}`, icon: state.directionGuides ? 'guidesOn' : 'guidesOff', toggle: true },
     { id: 'viewInternal', label: `View Internal: ${state.viewInternal ? 'On' : 'Off'}`, icon: state.viewInternal ? 'internalOn' : 'internalOff', toggle: true },
   ];
 }

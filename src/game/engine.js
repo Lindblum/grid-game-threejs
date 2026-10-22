@@ -4,7 +4,7 @@ import { CameraCollider } from './cameraCollision.js';
 import { InventoryView } from './inventoryView.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, isSaveData, parseTemplate } from './world.js';
-import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEatNearby, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
+import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
@@ -76,12 +76,18 @@ const SETTLE_S = 4;
 const SETTLE_MAX_DEG_S = 10;
 const _setOrigin = new THREE.Vector3(), _setGround = new THREE.Vector3(), _setOff = new THREE.Vector3();
 const _setAxis = new THREE.Vector3(), _setFwd = new THREE.Vector3(), _setWant = new THREE.Vector3(), _setCur = new THREE.Vector3();
-// Select tool wireframes (selected / pointed-at creatures, the target cell and its pulses): thin tubes.
+// Select tool wireframes (selected / pointed-at creatures): thin tubes.
 const SELECT_WIRE_RADIUS = EDGE_WIDTH_CM / 2;
 /** Creature controls: the next-step dot's radius (cm; a cell's inradius is 1 cm), small enough not to hide the cell. */
 const STEP_MARKER_RADIUS_CM = 0.05;
 /** Creature controls: the lines to the cells a creature could step into, room for this many at once (all controlled creatures). */
 const STEP_LINES_MAX = 256;
+// Select tool: the destination being pointed at is a dot (cm), with a dotted line to it from each
+// selected creature's head (dash and gap, cm)
+const TARGET_DOT_RADIUS_CM = 0.08;
+const TARGET_LINE_DOT_CM = 0.06;
+const TARGET_LINE_GAP_CM = 0.1;
+const TARGET_LINES_MAX = 16;
 /** Creature controls: the stick picks the step line nearest its direction on screen, within this (cosine: ~70°). */
 /** The camera this close to a block's surface (cm), or inside it, draws it see-through: the near plane (0.25 cm, ~0.4 cm at its corners) would cut it. */
 const SEE_THROUGH_REACH_CM = 0.45;
@@ -160,7 +166,7 @@ export class Engine {
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       cameraSpeed: CAMERA_SPEED.default, // Options → Accessibility → Camera Speed: a multiplier on the camera's turning
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
-      movementGuides: true, // Options → Accessibility → Movement Guides: Creature controls' step dots and lines
+      directionGuides: true, // Options → Accessibility → Direction Guides (or G): Creature controls' step lines and dots, and aimed Eat / Excrete's
       viewInternal: false, // Options → Accessibility → View Internal: the selected / controlled creatures see-through, their inventories inside
       observerCameraInvert: false, // Options → Accessibility → Observer Camera: Invert turns orbiting the other way
       controlCameraInvert: true, // Options → Accessibility → Control Camera: the same, under Creature controls
@@ -199,7 +205,7 @@ export class Engine {
     this._xrFrames = 0;
     this._grab = null;
     this.selected = []; // Select tool: the selected creatures (currently at most one)
-    this._pulses = []; // Select tool: shrinking copies of the target wireframe, one per turn
+    this._pulses = []; // copies of the Select target dot (and Direction Guides' dots) spreading out and fading, one per turn
 
     this._headset = isHeadsetBrowser();
     const phone = isPhone();
@@ -238,7 +244,17 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'textSize', 'cameraSpeed', 'movementGuides', 'viewInternal', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'observerCameraInvert', 'controlCameraInvert'];
+
+  /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
+  toggleDirectionGuides() {
+    const on = !this.state.directionGuides;
+    this.setState({ directionGuides: on });
+    if (!this.state.paused) {
+      this.toast(`Direction Guides ${on ? 'on' : 'off'}`);
+      this._saveOptions(); // (the menu saves on leaving Options; the key saves at once)
+    }
+  }
 
   /** Options → Debug, or ` / ~ while playing: the Debug panel (XR: the debug tablet) on / off; remembered. */
   toggleDebug() {
@@ -284,7 +300,8 @@ export class Engine {
     }
     // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
-    for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'movementGuides', 'viewInternal', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
+    if (typeof saved.movementGuides === 'boolean' && !bool('directionGuides')) this.setState({ directionGuides: saved.movementGuides }); // (its old name)
+    for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'directionGuides', 'viewInternal', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
@@ -423,23 +440,36 @@ export class Engine {
     this.deleteHL.scale.setScalar(1.05);
     root.add(this.placeHL, this.deleteHL);
     // Select tool: green wireframes around selected creatures, a lighter one around a creature
-    // you could select, and the target-cell indicator (plus its per-turn shrinking copies)
+    // you could select, and the target cell's dot (plus its per-turn spreading copies)
     this.selectHLs = [];
     this.hoverHLs = []; // light green, around every block of a creature you could select
     this._hoverCreature = null;
-    this.targetHL = makeWireframe(SELECT_GREEN, SELECT_WIRE_RADIUS);
+    this._targetDotGeo = new THREE.SphereGeometry(TARGET_DOT_RADIUS_CM, 16, 12);
+    this.targetHL = new THREE.Mesh(this._targetDotGeo, new THREE.MeshBasicMaterial({ color: SELECT_GREEN, toneMapped: false }));
+    this.targetHL.renderOrder = 3;
+    this.targetHL.visible = false;
     root.add(this.targetHL);
-    // Creature controls (Accessibility → Movement Guides), each in its creature's own colour: a
+    // …and a dotted line to it from each selected creature's head
+    const targetLineGeo = new THREE.BufferGeometry();
+    targetLineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TARGET_LINES_MAX * 6), 3).setUsage(THREE.DynamicDrawUsage));
+    this.targetLine = new THREE.LineSegments(targetLineGeo, new THREE.LineDashedMaterial({
+      color: SELECT_GREEN, dashSize: TARGET_LINE_DOT_CM, gapSize: TARGET_LINE_GAP_CM, transparent: true, opacity: 0.85, depthWrite: false,
+    }));
+    this.targetLine.frustumCulled = false;
+    this.targetLine.renderOrder = 3;
+    this.targetLine.visible = false;
+    root.add(this.targetLine);
+    // Creature controls (Accessibility → Direction Guides), each in its creature's own colour: a
     // small dot on the cell each steered creature will step into next turn…
     this._stepMarkerGeo = new THREE.SphereGeometry(STEP_MARKER_RADIUS_CM, 16, 12);
     this._stepMarkerMats = new Map(); // colour -> material
     this.stepMarkers = [];
     // …thin lines from its cell's centre to each cell it could step into…
-    const lines = (opacity) => {
+    const lines = (opacity, depthTest = true) => {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(STEP_LINES_MAX * 6), 3).setUsage(THREE.DynamicDrawUsage));
       geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(STEP_LINES_MAX * 6), 3).setUsage(THREE.DynamicDrawUsage));
-      const l = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity, depthWrite: false }));
+      const l = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity, depthWrite: false, depthTest }));
       l.frustumCulled = false;
       l.renderOrder = 3;
       l.visible = false;
@@ -449,11 +479,17 @@ export class Engine {
     this.stepLines = lines(0.45);
     // …and, while it moves, a line from the cell it left to the one it's moving into
     this.moveLines = lines(0.8);
+    // aimed Eat / Excrete (hold Y / B): lines to each choice, drawn over the blocks (what's eaten
+    // is usually solid), and a dot on the chosen one (also over the blocks): see _padAim
+    this._aim = null; // { kind: 'eat' | 'excrete', button, stick } while its button is held
+    this.aimLines = lines(0.7, false);
+    this.aimLines.renderOrder = 4;
+    this.aimDots = [];
     // Accessibility → View Internal: the selected / controlled creatures' inventories, inside them
     this.inventoryView = new InventoryView(this.world, root);
     // a new grid mode (World.setGridMode): every wireframe takes the new block shape
     onGridChange(() => {
-      for (const hl of [this.placeHL, this.deleteHL, this.targetHL, ...this.selectHLs, ...this.hoverHLs, ...this._pulses.map((p) => p.obj)]) buildWireframe(hl);
+      for (const hl of [this.placeHL, this.deleteHL, ...this.selectHLs, ...this.hoverHLs]) buildWireframe(hl);
       // (after every other listener: the tool icons' own World must have its new shape first)
       queueMicrotask(() => this.setState({ gridMode: gridMode() }));
     });
@@ -703,6 +739,12 @@ export class Engine {
       e.preventDefault();
       this.toggleDebug();
       playTick();
+      return;
+    }
+    if (e.code === 'KeyG') {
+      // G: Direction Guides on / off
+      e.preventDefault();
+      this.toggleDirectionGuides();
       return;
     }
     if (e.key === 'ArrowRight') {
@@ -959,8 +1001,10 @@ export class Engine {
    * Sets the Select tool's selection. A newly selected creature waits (Wait behavior) for
    * SELECT_WAIT_TURNS turns, or until it is deselected, then goes back to what it was doing
    * (`heldBehavior`), unless its behavior changed meanwhile (sent somewhere → Walk, or Trapped).
+   * `targeting`: the Select tool goes on to pick where it walks (its 'target' phase; by default
+   * whenever something is selected).
    */
-  _setSelected(list) {
+  _setSelected(list, targeting = list.length > 0) {
     for (const c of this.selected) {
       c.isSelected = false;
       // deselected: no longer under orders, unless it is still on its way somewhere
@@ -990,7 +1034,17 @@ export class Engine {
         if (this._pov && !list.includes(this._pov.creature)) this._startCreatureView(list[0]); // the view follows
       } else this.setControlSchema('observer');
     }
-    const phase = list.length ? 'target' : 'select';
+    this._setTargeting(targeting && list.length > 0);
+  }
+
+  /**
+   * The Select tool's phase: 'target' (pick where the selection walks: the target dot and its
+   * dotted line) or 'select' (pick a creature; one that's selected stays selected). Switching
+   * between Observer and Creature controls goes back to 'select'.
+   */
+  _setTargeting(on) {
+    this._targeting = on;
+    const phase = on ? 'target' : 'select';
     if (this.state.selectPhase !== phase) this.setState({ selectPhase: phase });
   }
 
@@ -1179,6 +1233,7 @@ export class Engine {
     } else if (this.selected[0]) this._startCreatureView(this.selected[0]);
     this._setControlled(id === 'creature' ? this.selected : []);
     this.setState({ controlSchema: id });
+    this._setTargeting(false); // Select: back to picking a creature, not where it walks
     this.toast(id === 'creature' ? 'Creature controls: the left stick moves the selected creature' : 'Observer controls');
     playSfx(id === 'creature' ? 'controlCreature' : 'controlObserver', 0);
     return true;
@@ -1198,7 +1253,7 @@ export class Engine {
     if (!creature) return false;
     const creatureControls = this.state.controlSchema === 'creature';
     if (creatureControls && this._controlled?.includes(creature)) return this.setControlSchema('observer');
-    if (this.selected.length !== 1 || this.selected[0] !== creature) this._setSelected([creature]);
+    if (this.selected.length !== 1 || this.selected[0] !== creature) this._setSelected([creature], false); // (taking its view: Select picks creatures, not targets)
     if (creatureControls) {
       playSfx('controlCreature', 0); // (the view followed the selection)
       return true;
@@ -1317,12 +1372,17 @@ export class Engine {
     return best;
   }
 
-  /**
-   * Each cell `c` could step into (`t`) with the cosine (`cos`) between the stick's direction
-   * (`sx`, `sy`: right, down) and its step line as drawn on screen; null when `c` is behind the
-   * camera. A line seen end-on, or reaching behind the camera, is left out.
-   */
+  /** Each cell `c` could step into, with its cosine on screen: see _screenCosines. */
   _stepCosines(c, sx, sy) {
+    return this._screenCosines(c, steppableCells(this.world, c), sx, sy);
+  }
+
+  /**
+   * Each of `cells` (`t`) with the cosine (`cos`) between the stick's direction (`sx`, `sy`:
+   * right, down) and the line from cell `c` to it as drawn on screen; null when `c` is behind
+   * the camera. A line seen end-on, or reaching behind the camera, is left out.
+   */
+  _screenCosines(c, cells, sx, sy) {
     const s = GRID.scale;
     const toScreen = (x, y, z) => {
       const p = this.worldRoot.localToWorld(new THREE.Vector3(x * s, y * s, z * s)).project(this.camera);
@@ -1332,7 +1392,7 @@ export class Engine {
     if (!from) return null;
     const stick = Math.hypot(sx, sy);
     const out = [];
-    for (const t of steppableCells(this.world, c)) {
+    for (const t of cells) {
       const to = toScreen(t.x, t.y, t.z);
       if (!to) continue;
       const vx = (to.x - from.x) * this.camera.aspect, vy = to.y - from.y; // NDC y is up
@@ -1351,30 +1411,13 @@ export class Engine {
    * along each (its cosine with the line on screen; with the step in 3D if the creature is
    * behind the camera): all the way when it points right along it, not at all at 90° or more.
    * While it moves, a line runs from the cell it left to the one it's moving into. All in its
-   * own colour; only with Accessibility → Movement Guides on.
+   * own colour; only with Accessibility → Direction Guides on.
    */
   _updateStepMarkers() {
-    const on = this.state.controlSchema === 'creature' && this.state.screen === 'playing' && this.state.movementGuides;
+    const on = this.state.controlSchema === 'creature' && this.state.screen === 'playing' && this.state.directionGuides && !this._aim; // (aiming: its own guides)
     const controlled = on ? (this._controlled ?? []).filter((c) => this.world.get(c.x, c.y, c.z) === c) : [];
     const markers = controlled.map((c) => ({ c, cell: nextSteppedCell(this.world, c) })).filter((m) => m.cell);
-    const s = GRID.scale;
-    const color = new THREE.Color();
-    // fills `lines` with segments ([creature, from, to], lattice units), each in its creature's colour
-    const draw = (lines, segments) => {
-      const pos = lines.geometry.getAttribute('position'), col = lines.geometry.getAttribute('color');
-      const n = Math.min(segments.length, STEP_LINES_MAX);
-      for (let i = 0; i < n; i++) {
-        const [c, a, b] = segments[i];
-        color.set(BLOCK_COLORS[c.type]);
-        pos.setXYZ(i * 2, a.x * s, a.y * s, a.z * s);
-        pos.setXYZ(i * 2 + 1, b.x * s, b.y * s, b.z * s);
-        col.setXYZ(i * 2, color.r, color.g, color.b);
-        col.setXYZ(i * 2 + 1, color.r, color.g, color.b);
-      }
-      pos.needsUpdate = col.needsUpdate = n > 0;
-      lines.geometry.setDrawRange(0, n * 2);
-      lines.visible = n > 0;
-    };
+    const draw = (lines, segments) => this._drawGuideLines(lines, segments);
     const stick = this._steerStick;
     const steps = [];
     for (const c of controlled) {
@@ -1393,21 +1436,127 @@ export class Engine {
       const slide = this.world.slideOf(c);
       return slide && [c, slide.from, slide.to];
     }).filter(Boolean));
-    while (this.stepMarkers.length < markers.length) {
-      const m = new THREE.Mesh(this._stepMarkerGeo);
-      m.renderOrder = 3; // after the see-through passes
-      this.worldRoot.add(m);
-      this.stepMarkers.push(m);
+    this._placeGuideDots(this.stepMarkers, markers);
+  }
+
+  /** Fills guide `lines` with `segments` ([creature, from, to]: lattice units), each in its creature's colour. */
+  _drawGuideLines(lines, segments) {
+    const s = GRID.scale, color = new THREE.Color();
+    const pos = lines.geometry.getAttribute('position'), col = lines.geometry.getAttribute('color');
+    const n = Math.min(segments.length, STEP_LINES_MAX);
+    for (let i = 0; i < n; i++) {
+      const [c, a, b] = segments[i];
+      color.set(BLOCK_COLORS[c.type]);
+      pos.setXYZ(i * 2, a.x * s, a.y * s, a.z * s);
+      pos.setXYZ(i * 2 + 1, b.x * s, b.y * s, b.z * s);
+      col.setXYZ(i * 2, color.r, color.g, color.b);
+      col.setXYZ(i * 2 + 1, color.r, color.g, color.b);
     }
-    this.stepMarkers.forEach((m, i) => {
-      m.visible = i < markers.length;
+    pos.needsUpdate = col.needsUpdate = n > 0;
+    lines.geometry.setDrawRange(0, n * 2);
+    lines.visible = n > 0;
+  }
+
+  /**
+   * Puts a guide dot (from pool `dots`, grown as needed) on each of `marks` ({ c: creature, cell }),
+   * in its creature's colour; the rest hide. `overlay`: drawn over everything (never hidden by blocks).
+   */
+  _placeGuideDots(dots, marks, { overlay = false } = {}) {
+    while (dots.length < marks.length) {
+      const m = new THREE.Mesh(this._stepMarkerGeo);
+      m.renderOrder = overlay ? 4 : 3; // after the see-through passes
+      this.worldRoot.add(m);
+      dots.push(m);
+    }
+    dots.forEach((m, i) => {
+      m.visible = i < marks.length;
       if (!m.visible) return;
-      const { c, cell } = markers[i];
-      const hex = BLOCK_COLORS[c.type];
-      if (!this._stepMarkerMats.has(hex)) this._stepMarkerMats.set(hex, new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.75, depthWrite: false }));
-      m.material = this._stepMarkerMats.get(hex);
-      m.position.set(cell.x, cell.y, cell.z).multiplyScalar(s);
+      const { c, cell } = marks[i];
+      const hex = BLOCK_COLORS[c.type], key = overlay ? `${hex}:over` : hex;
+      if (!this._stepMarkerMats.has(key)) this._stepMarkerMats.set(key, new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: overlay ? 0.9 : 0.75, depthWrite: false, depthTest: !overlay }));
+      m.material = this._stepMarkerMats.get(key);
+      m.position.set(cell.x, cell.y, cell.z).multiplyScalar(GRID.scale);
     });
+  }
+
+  // ---------------------------------------------------------------- aimed Eat / Excrete
+  // Gamepad: hold Y (Eat) or B (Excrete) and the left stick chooses which way, like steering:
+  // the block next to the creature to eat, or the empty cell next to its tail to excrete into,
+  // whose line on screen is nearest the stick's direction. It happens on letting go of the
+  // button; let go without pushing the stick, and it's the usual Eat / Excrete. Meanwhile guide
+  // lines run to each choice (drawn over the blocks: what's eaten is usually solid; the stick
+  // shortens them toward its way), and the chosen block or cell gets a dot (over the blocks too),
+  // in the creature's colour.
+
+  /**
+   * Each selected creature's choices for aim `kind` ('eat' | 'excrete'): from where (`from`: the
+   * creature, or its tail), to which cells (`steps`: { t, cos }, cos 1 with the stick at rest),
+   * and the one the stick picks (`best`; null at rest, or with nothing that way).
+   */
+  _aimChoices(kind, stick) {
+    const out = [];
+    for (const c of this.selected) {
+      if (this.world.get(c.x, c.y, c.z) !== c) continue;
+      const from = kind === 'eat' ? c : this.world.clusterOf(c).at(-1);
+      const cells = kind === 'eat' ? edibleNeighbors(this.world, c) : excretableCells(this.world, c);
+      const steps = stick ? this._screenCosines(from, cells, ...stick) ?? [] : cells.map((t) => ({ t, cos: 1 }));
+      let best = null, bestCos = 0;
+      if (stick) for (const { t, cos } of steps) if (cos > bestCos) [best, bestCos] = [t, cos];
+      out.push({ c, from, steps, best });
+    }
+    return out;
+  }
+
+  /**
+   * Holding Y / B (gamepad buttons 3 / 1): starts, follows (the left stick) and, on letting go,
+   * carries out an aimed Eat / Excrete. Returns whether one is being aimed (the left stick is
+   * taken: no steering meanwhile).
+   */
+  _padAim(pressed, prev, ax) {
+    const s = this.state;
+    const ok = s.screen === 'playing' && !this.isMenuOpen(s);
+    if (!this._aim && ok) {
+      for (const [button, kind] of [[3, 'eat'], [1, 'excrete']]) {
+        if (pressed[button] && !prev[button]) {
+          this._aim = { kind, button, stick: null };
+          break;
+        }
+      }
+    }
+    const a = this._aim;
+    if (!a) return false;
+    if (!ok) return void (this._aim = null);
+    if (pressed[a.button]) {
+      const sx = ax(0), sy = ax(1);
+      if (sx || sy) a.stick = [sx, sy]; // (the last way it was pushed counts)
+      return true;
+    }
+    this._aim = null; // let go: do it
+    if (!a.stick) return void (a.kind === 'eat' ? this.selectedEat() : this.selectedExcrete());
+    if (!this.selected.length || !this.toolsReady()) return void playSfx('ineffective', 0);
+    let did = false;
+    for (const { c, best } of this._aimChoices(a.kind, a.stick)) {
+      if (!best) continue;
+      if (a.kind === 'eat' ? creatureEat(this.world, c, best) : this.world.excrete(this.world.clusterOf(c), 'excrete', { cell: best })) did = true;
+    }
+    if (did) this._syncCount();
+    else playSfx('ineffective', 0);
+    return false;
+  }
+
+  /** Per frame: the aimed Eat / Excrete's guide lines, and a dot on the chosen block / cell (both over the blocks); only with Direction Guides on. */
+  _updateAimGuides() {
+    const a = this.state.screen === 'playing' && this.state.directionGuides ? this._aim : null;
+    const choices = a ? this._aimChoices(a.kind, a.stick) : [];
+    const segments = [];
+    for (const { c, from, steps } of choices) {
+      for (const { t, cos } of steps) {
+        if (cos > 0) segments.push([c, from, { x: from.x + (t.x - from.x) * cos, y: from.y + (t.y - from.y) * cos, z: from.z + (t.z - from.z) * cos }]);
+      }
+    }
+    this._drawGuideLines(this.aimLines, segments);
+    const chosen = choices.filter((x) => x.best);
+    this._placeGuideDots(this.aimDots, chosen.map(({ c, best }) => ({ c, cell: best })), { overlay: true });
   }
 
   /**
@@ -1481,12 +1630,18 @@ export class Engine {
     // in 'target' it swaps the selection)
     const creature = this._creatureOf(t?.block);
     if (creature) {
-      if (this.selected.length === 1 && this.selected[0] === creature) return false;
+      if (this.selected.length === 1 && this.selected[0] === creature) {
+        // already selected ('select' phase after a switch of controls): on to picking its target
+        if (this._targeting) return false;
+        this._setTargeting(true);
+        playTick();
+        return true;
+      }
       this._setSelected([creature]);
       playWait(this._soundAt(creature)); // selecting puts it in Wait
       return true;
     }
-    if (!this.selected.length) return false;
+    if (!this.selected.length || !this._targeting) return false; // ('select' phase: only creatures)
     if (!this._isSelectTarget(t)) {
       // clicked something that is neither a creature nor a valid target (or empty space):
       // drop the selection and go back to the Select phase
@@ -1509,17 +1664,38 @@ export class Engine {
     return true;
   }
 
-  /** Starts a copy of the target wireframe that shrinks to nothing over one step animation. */
+  /** Starts a copy of the target dot that spreads out and fades away over one step animation (it follows the target dot: _showHighlight). */
   _pulseTarget() {
+    this._pulseDot(this.targetHL, SELECT_GREEN, { followsTarget: true });
+  }
+
+  /** Once a turn: each Direction Guides dot (a step's, an aimed Eat / Excrete's) pulses like the target dot. */
+  _pulseGuideDots() {
+    for (const dot of this.stepMarkers) if (dot.visible) this._pulseDot(dot, dot.material.color);
+    for (const dot of this.aimDots) if (dot.visible) this._pulseDot(dot, dot.material.color, { overlay: true });
+  }
+
+  /**
+   * Starts a pulse on dot `dot` (a sphere mesh): a copy of it in `color` that spreads out and fades
+   * away over one step animation (_updateSelectionVisuals). `overlay`: drawn over the blocks, like
+   * the aim dots. `followsTarget`: it moves with the Select target dot.
+   */
+  _pulseDot(dot, color, { overlay = false, followsTarget = false } = {}) {
     let p = this._pulses.find((q) => !q.obj.visible);
     if (!p) {
-      p = { obj: makeWireframe(SELECT_GREEN, SELECT_WIRE_RADIUS), t0: 0 };
+      const obj = new THREE.Mesh(dot.geometry, new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, depthWrite: false }));
+      p = { obj, t0: 0 };
       this.worldRoot.add(p.obj);
       this._pulses.push(p);
     }
-    p.obj.position.copy(this.targetHL.position);
+    p.obj.geometry = dot.geometry;
+    p.obj.material.color.set(color);
+    p.obj.material.depthTest = !overlay;
+    p.obj.renderOrder = overlay ? 4 : 3;
+    p.obj.position.copy(dot.position);
     p.obj.scale.setScalar(1);
     p.obj.visible = true;
+    p.followsTarget = followsTarget;
     p.t0 = this.world.time;
   }
 
@@ -1527,7 +1703,7 @@ export class Engine {
   _updateSelectionVisuals(now) {
     // a selected creature that was deleted, or changed type, drops out of the selection
     const alive = this.selected.filter((creature) => this.world.get(creature.x, creature.y, creature.z) === creature && this._creatureOf(creature));
-    if (alive.length !== this.selected.length) this._setSelected(alive);
+    if (alive.length !== this.selected.length) this._setSelected(alive, this._targeting);
     // wireframes around every block of each selected creature (a Squirmy's whole chain),
     // and lighter ones around a creature you are pointing at
     const place = (pool, blocks, colour, radius, scale) => {
@@ -1550,7 +1726,28 @@ export class Engine {
       if (!p.obj.visible) continue;
       const k = (now - p.t0) / (this.world.stepSeconds * 1000);
       if (k >= 1) p.obj.visible = false;
-      else p.obj.scale.setScalar(1 - k); // (it moves with the target wireframe: _showHighlight)
+      else {
+        p.obj.scale.setScalar(1 + 2 * k); // (it moves with the target dot: _showHighlight)
+        p.obj.material.opacity = 0.6 * (1 - k);
+      }
+    }
+  }
+
+  /** Per frame, once the target is placed (_updateTarget): the dotted line from each selected creature's head (as drawn, sliding) to the target dot. */
+  _updateTargetLine(now) {
+    const heads = this.targetHL.visible ? this.selected.slice(0, TARGET_LINES_MAX) : [];
+    const pos = this.targetLine.geometry.getAttribute('position');
+    const head = new THREE.Vector3();
+    heads.forEach((c, i) => {
+      this.world.renderedPosition(c, now, head);
+      pos.setXYZ(i * 2, head.x, head.y, head.z);
+      pos.setXYZ(i * 2 + 1, this.targetHL.position.x, this.targetHL.position.y, this.targetHL.position.z);
+    });
+    this.targetLine.visible = heads.length > 0;
+    if (heads.length) {
+      pos.needsUpdate = true;
+      this.targetLine.geometry.setDrawRange(0, heads.length * 2);
+      this.targetLine.computeLineDistances(); // (the dots run from each head)
     }
   }
 
@@ -1713,7 +1910,8 @@ export class Engine {
     if (this.state.rain) stepRain(this.world, turn); // …a raindrop appears far out now and then (Options → Rain)…
     stepNimbus(this.world, turn); // …and every 3rd turn each Nimbus may rain one Water below it
     this._syncCount(); // rain, Nimbus and growth add blocks: keep the HUD's count (and diameter) current
-    if (this.targetHL.visible) this._pulseTarget(); // Select tool: a turn tick on the pointed-at target
+    if (this.targetHL.visible) this._pulseTarget(); // Select tool: a turn tick on the pointed-at target…
+    this._pulseGuideDots(); // …and on the Direction Guides' dots
   }
 
   /**
@@ -1825,7 +2023,7 @@ export class Engine {
     }
     // File, Controls, Video and Accessibility open (or close) their sections, closing any other
     if (id === 'file' || id === 'controls' || id === 'video' || id === 'accessibility') return this.setState({ section: s.section === id ? null : id });
-    if (id === 'movementGuides') return this.setState({ movementGuides: !s.movementGuides });
+    if (id === 'directionGuides') return this.toggleDirectionGuides();
     if (id === 'viewInternal') return this.setState({ viewInternal: !s.viewInternal });
     if (id === 'observerCamera') return this.setState({ observerCameraInvert: !s.observerCameraInvert });
     if (id === 'controlCamera') return this.setState({ controlCameraInvert: !s.controlCameraInvert });
@@ -2704,11 +2902,11 @@ export class Engine {
       const creature = this._creatureOf(t.block);
       if (creature && !this.selected.includes(creature)) {
         this._hoverCreature = creature; // a creature you could select: drawn in _updateSelectionVisuals
-      } else if (this.selected.length && this._isSelectTarget(t)) {
+      } else if (this.selected.length && this._targeting && this._isSelectTarget(t)) {
         this.targetHL.position.set(...t.place).multiplyScalar(GRID.scale); // (lattice units -> cm)
         this.targetHL.visible = true;
         // its shrinking pulses move with it (same frame), staying centred in it
-        for (const p of this._pulses) if (p.obj.visible) p.obj.position.copy(this.targetHL.position);
+        for (const p of this._pulses) if (p.obj.visible && p.followsTarget) p.obj.position.copy(this.targetHL.position);
       }
     } else if (tool.block) {
       if (t.place && t.placeFree) {
@@ -2867,6 +3065,7 @@ export class Engine {
       return v < 0.05 ? 0 : v;
     };
     const zoom = trigger(6) - trigger(7);
+    const aiming = this._padAim(pressed, prev, ax); // holding Y / B: the left stick aims Eat / Excrete (acts on letting go)
     if (!pressed.some(Boolean) && ![0, 1, 2, 3].some((i) => ax(i)) && !zoom) {
       this._padStickArmed = true;
       return;
@@ -2879,15 +3078,15 @@ export class Engine {
     if (edge(9)) return this.toggleMenu(); // Start
     if (edge(11)) this.toggleControlSchema(); // R3: Observer ↔ Creature controls (and its view)
     const steering = this.state.controlSchema === 'creature'; // the left stick moves the creature, not the camera
-    if (steering && pressed[10]) this._steerAway(); // L3 held: straight away from the camera
-    else if (steering) this._steerControlled(ax(0), ax(1));
+    if (steering && !aiming && pressed[10]) this._steerAway(); // L3 held: straight away from the camera
+    else if (steering && !aiming) this._steerControlled(ax(0), ax(1));
     if (edge(0)) {
       // A: use the tool (at the crosshair; Observer controls only)
       this._updateTarget();
       this.useTool();
     }
-    if (edge(3)) this.selectedEat(); // Y: a selected creature eats what is in front of it
-    if (edge(1)) this.selectedExcrete(); // B: … or excretes what is in its tail's slot
+    // Y: a selected creature eats (what's in front of it), B: excretes (what's in its tail's slot):
+    // on letting go, the way the left stick chose meanwhile (_padAim)
     if (edge(2)) this.selectedToggleWait(); // X: selected creatures wait, or resume what they were doing
     if (edge(4)) this.cycleTool(-1); // LB
     if (edge(5)) this.cycleTool(1); // RB
@@ -3014,6 +3213,7 @@ export class Engine {
     this._animTotal += performance.now() - a0;
     this._updateSelectionVisuals(sceneNow);
     this._updateStepMarkers();
+    this._updateAimGuides();
     if (this.state.handheld) this.cardboard.update(); // the camera follows the phone
     const xr = this._immersive;
     if (!xr) {
@@ -3077,6 +3277,7 @@ export class Engine {
     }
     this._dt = dt;
     this._updateTarget();
+    this._updateTargetLine(sceneNow);
     this._updateListener();
     const r0 = performance.now();
     this._render(dt);
