@@ -23,8 +23,96 @@ class CanvasPanel {
     this.material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, toneMapped: false, side: THREE.DoubleSide });
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(widthM, heightM), this.material);
     this.mesh.renderOrder = 10;
+    this.pxPerM = pxW / widthM; // pixel density (at scale 1): resizing keeps it, so the contents keep their size
     this.box = null; // the visible panel (canvas px: { x, y, w, h }), set by draw; the rest of the canvas is clear
     this.button = null; // its toggle button (canvas px)
+    this.isOpen = false; // open (not just its button): only then is it resizable
+    this.limits = null; // the visible panel's size limits (m at scale 1: { minWidth, maxWidth, minHeight, maxHeight })
+    this.boxMarginPx = 0; // canvas px around the visible panel (both sides together)
+    this.corner = null; // where its resize handle is: 'br' (free: the top left stays put), 'tr' (docked: it stands on its bottom edge) or null (none)
+    this.handleHot = false; // its resize handle is pointed at or dragged
+  }
+
+  /** The plane's size (m, at scale 1). */
+  get width() {
+    return this.mesh.geometry.parameters.width;
+  }
+
+  get height() {
+    return this.mesh.geometry.parameters.height;
+  }
+
+  /**
+   * Makes the visible panel `widthM` × `heightM` (m at scale 1, within `limits`): a bigger or
+   * smaller canvas at the same pixel density, so the contents don't scale.
+   */
+  resizeBox(widthM, heightM) {
+    const L = this.limits;
+    if (!L) return;
+    const w = THREE.MathUtils.clamp(widthM, L.minWidth, L.maxWidth), h = THREE.MathUtils.clamp(heightM, L.minHeight, L.maxHeight);
+    this._setCanvasSize(Math.round(w * this.pxPerM) + this.boxMarginPx, Math.round(h * this.pxPerM) + this.boxMarginPx);
+  }
+
+  /** What to remember of its size ({ width, height }: canvas px), and putting it back (see resizeBox). */
+  get size() {
+    return { width: this.canvas.width, height: this.canvas.height };
+  }
+
+  set size({ width, height }) {
+    if (Number.isFinite(width) && Number.isFinite(height)) this.resizeBox((width - this.boxMarginPx) / this.pxPerM, (height - this.boxMarginPx) / this.pxPerM);
+  }
+
+  /** The canvas `pxW` × `pxH`, the plane to match, keeping its top-left corner where it is. */
+  _setCanvasSize(pxW, pxH) {
+    if (pxW === this.canvas.width && pxH === this.canvas.height) return;
+    const w = pxW / this.pxPerM, h = pxH / this.pxPerM;
+    // the plane is centred on the mesh's position
+    const shift = new THREE.Vector3((w - this.width) / 2, -(h - this.height) / 2, 0).multiplyScalar(this.mesh.scale.x).applyQuaternion(this.mesh.quaternion);
+    this.mesh.position.add(shift);
+    this.canvas.width = pxW;
+    this.canvas.height = pxH;
+    // a texture can't change size once uploaded: a new one for the new canvas
+    this.texture.dispose();
+    this.texture = new THREE.CanvasTexture(this.canvas);
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.anisotropy = 4;
+    this.material.map = this.texture;
+    this.mesh.geometry.dispose();
+    this.mesh.geometry = new THREE.PlaneGeometry(w, h);
+    this._last = ''; // redraw
+  }
+
+  /** The resize handle's square (canvas px across: the same size in metres on every panel). */
+  get _gripPx() {
+    return Math.round(RESIZE_GRIP_M * this.pxPerM);
+  }
+
+  /** Whether `uv` (a ray hit) is on the resize handle (open, with a `corner`). */
+  onResizeHandle(uv) {
+    const b = this.box, g = this._gripPx;
+    if (!this.isOpen || !this.corner || !this.limits || !b) return false;
+    const { px, py } = this._px(uv);
+    if (px < b.x + b.w - g || px > b.x + b.w) return false;
+    return this.corner === 'tr' ? py >= b.y && py <= b.y + g : py >= b.y + b.h - g && py <= b.y + b.h;
+  }
+
+  /** The resize handle: diagonal ridges in its corner of the visible panel. */
+  _drawResizeHandle(ctx) {
+    const b = this.box;
+    if (!this.isOpen || !this.corner || !this.limits || !b) return;
+    const k = this._gripPx / 64, inset = 14 * k;
+    const right = b.x + b.w - inset, cy = this.corner === 'tr' ? b.y + inset : b.y + b.h - inset, dir = this.corner === 'tr' ? 1 : -1;
+    ctx.save();
+    ctx.strokeStyle = this.handleHot ? '#9cc8ff' : 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = (this.handleHot ? 5 : 3) * k;
+    ctx.lineCap = 'round';
+    for (const d of [18, 32, 46]) {
+      ctx.beginPath();
+      ctx.moveTo(right - d * k, cy);
+      ctx.lineTo(right, cy + dir * d * k);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   /** `uv` (a ray hit) in canvas px. */
@@ -61,6 +149,7 @@ class CanvasPanel {
   }
 }
 
+const RESIZE_GRIP_M = 0.022; // a panel's resize handle: a square this wide in its corner
 const PX_TO_M = 0.17 / 1000; // the Right HUD's pixel density (the others match it docked: see Engine's XR_PANELS)
 
 const SLOT = 104, SLOT_GAP = 14;
@@ -84,7 +173,10 @@ function toggleButton(ctx, b, icon, hot) {
 // the Right HUD's layout (px): its header (the eye button, the title), the actions (Eat, Excrete:
 // up to two rows), the Tools dropdown, then (open) the tools' well beneath it, indented
 const RH_PAD = 24, RH_BTN = 60, RH_HEAD = RH_PAD + RH_BTN + 14, RH_ROW = 72, RH_GAP = 12, RH_INDENT = 40, RH_WELL_PAD = 18;
-const RH_TOOLS_W = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP;
+const RH_SLOTS_X = RH_PAD + RH_INDENT + RH_WELL_PAD; // the first tool slot's left
+const rhWidth = (perRow) => RH_SLOTS_X + perRow * SLOT + (perRow - 1) * SLOT_GAP + RH_WELL_PAD + RH_PAD;
+const rhHeight = (rows) => RH_HEAD + 3 * (RH_ROW + RH_GAP) + 2 * RH_WELL_PAD + rows * SLOT + (rows - 1) * SLOT_GAP + RH_PAD; // (two action rows, the dropdown, the well)
+const RH_MIN_PER_ROW = 3, RH_START_PER_ROW = 5; // tools to a row: at least, and at first (roughly square, like the windowed panel)
 const RH_FONT = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
 
 /**
@@ -94,19 +186,27 @@ const RH_FONT = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
  * and the blocks it could eat; Excrete: the button and the block that would come out; the
  * trigger on one does it), and, under Observer controls, a Tools dropdown showing the current
  * tool (a message instead, for a moment) that opens the tool selector beneath it, in a dark well.
- * The plane keeps its full size; what isn't drawn is clear.
+ * The plane keeps its full size; what isn't drawn is clear. Resizing changes its width (how many
+ * tools to a row); its height follows.
  */
 export class RightHudPanel extends CanvasPanel {
   constructor() {
-    const W = RH_INDENT + RH_TOOLS_W + 2 * (RH_PAD + RH_WELL_PAD);
-    const H = RH_HEAD + 3 * (RH_ROW + RH_GAP) + 2 * RH_WELL_PAD + SLOT + RH_PAD; // (two action rows, the dropdown, the well)
-    super(W, H, W * PX_TO_M);
+    const perRow = RH_START_PER_ROW;
+    super(rhWidth(perRow), rhHeight(Math.ceil(TOOLS.length / perRow)), rhWidth(perRow) * PX_TO_M);
     this.mesh.name = 'xr-hud-right';
     this.button = { x: RH_PAD, y: RH_PAD, w: RH_BTN, h: RH_BTN };
-    this.slotsX = RH_PAD + RH_INDENT + RH_WELL_PAD;
+    this.perRow = perRow;
+    this.limits = { minWidth: rhWidth(RH_MIN_PER_ROW) * PX_TO_M, maxWidth: rhWidth(TOOLS.length) * PX_TO_M, minHeight: 0, maxHeight: Infinity };
     this.rows = []; // the pressable rows drawn last ({ id: 'eat' | 'excrete' | 'tools', x, y, w, h })
     this.slotsY = null; // the tool slots' top, when they're drawn
     this._last = '';
+  }
+
+  /** Resized: the width sets how many tools fit in a row (`heightM` doesn't matter: the height follows). */
+  resizeBox(widthM) {
+    const w = THREE.MathUtils.clamp(widthM, this.limits.minWidth, this.limits.maxWidth) / PX_TO_M;
+    this.perRow = THREE.MathUtils.clamp(Math.floor((w - rhWidth(1)) / (SLOT + SLOT_GAP)) + 1, RH_MIN_PER_ROW, TOOLS.length);
+    this._setCanvasSize(rhWidth(this.perRow), rhHeight(Math.ceil(TOOLS.length / this.perRow)));
   }
 
   /**
@@ -118,9 +218,11 @@ export class RightHudPanel extends CanvasPanel {
    */
   draw(d) {
     const { open, title, actions = { eat: [], excrete: null }, glyphs, tools, toolsOpen, toolIndex, label, message, style = {}, hover = null } = d;
-    const sig = `${open}|${title}|${actions.eat.join(',')}|${actions.excrete}|${tools}|${toolsOpen}|${toolIndex}|${label}|${message || ''}|${style.materials}|${!!style.smooth}|${hover}|${gridMode()}`; // (icons show the grid's block shape)
+    const sig = `${open}|${title}|${actions.eat.join(',')}|${actions.excrete}|${tools}|${toolsOpen}|${toolIndex}|${label}|${message || ''}|${style.materials}|${!!style.smooth}|${hover}|${gridMode()}|${this.perRow}|${this.corner}|${this.handleHot}`; // (icons show the grid's block shape)
     if (sig === this._last) return;
     this._last = sig;
+    this.isOpen = open;
+    const wellRows = Math.ceil(TOOLS.length / this.perRow), wellH = 2 * RH_WELL_PAD + wellRows * SLOT + (wellRows - 1) * SLOT_GAP;
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
@@ -138,7 +240,7 @@ export class RightHudPanel extends CanvasPanel {
     const excreteRow = open && actions.excrete ? rowAt('excrete') : null;
     const toolsRow = open && tools ? rowAt('tools') : null;
     const wellY = y;
-    if (open && tools && toolsOpen) y += 2 * RH_WELL_PAD + SLOT + RH_GAP;
+    if (open && tools && toolsOpen) y += wellH + RH_GAP;
     // the panel: just the button when hidden, else down to its last row (or the well)
     const panelW = open ? W : RH_BTN + 2 * RH_PAD;
     const panelH = !open ? RH_BTN + 2 * RH_PAD : this.rows.length ? y - RH_GAP + RH_PAD : RH_HEAD + RH_PAD - 14;
@@ -163,6 +265,7 @@ export class RightHudPanel extends CanvasPanel {
     };
     toggleButton(ctx, b, 'eye', hover === 'toggle');
     if (!open) return void (this.texture.needsUpdate = true);
+    this._drawResizeHandle(ctx);
     ctx.fillStyle = '#e8ecf2';
     ctx.font = '650 38px system-ui, -apple-system, Segoe UI, sans-serif';
     ctx.textAlign = 'left';
@@ -212,7 +315,7 @@ export class RightHudPanel extends CanvasPanel {
     }
     if (toolsRow && toolsOpen) {
       // the selector's well (like Debug's readouts), indented under the dropdown
-      const wx = RH_PAD + RH_INDENT, wy = wellY, ww = W - RH_PAD - wx, wh = 2 * RH_WELL_PAD + SLOT;
+      const wx = RH_PAD + RH_INDENT, wy = wellY, ww = W - RH_PAD - wx, wh = wellH;
       this.slotsY = wy + RH_WELL_PAD;
       roundRect(ctx, wx, wy, ww, wh, 16);
       ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
@@ -221,7 +324,7 @@ export class RightHudPanel extends CanvasPanel {
       ctx.lineWidth = 2;
       ctx.stroke();
       TOOLS.forEach((t, i) => {
-        const x = this.slotsX + i * (SLOT + SLOT_GAP), y = this.slotsY;
+        const x = RH_SLOTS_X + (i % this.perRow) * (SLOT + SLOT_GAP), y = this.slotsY + Math.floor(i / this.perRow) * (SLOT + SLOT_GAP);
         roundRect(ctx, x, y, SLOT, SLOT, 16);
         ctx.fillStyle = i === hover ? 'rgba(90, 160, 255, 0.55)' : i === toolIndex ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
         ctx.fill();
@@ -244,9 +347,10 @@ export class RightHudPanel extends CanvasPanel {
     if (this.onToggle(uv)) return 'toggle';
     const row = this.rows.find((r) => inside(r));
     if (row) return row.id;
-    if (this.slotsY == null || py < this.slotsY - 6 || py > this.slotsY + SLOT + 6) return null;
-    const i = Math.floor((px - this.slotsX + SLOT_GAP / 2) / (SLOT + SLOT_GAP));
-    return i >= 0 && i < TOOLS.length ? i : null;
+    if (this.slotsY == null || py < this.slotsY - SLOT_GAP / 2) return null;
+    const col = Math.floor((px - RH_SLOTS_X + SLOT_GAP / 2) / (SLOT + SLOT_GAP)), line = Math.floor((py - this.slotsY + SLOT_GAP / 2) / (SLOT + SLOT_GAP));
+    const i = line * this.perRow + col;
+    return col >= 0 && col < this.perRow && i >= 0 && i < TOOLS.length ? i : null;
   }
 }
 
@@ -275,11 +379,13 @@ const BUTTON_H = 70, BUTTON_GAP = 12, TABLE_HEAD = 44, TABLE_ROW = 66;
 const tableHeight = (table) => TABLE_HEAD + tableRows(table).length * TABLE_ROW + BUTTON_GAP;
 
 const MENU_PAD = 26, MENU_BTN = 64; // the gear button: inset from the panel's corner, and its size
+const MENU_LIMITS = { minWidth: 0.22, maxWidth: 0.6, minHeight: 0.15, maxHeight: 0.85 }; // the visible panel (m, at scale 1)
 
 /**
  * Options for XR, like the windowed Options panel: the gear button (top left) that opens it
  * (pausing) or closes it, the menu's title beside it, then the menu. Closed, only the button
- * shows. Docked on the left controller at first (see Engine's XR panels).
+ * shows. Docked on the left controller at first (see Engine's XR panels). Resizing sets its
+ * width and how tall it may get; a menu taller than that scrolls (scrollBy).
  */
 export class MenuPanel extends CanvasPanel {
   constructor() {
@@ -288,24 +394,37 @@ export class MenuPanel extends CanvasPanel {
     this.material.depthTest = false;
     this.mesh.renderOrder = 20;
     this.button = { x: 6 + MENU_PAD, y: 6 + MENU_PAD, w: MENU_BTN, h: MENU_BTN };
+    this.limits = MENU_LIMITS;
+    this.boxMarginPx = 12;
+    this.scroll = 0; // px the menu is scrolled down
+    this.view = null; // where the menu shows (canvas px: { y0, y1 }); out of it is hidden
     this.rects = [];
     this._last = '';
   }
 
+  /** Scrolls the menu `px` down (up when negative), as far as it goes. */
+  scrollBy(px) {
+    this.scroll = THREE.MathUtils.clamp(this.scroll + px, 0, this.maxScroll ?? 0);
+  }
+
   /** `model`: the menu (menuModel) when open, else null; `hoverId`: the item pointed at, or 'toggle'. */
   draw(model, hoverId) {
-    const sig = JSON.stringify([model, hoverId]);
+    const sig = JSON.stringify([model, hoverId, Math.round(this.scroll), this.canvas.width, this.canvas.height, this.corner, this.handleHot]);
     if (sig === this._last) return;
     this._last = sig;
+    this.isOpen = !!model;
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-    // Panel is sized to its content (the rest of the canvas stays transparent); closed, just the button.
+    // Panel is sized to its content, as tall as it may be (the rest of the canvas stays
+    // transparent); closed, just the button.
     const bx = 70, bw = W - 140, top = this.button.y + MENU_BTN + 30;
     const closed = 2 * MENU_PAD + MENU_BTN;
-    this.box = model
-      ? { x: 6, y: 6, w: W - 12, h: Math.min(H - 12, top + this._itemsHeight(ctx, model.items, bw) + 34) }
-      : { x: 6, y: 6, w: closed, h: closed };
+    const itemsH = model ? this._itemsHeight(ctx, model.items, bw) : 0;
+    this.box = model ? { x: 6, y: 6, w: W - 12, h: Math.min(H - 12, top + itemsH + 34) } : { x: 6, y: 6, w: closed, h: closed };
+    this.view = { y0: top - 6, y1: this.box.y + this.box.h - 20 };
+    this.maxScroll = Math.max(0, top + itemsH - this.view.y1);
+    this.scroll = THREE.MathUtils.clamp(this.scroll, 0, this.maxScroll);
     const { x, y, w, h } = this.box;
     roundRect(ctx, x, y, w, h, model ? 48 : 34);
     ctx.fillStyle = 'rgba(18, 22, 30, 0.62)';
@@ -321,8 +440,22 @@ export class MenuPanel extends CanvasPanel {
       ctx.fillStyle = '#ffffff';
       ctx.font = '700 48px system-ui, -apple-system, Segoe UI, sans-serif';
       const tx = this.button.x + MENU_BTN + 24;
-      ctx.fillText(fit(ctx, model.title, W - MENU_PAD - tx), tx, this.button.y + MENU_BTN / 2);
-      this._drawItems(ctx, model.items, bx, top, bw, hoverId);
+      ctx.fillText(fit(ctx, model.title, W - MENU_PAD - tx - this._gripPx), tx, this.button.y + MENU_BTN / 2);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, this.view.y0, W, this.view.y1 - this.view.y0);
+      ctx.clip();
+      this._drawItems(ctx, model.items, bx, top - this.scroll, bw, hoverId);
+      ctx.restore();
+      if (this.maxScroll > 0) {
+        // the scroll bar, at the right: how much shows, and where
+        const span = this.view.y1 - this.view.y0, thumb = Math.max(40, (span * span) / (span + this.maxScroll));
+        const ty = this.view.y0 + (span - thumb) * (this.scroll / this.maxScroll);
+        roundRect(ctx, W - 40, ty, 10, thumb, 5);
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.fill();
+      }
+      this._drawResizeHandle(ctx);
     }
     this.texture.needsUpdate = true;
   }
@@ -500,6 +633,7 @@ export class MenuPanel extends CanvasPanel {
   hitTest(uv) {
     const px = uv.x * this.canvas.width;
     const py = (1 - uv.y) * this.canvas.height;
+    if (!this.view || py < this.view.y0 || py > this.view.y1) return null; // (scrolled out of view)
     const r = this.rects.find((r) => px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
     return r ? r.id : null;
   }
@@ -552,7 +686,6 @@ function fit(ctx, text, maxW) {
 const TABLET_PX_PER_M = 1000 / 0.34;
 /** The debug tablet's size (m): at first, and the limits when resizing it (drag its corner handle). */
 export const TABLET_SIZE = { width: 0.34, height: 0.26, minWidth: 0.2, minHeight: 0.16, maxWidth: 0.8, maxHeight: 0.7 };
-const TABLET_GRIP_PX = 64; // the resize handle: this square in its corner (bottom right; docked, top right)
 const TABLET_PAD = 24, TABLET_BTN = 60; // the Debug button: inset from the corner, and its size
 const LOG_COLORS = { log: '#c9d1dc', info: '#9cc8ff', warn: '#ffd166', error: '#ff8a80' };
 
@@ -572,53 +705,15 @@ export class DebugTablet extends CanvasPanel {
     super(Math.round(TABLET_SIZE.width * TABLET_PX_PER_M), Math.round(TABLET_SIZE.height * TABLET_PX_PER_M), TABLET_SIZE.width);
     this.mesh.name = 'xr-debug-tablet';
     this.mesh.visible = false;
-    this.width = TABLET_SIZE.width;
-    this.height = TABLET_SIZE.height;
     this.button = { x: TABLET_PAD, y: TABLET_PAD, w: TABLET_BTN, h: TABLET_BTN };
-    this.corner = 'br'; // where the resize handle is: 'br' (free) or 'tr' (docked)
-    this.open = true;
+    this.limits = TABLET_SIZE;
     this._last = '';
-  }
-
-  /**
-   * Sets the tablet's size (m, clamped to TABLET_SIZE's limits), keeping its top-left corner
-   * where it is: a bigger canvas at the same pixel density, so the contents don't scale.
-   */
-  setSize(widthM, heightM) {
-    const w = Math.min(TABLET_SIZE.maxWidth, Math.max(TABLET_SIZE.minWidth, widthM));
-    const h = Math.min(TABLET_SIZE.maxHeight, Math.max(TABLET_SIZE.minHeight, heightM));
-    const pxW = Math.round(w * TABLET_PX_PER_M), pxH = Math.round(h * TABLET_PX_PER_M);
-    if (pxW === this.canvas.width && pxH === this.canvas.height) return;
-    // keep the top-left corner in place: the plane is centred on the mesh's position
-    const shift = new THREE.Vector3((w - this.width) / 2, -(h - this.height) / 2, 0).applyQuaternion(this.mesh.quaternion);
-    this.mesh.position.add(shift);
-    this.width = w;
-    this.height = h;
-    this.canvas.width = pxW;
-    this.canvas.height = pxH;
-    // a texture can't change size once uploaded: a new one for the new canvas
-    this.texture.dispose();
-    this.texture = new THREE.CanvasTexture(this.canvas);
-    this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.anisotropy = 4;
-    this.material.map = this.texture;
-    this.mesh.geometry.dispose();
-    this.mesh.geometry = new THREE.PlaneGeometry(w, h);
-    this._last = ''; // redraw
-  }
-
-  /** Whether `uv` (a ray hit on the tablet) is on its resize handle (open, in its corner: see `corner`). */
-  onResizeHandle(uv) {
-    if (!this.open) return false;
-    const { px, py } = this._px(uv);
-    const H = this.canvas.height;
-    return px >= this.canvas.width - TABLET_GRIP_PX && (this.corner === 'tr' ? py <= TABLET_GRIP_PX : py >= H - TABLET_GRIP_PX);
   }
 
   /** The id of the control under `uv` ('toggle': the Debug button; a section header, the prompt box or a button), else null. */
   hitTest(uv) {
     if (this.onToggle(uv)) return 'toggle';
-    if (!this.open) return null;
+    if (!this.isOpen) return null;
     const { px, py } = this._px(uv);
     const r = (this.hits ?? []).find((q) => px >= q.x && px <= q.x + q.w && py >= q.y && py <= q.y + q.h);
     return r ? r.id : null;
@@ -629,17 +724,17 @@ export class DebugTablet extends CanvasPanel {
    * (reply area, prompt box, microphone / clear / Send) and Logging, each under a header the
    * trigger collapses or expands (shared with the dock). Logging takes the leftover height.
    * d = { info: { title, rows }, perf: [[label, text]], logs, logVersion, highlight (grabbed or
-   * pointed at: brighter rim), handleHot (resize handle pointed at / dragged), claude: { prompt,
-   * listening, micSupported, speaking, speechSupported, response }, collapsed: { performance, … }, hover: id under the ray,
-   * open (closed: just the Debug button), corner (the resize handle's: 'br' or 'tr') }.
+   * pointed at: brighter rim), claude: { prompt, listening, micSupported, speaking,
+   * speechSupported, response }, collapsed: { performance, … }, hover: id under the ray, open
+   * (closed: just the Debug button) }.
    */
   draw(d) {
-    const { info, perf, logs, logVersion, highlight, handleHot = false, claude, collapsed, hover, open = true, corner = 'br' } = d;
-    const sig = JSON.stringify([info, perf, logVersion, highlight, handleHot, claude, collapsed, hover, open, corner]);
+    const { info, perf, logs, logVersion, highlight, claude, collapsed, hover, open = true } = d;
+    const sig = JSON.stringify([info, perf, logVersion, highlight, claude, collapsed, hover, open, this.corner, this.handleHot, this.canvas.width, this.canvas.height]);
     if (sig === this._last) return;
     this._last = sig;
-    this.open = open;
-    this.corner = corner;
+    this.isOpen = open;
+    const corner = this.corner;
     const { ctx } = this;
     const W = this.canvas.width, H = this.canvas.height;
     ctx.clearRect(0, 0, W, H);
@@ -667,7 +762,7 @@ export class DebugTablet extends CanvasPanel {
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
     ctx.font = sans(22);
-    const hintRight = W - PAD - (corner === 'tr' ? TABLET_GRIP_PX : 0);
+    const hintRight = W - PAD - (corner === 'tr' ? this._gripPx : 0);
     ctx.fillText(fit(ctx, 'grip: move · double-tap grip: dock', hintRight - titleX - 120), hintRight, headY);
     ctx.textAlign = 'left';
     this.hits = [];
@@ -811,7 +906,7 @@ export class DebugTablet extends CanvasPanel {
       ctx.font = mono(19);
       logs.slice(-fitLines).forEach((e, i) => {
         ctx.fillStyle = LOG_COLORS[e.level] ?? LOG_COLORS.log;
-        ctx.fillText(fit(ctx, `${e.t} ${e.text}`, W - 2 * PAD - 24 - TABLET_GRIP_PX * 0.5), PAD + 12, y + LINE / 2 + 4 + i * LINE);
+        ctx.fillText(fit(ctx, `${e.t} ${e.text}`, W - 2 * PAD - 24 - this._gripPx * 0.5), PAD + 12, y + LINE / 2 + 4 + i * LINE);
       });
       if (!logs.length) {
         ctx.fillStyle = 'rgba(255,255,255,0.45)';
@@ -819,17 +914,7 @@ export class DebugTablet extends CanvasPanel {
       }
     }
 
-    // the resize handle: diagonal ridges in its corner
-    ctx.strokeStyle = handleHot ? '#9cc8ff' : 'rgba(255,255,255,0.4)';
-    ctx.lineWidth = handleHot ? 5 : 3;
-    ctx.lineCap = 'round';
-    const cy = corner === 'tr' ? 14 : H - 14, dir = corner === 'tr' ? 1 : -1;
-    for (const d of [18, 32, 46]) {
-      ctx.beginPath();
-      ctx.moveTo(W - 14 - d, cy);
-      ctx.lineTo(W - 14, cy + dir * d);
-      ctx.stroke();
-    }
+    this._drawResizeHandle(ctx);
     this.texture.needsUpdate = true;
   }
 }

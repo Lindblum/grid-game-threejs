@@ -108,6 +108,7 @@ const PANEL_TOUCH_REACH = 0.03; // m: a grip this near a panel's face takes it
 const PANEL_GROW_RATE = 12; // per second: a panel in the hand eases to its free size
 const GRIP_TAP_S = 0.3; // a grip pressed no longer than this is a tap…
 const GRIP_DOUBLE_TAP_S = 0.35; // …and pressed again within this, a double tap
+const MENU_SCROLL_PX_S = 1400; // XR Options: canvas px a second it scrolls at the thumbstick's full tilt
 const PANEL_PULSE = { grab: [0.6, 50], detach: [0.4, 30], dock: [0.9, 80], zone: [0.25, 20] }; // haptics: [strength, ms]
 const _panelRay = new THREE.Raycaster();
 const _panelOffset = new THREE.Matrix4();
@@ -616,6 +617,10 @@ export class Engine {
     this.rayLine.scale.z = XR_RAY_LENGTH;
     this.rayDot = new THREE.Mesh(new THREE.SphereGeometry(0.003, 12, 8), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
     this.rayDot.visible = false;
+    // the left controller points at panels too (its trigger presses them): its ray shows only then
+    this.rayLineLeft = this.rayLine.clone();
+    this.rayLineLeft.visible = false;
+    this.rayDotLeft = this.rayDot.clone();
 
     this.rightHud = new RightHudPanel();
     this.menuPanel = new MenuPanel();
@@ -636,15 +641,18 @@ export class Engine {
     }
     this._panelGrabs = { left: null, right: null }; // a panel held in that hand's grip (see _takePanel)
     this._gripTaps = { left: null, right: null }; // each grip's last press and tap, for double taps
-    this._tabletResizing = false; // the right trigger is dragging the tablet's resize handle
-    this._tabletHandleHover = false; // the right controller ray is on the tablet's resize handle
-    try {
-      // the tablet's size (drag its corner) is remembered in this browser
-      const size = JSON.parse(localStorage.getItem('xrTabletSize'));
-      if (size && Number.isFinite(size.width) && Number.isFinite(size.height)) this.debugTablet.setSize(size.width, size.height);
-    } catch {}
+    this._resizing = null; // the panel (key) whose resize handle a trigger is dragging
+    this._resizeHover = null; // the panel whose resize handle the pointer is on
+    this._uiHand = null; // whose pointer is on a panel: 'right', 'left' or 'gaze' (see _updateTarget)
+    this._uiPress = null; // the hand holding its trigger on a panel (dragging a slider or a resize handle)
+    for (const [key, { panel }] of Object.entries(this._panels)) {
+      try {
+        // each panel's size (drag its corner) is remembered in this browser
+        const size = JSON.parse(localStorage.getItem(`xrPanelSize.${key}`));
+        if (size) panel.size = size;
+      } catch {}
+    }
     this._tabletHover = false;
-    this._tabletHandleHover = false; // right controller ray is on the tablet
 
     // hands-free XR (no controllers): the gaze points, a 1 s stare clicks (gaze.js); the HUDs
     // float ahead in this group instead of riding on the controllers
@@ -681,11 +689,15 @@ export class Engine {
         if (hand === 'right') {
           ctrl.add(this.rayLine);
           this.scene.add(this.rayDot);
+        } else {
+          ctrl.add(this.rayLineLeft);
+          this.scene.add(this.rayDotLeft);
         }
       });
       ctrl.addEventListener('disconnected', () => {
         for (const h of ['left', 'right']) if (this.hands[h] === slot) this.hands[h] = null;
         if (this.rayLine.parent === ctrl) ctrl.remove(this.rayLine);
+        if (this.rayLineLeft.parent === ctrl) ctrl.remove(this.rayLineLeft);
         // its panels go to the other controller (or the gaze dock) next frame; one it held stays where it is
         for (const h of ['left', 'right']) if (this._panelGrabs[h]?.slot === slot) this._panelGrabs[h] = null;
         for (const e of Object.values(this._panels)) if (e.panel.mesh.parent === ctrl) this.scene.attach(e.panel.mesh);
@@ -695,12 +707,15 @@ export class Engine {
       });
       ctrl.addEventListener('selectstart', () => {
         if (this.hands.right === slot) this._onRightTrigger();
+        else if (this.hands.left === slot) this._onLeftTrigger();
         else if (!slot.source && this._gazeMode()) this._onGazeTap();
       });
       ctrl.addEventListener('selectend', () => {
-        if (this.hands.right === slot) {
+        const hand = this._handOf(slot);
+        if (hand && this._uiPress === hand) {
+          this._uiPress = null;
           this._sliderDrag = null;
-          this._endTabletResize();
+          this._endResize();
         }
       });
       // Grips: one hand drags the build, both hands rotate + scale it (Tilt Brush style).
@@ -2543,6 +2558,8 @@ export class Engine {
     this.phoneStereo.disable();
     this._xrMode = null;
     this._panelGrabs = { left: null, right: null };
+    this._endResize();
+    this._uiPress = null;
     for (const e of Object.values(this._panels)) {
       e.panel.mesh.visible = false;
       this.scene.add(e.panel.mesh);
@@ -2630,28 +2647,32 @@ export class Engine {
   }
 
   /**
-   * While the trigger drags the tablet's resize handle: that corner follows where the right
-   * controller's ray meets the tablet's plane. Free, it's the bottom-right corner (the top left
-   * stays put); docked, the top right (it stands on its bottom edge, its left edge in place).
+   * While a trigger drags a panel's resize handle: that corner follows where the controller's ray
+   * meets the panel's plane. Free, it's the bottom-right corner (the top left stays put); docked,
+   * the top right (it stands on its bottom edge, its left edge in place).
    */
-  _updateTabletResize() {
-    if (!this._tabletResizing || !this._setRayFromController()) return;
-    const tablet = this.debugTablet, m = tablet.mesh;
+  _updateResize() {
+    const key = this._resizing;
+    if (!key) return;
+    const { panel } = this._panels[key], m = panel.mesh;
+    if (!m.visible || !panel.isOpen || !this._setRayFromController(this._uiPress ?? 'right')) return this._endResize();
     m.updateMatrixWorld();
     const normal = new THREE.Vector3(0, 0, 1).transformDirection(m.matrixWorld);
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, m.getWorldPosition(new THREE.Vector3()));
     const hit = this.raycaster.ray.intersectPlane(plane, new THREE.Vector3());
     if (!hit) return;
-    const local = m.worldToLocal(hit); // metres, centred on the tablet
-    tablet.setSize(local.x + tablet.width / 2, tablet.corner === 'tr' ? local.y + tablet.height / 2 : tablet.height / 2 - local.y);
+    const local = m.worldToLocal(hit); // metres, centred on the plane (at scale 1)
+    const b = panel.boxMetres();
+    panel.resizeBox(local.x - b.left, panel.corner === 'tr' ? local.y - b.bottom : b.top - local.y);
   }
 
-  /** The resize drag is over: remember the tablet's size. */
-  _endTabletResize() {
-    if (!this._tabletResizing) return;
-    this._tabletResizing = false;
+  /** The resize drag is over: remember the panel's size. */
+  _endResize() {
+    const key = this._resizing;
+    if (!key) return;
+    this._resizing = null;
     try {
-      localStorage.setItem('xrTabletSize', JSON.stringify({ width: this.debugTablet.width, height: this.debugTablet.height }));
+      localStorage.setItem(`xrPanelSize.${key}`, JSON.stringify(this._panels[key].panel.size));
     } catch {}
   }
 
@@ -2673,7 +2694,12 @@ export class Engine {
     const rows = { left: [], right: [], gaze: [] };
     for (const key of XR_PANEL_ORDER) {
       const e = this._panels[key], m = e.panel.mesh;
-      if (this._panelGrabs.left?.key === key || this._panelGrabs.right?.key === key) continue;
+      // its resize handle: free, bottom right; docked (standing on its bottom edge), top right; none in the gaze dock
+      e.panel.corner = gaze ? null : e.dock ? 'tr' : 'br';
+      if (this._panelGrabs.left?.key === key || this._panelGrabs.right?.key === key) {
+        e.panel.corner = 'br';
+        continue;
+      }
       if (!e.dock) {
         e.on = null;
         if (m.parent !== this.scene) this.scene.attach(m);
@@ -3020,31 +3046,63 @@ export class Engine {
     }
   }
 
-  _onRightTrigger() {
-    if (this._hudHover === 'menu') return this.toggleMenu();
-    if (this._hudHover === 'debug') {
-      playTick();
-      return debugSections.toggle('panel');
+  /**
+   * A trigger (`hand`'s) on what its pointer is on in a panel: a resize handle (held: resizes),
+   * a toggle button, an action, the Tool dropdown or a tool, a debug tablet control, a menu
+   * item or slider (held: drags it). Returns whether it pressed something.
+   */
+  _pressUi(hand) {
+    if (this._resizeHover) {
+      this._resizing = this._resizeHover;
+      this._uiPress = hand;
+      return true;
     }
-    if (this._hudHover === 'rightHud') return this.toggleRightHud();
-    if (this._hudHover === 'tools') return this.toggleToolsOpen();
-    if (this._hudHover === 'eat') return this.selectedEat();
-    if (this._hudHover === 'excrete') return this.selectedExcrete();
-    if (this._toolHover != null) return this.selectTool(this._toolHover); // hands-free XR: a tool slot
+    const hud = {
+      menu: () => this.toggleMenu(),
+      debug: () => {
+        playTick();
+        debugSections.toggle('panel');
+      },
+      rightHud: () => this.toggleRightHud(),
+      tools: () => this.toggleToolsOpen(),
+      eat: () => this.selectedEat(),
+      excrete: () => this.selectedExcrete(),
+    }[this._hudHover];
+    if (hud) {
+      hud();
+      return true;
+    }
+    if (this._toolHover != null) {
+      this.selectTool(this._toolHover);
+      return true;
+    }
     if (this._tabletHover) {
-      // pointing at the debug tablet: the trigger on its corner handle resizes it (held), else
-      // presses what it points at (a section header, the prompt box, a button)
-      if (this._tabletHandleHover) this._tabletResizing = true;
-      else if (this._tabletHoverId) this._tabletAction(this._tabletHoverId);
-      return;
+      // pointing at the debug tablet: presses what it points at (a section header, the prompt box, a button)
+      if (this._tabletHoverId) this._tabletAction(this._tabletHoverId);
+      return true;
     }
-    if (this.isMenuOpen()) {
-      const slider = this._menuHover && this.menuPanel.sliderValueAt(this._menuHoverUV, this._menuHover);
+    if (this.isMenuOpen() && this._menuHover) {
+      const slider = this.menuPanel.sliderValueAt(this._menuHoverUV, this._menuHover);
       if (slider != null) {
         this._sliderDrag = this._menuHover; // hold the trigger to drag
+        this._uiPress = hand;
         this._setSlider(this._menuHover, slider);
-      } else if (this._menuHover) this.menuAction(this._menuHover);
-      else if (!this._menuPanelHover) this.resume(); // clicked outside the pause panel
+      } else this.menuAction(this._menuHover);
+      return true;
+    }
+    return false;
+  }
+
+  /** The left trigger: presses what the left controller points at in a panel (it doesn't use tools). */
+  _onLeftTrigger() {
+    if (this._uiHand === 'left') this._pressUi('left');
+  }
+
+  _onRightTrigger() {
+    const mine = this._uiHand !== 'left'; // (the pointer on a panel is the right's, or the gaze's)
+    if (mine && this._pressUi('right')) return;
+    if (this.isMenuOpen()) {
+      if (!(mine && this._menuPanelHover)) this.resume(); // clicked outside the pause panel
       return;
     }
     if (this.state.screen === 'playing') {
@@ -3066,7 +3124,7 @@ export class Engine {
    * browser exposes the Touch controllers as gamepads). Re-arms once the stick recentres.
    */
   _touchStickTools(gp) {
-    if (this.state.screen !== 'playing' || this.state.paused) return;
+    if (this.state.screen !== 'playing') return; // (paused too: picking a tool is fine with Options open)
     const x = (gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0]) || 0; // xr-standard: thumbstick = axes 2/3
     if (this._stickArmed && Math.abs(x) > 0.65) {
       this._stickArmed = false;
@@ -3077,6 +3135,12 @@ export class Engine {
   }
 
   _pollGamepads() {
+    // pointing at Options (a menu taller than the panel): that hand's thumbstick up / down scrolls it
+    const sgp = this._menuPanelHover && this.hands[this._uiHand]?.source?.gamepad;
+    if (sgp) {
+      const y = (sgp.axes.length >= 4 ? sgp.axes[3] : sgp.axes[1]) || 0;
+      if (Math.abs(y) > 0.2) this.menuPanel.scrollBy(y * MENU_SCROLL_PX_S * (this._dt ?? 0));
+    }
     const rgp = this.hands.right?.source?.gamepad;
     if (rgp) {
       this._touchStickTools(rgp);
@@ -3111,8 +3175,8 @@ export class Engine {
   }
 
   // ---------------------------------------------------------------- per-frame
-  _setRayFromController() {
-    const ctrl = this.hands.right?.ctrl;
+  _setRayFromController(hand = 'right') {
+    const ctrl = this.hands[hand]?.ctrl;
     if (!ctrl) return false;
     ctrl.updateMatrixWorld();
     const origin = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld);
@@ -3135,6 +3199,65 @@ export class Engine {
     return new THREE.Vector2((u < 0.5 ? u * 2 : u * 2 - 1) * 2 - 1, this.mouse.y);
   }
 
+  /**
+   * What the raycaster's ray is on in the panels: sets the hover state (a resize handle, a
+   * toggle button, an action or tool, a debug tablet control, a menu item) and returns the hit,
+   * or null when it misses them (or only crosses their clear margins).
+   */
+  _pointAtPanels(gaze, menuOpen, menuShown) {
+    this.raycaster.far = 3;
+    const targets = [];
+    if (this.rightHud.mesh.visible) targets.push(this.rightHud.mesh);
+    if (menuShown) targets.push(this.menuPanel.mesh);
+    if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
+    for (const hit of this.raycaster.intersectObjects(targets, false)) {
+      const key = hit.object === this.menuPanel.mesh ? 'options' : hit.object === this.debugTablet.mesh ? 'debug' : 'right';
+      const { panel } = this._panels[key];
+      if (!panel.inBox(hit.uv)) continue;
+      if (!gaze && panel.onResizeHandle(hit.uv)) {
+        // the trigger, held, resizes it (the gaze can't hold)
+        this._resizeHover = key;
+        panel.handleHot = true;
+        return hit;
+      }
+      if (key === 'debug') {
+        this._tabletHover = true; // (the grip takes it)
+        this._tabletHoverId = this.debugTablet.hitTest(hit.uv);
+        if (this._tabletHoverId === 'toggle') {
+          this._tabletHoverId = null;
+          this._tabletHover = false;
+          this._hudHover = 'debug';
+        }
+        return hit;
+      }
+      if (key === 'right') {
+        const slot = this.rightHud.hitTest(hit.uv);
+        if (slot === 'toggle' || slot === 'tools' || slot === 'eat' || slot === 'excrete') this._hudHover = slot === 'toggle' ? 'rightHud' : slot;
+        else if (slot != null) this._toolHover = slot;
+        return hit;
+      }
+      if (this.menuPanel.onToggle(hit.uv)) {
+        this._hudHover = 'menu';
+        return hit;
+      }
+      if (menuOpen) {
+        // only the visible panel counts; its transparent margin is "outside"
+        this._menuHover = this.menuPanel.hitTest(hit.uv);
+        this._menuHoverUV = hit.uv;
+        // the gaze sets a slider only from its track (its label would mean the minimum)
+        if (gaze && this._menuHover && this.menuPanel.sliderValueAt(hit.uv, this._menuHover) != null &&
+          !this.menuPanel.onSliderTrack(hit.uv, this._menuHover)) this._menuHover = null;
+        // dragging a slider: follow the ray along its track while the trigger is held
+        if (this._sliderDrag && this._menuHover === this._sliderDrag) {
+          this._setSlider(this._sliderDrag, this.menuPanel.sliderValueAt(hit.uv, this._sliderDrag));
+        }
+        this._menuPanelHover = true;
+        return hit;
+      }
+    }
+    return null;
+  }
+
   _updateTarget() {
     this.placeHL.visible = false;
     this.deleteHL.visible = false;
@@ -3155,63 +3278,29 @@ export class Engine {
     this._tabletHover = false;
     this._tabletHoverId = null; // the tablet control under the ray (section header, prompt box, button)
     this._hudHover = null;
-    this._toolHover = null; // hands-free XR: the tool slot under the gaze
+    this._toolHover = null; // the tool slot under the pointer
+    for (const { panel } of Object.values(this._panels)) panel.handleHot = false;
     this._gazeHit = null; // hands-free XR: the control under the gaze ({ key, point, distance })
+    this._resizeHover = null;
     let uiHit = null;
+    this._uiHand = null;
+    this.rayDotLeft.visible = false;
+    this.rayLineLeft.visible = false;
 
-    if (xr && (gaze ? this._setRayFromHead() : this._setRayFromController())) {
-      // UI first: the panels (Options, Debug, the Right HUD; for the gaze, the tool slots too).
-      this.raycaster.far = 3;
-      const targets = [];
-      if (this.rightHud.mesh.visible) targets.push(this.rightHud.mesh);
-      if (menuShown) targets.push(this.menuPanel.mesh);
-      if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
-      for (const hit of this.raycaster.intersectObjects(targets, false)) {
-        if (hit.object === this.debugTablet.mesh) {
-          if (!this.debugTablet.inBox(hit.uv)) continue;
-          this._tabletHover = true; // the grip takes it; the trigger resizes it from its corner handle
-          this._tabletHandleHover = !gaze && this.debugTablet.onResizeHandle(hit.uv); // (resizing needs a held trigger)
-          this._tabletHoverId = this._tabletHandleHover ? null : this.debugTablet.hitTest(hit.uv);
-          if (this._tabletHoverId === 'toggle') {
-            this._tabletHoverId = null;
-            this._tabletHover = false;
-            this._hudHover = 'debug';
-          }
-          uiHit = hit;
-          break;
-        } else if (hit.object === this.menuPanel.mesh && this.menuPanel.onToggle(hit.uv)) {
-          this._hudHover = 'menu';
-          uiHit = hit;
-          break;
-        } else if (hit.object === this.rightHud.mesh) {
-          const slot = this.rightHud.hitTest(hit.uv);
-          if (slot === 'toggle' || slot === 'tools' || slot === 'eat' || slot === 'excrete') {
-            this._hudHover = slot === 'toggle' ? 'rightHud' : slot;
-            uiHit = hit;
-            break;
-          }
-          if (slot != null && gaze) {
-            this._toolHover = slot;
-            uiHit = hit;
-            break;
-          }
-        } else if (menuOpen && this.menuPanel.contains(hit.uv)) {
-          // only the visible panel counts; its transparent margin is "outside"
-          this._menuHover = this.menuPanel.hitTest(hit.uv);
-          this._menuHoverUV = hit.uv;
-          // the gaze sets a slider only from its track (its label would mean the minimum)
-          if (gaze && this._menuHover && this.menuPanel.sliderValueAt(hit.uv, this._menuHover) != null &&
-            !this.menuPanel.onSliderTrack(hit.uv, this._menuHover)) this._menuHover = null;
-          // dragging a slider: follow the ray along its track while the trigger is held
-          if (this._sliderDrag && this._menuHover === this._sliderDrag) {
-            this._setSlider(this._sliderDrag, this.menuPanel.sliderValueAt(hit.uv, this._sliderDrag));
-          }
-          this._menuPanelHover = true;
-          uiHit = hit;
-          break;
-        }
-      }
-      if (gaze && uiHit) {
+    // UI first: the panels (Options, Debug, the Right HUD), under the right controller's ray (or
+    // the gaze); else under the left's (it presses them with its trigger: it can reach the panels
+    // docked on the right hand). A hand holding its trigger on a panel keeps it.
+    const pointers = !xr ? [] : gaze ? ['gaze'] : this._uiPress === 'left' ? ['left', 'right'] : ['right', 'left'];
+    for (const hand of pointers) {
+      if (!(hand === 'gaze' ? this._setRayFromHead() : this._setRayFromController(hand))) continue;
+      uiHit = this._pointAtPanels(gaze, menuOpen, menuShown);
+      if (!uiHit) continue;
+      this._uiHand = hand;
+      break;
+    }
+    if (this._resizing) this._panels[this._resizing].panel.handleHot = true;
+    if (uiHit) {
+      if (gaze) {
         // what a stare (or a tap) would press; a slider's key includes the value it would set
         let key = null;
         if (this._menuHover) {
@@ -3221,15 +3310,21 @@ export class Engine {
         else if (this._toolHover != null) key = `tool:${this._toolHover}`;
         else if (this._tabletHoverId) key = `tablet:${this._tabletHoverId}`;
         if (key) this._gazeHit = { key, point: uiHit.point, distance: uiHit.distance };
-      } else if (uiHit) {
+      } else if (this._uiHand === 'left') {
+        this.rayLineLeft.scale.z = uiHit.distance;
+        this.rayLineLeft.visible = true;
+        this.rayDotLeft.position.copy(uiHit.point);
+        this.rayDotLeft.visible = true;
+      } else {
         rayLen = uiHit.distance;
         this.rayDot.position.copy(uiHit.point);
         this.rayDot.visible = true;
       }
     }
     if (menuShown) this.menuPanel.draw(menuOpen ? menuModel(s) : null, this._hudHover === 'menu' ? 'toggle' : this._menuHover);
+    const rightOnUi = uiHit && this._uiHand !== 'left'; // (the right controller still points into the world while the left is on a panel)
 
-    if (s.screen === 'playing' && !s.paused && !uiHit && this.toolsReady(s) && this.toolsAvailable(s)) {
+    if (s.screen === 'playing' && !s.paused && !rightOnUi && this.toolsReady(s) && this.toolsAvailable(s)) {
       let ok = false;
       if (xr) {
         ok = gaze ? this._setRayFromHead() : this._setRayFromController();
@@ -3692,8 +3787,8 @@ export class Engine {
       const flat = this.screenUI(); // the page's UI is in front instead (XR: Phone AR)
       const dbg = this.state.debugMode && !flat;
       this.debugTablet.mesh.visible = dbg;
+      this._updateResize();
       if (dbg) {
-        this._updateTabletResize();
         const grabbed = this._panelGrabs.left?.key === 'debug' || this._panelGrabs.right?.key === 'debug';
         this.debugTablet.draw({
           info: this.debugInfo(),
@@ -3701,15 +3796,11 @@ export class Engine {
           logs: getLogs(120),
           logVersion: getLogVersion(),
           highlight: grabbed || this._tabletHover,
-          handleHot: this._tabletResizing || this._tabletHandleHover,
           claude: { ...claudePrompt.getSnapshot(), response: claudePrompt.responseText() },
           collapsed: debugSections.getSnapshot(),
           hover: this._hudHover === 'debug' ? 'toggle' : this._tabletHoverId,
           open: !debugSections.getSnapshot().panel,
-          corner: this._panels.debug.on ? 'tr' : 'br', // (docked, it stands on its bottom edge)
         });
-      } else {
-        this._endTabletResize();
       }
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;

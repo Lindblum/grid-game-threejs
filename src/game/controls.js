@@ -22,7 +22,7 @@ const OBSERVER_CONTROLS = [
     action: 'Change tool',
     mk: { g: ['key:←', 'key:→', 'sep:/', 'key:0–9'], t: 'Left / Right arrows, or 1–9 and 0' },
     pad: { g: ['pad:LB', 'pad:RB'], t: 'Bumpers (LB / RB)' },
-    xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right' },
+    xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right, or open the Right HUD’s Tool dropdown and point at a tool (the left controller reaches it)' },
   },
   {
     action: 'Consume (selected creature)',
@@ -79,7 +79,7 @@ const OBSERVER_CONTROLS = [
     action: 'Menu select',
     mk: { g: ['mouse:L'], t: 'Click' },
     pad: { g: ['dpad:ud', 'sep:+', 'pad:A'], t: 'D-pad up / down, then A' },
-    xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point and pull the right trigger' },
+    xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point and pull the trigger (either controller: the left one presses panels only). Hold it on a panel’s corner ridges to resize it; a thumbstick up / down scrolls Options' },
   },
   {
     action: 'Debug panel',
