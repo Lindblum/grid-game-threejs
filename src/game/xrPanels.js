@@ -20,10 +20,12 @@ class CanvasPanel {
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = 4;
     const heightM = (widthM * pxH) / pxW;
-    this.material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, toneMapped: false, side: THREE.DoubleSide });
+    // (alphaTest: the clear rest of the canvas doesn't write depth, or it would hide or z-fight a panel beside it)
+    this.material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, alphaTest: 0.01, toneMapped: false, side: THREE.DoubleSide });
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(widthM, heightM), this.material);
     this.mesh.renderOrder = 10;
     this.pxPerM = pxW / widthM; // pixel density (at scale 1): resizing keeps it, so the contents keep their size
+    this.dockScale = 1; // its scale docked on a controller (each panel's density × this comes out about the same)
     this.box = null; // the visible panel (canvas px: { x, y, w, h }), set by draw; the rest of the canvas is clear
     this.button = null; // its toggle button (canvas px)
     this.isOpen = false; // open (not just its button): only then is it resizable
@@ -31,6 +33,11 @@ class CanvasPanel {
     this.boxMarginPx = 0; // canvas px around the visible panel (both sides together)
     this.corner = null; // where its resize handle is: 'br' (free: the top left stays put), 'tr' (docked: it stands on its bottom edge) or null (none)
     this.handleHot = false; // its resize handle is pointed at or dragged
+  }
+
+  /** Canvas px per mm as seen docked: frames and buttons are drawn to the same mm on every panel. */
+  get pxPerMm() {
+    return this.pxPerM / this.dockScale / 1000;
   }
 
   /** The plane's size (m, at scale 1). */
@@ -154,17 +161,37 @@ const PX_TO_M = 0.17 / 1000; // the Right HUD's pixel density (the others match 
 
 const SLOT = 104, SLOT_GAP = 14;
 
+// every panel's frame and toggle button, in mm as seen docked (see CanvasPanel.pxPerMm)
+const FRAME_RADIUS_MM = 5.6, FRAME_LINE_MM = 0.6, BUTTON_RADIUS_MM = 2.3, BUTTON_LINE_MM = 0.8, TITLE_MM = 6.8;
+/** A panel's title font (beside its toggle button): the same size on every panel. */
+const TITLE_FONT = (panel) => `700 ${Math.round(TITLE_MM * panel.pxPerMm)}px system-ui, -apple-system, Segoe UI, sans-serif`;
+
 /**
- * A panel's toggle button (top left, like the windowed panels' header buttons): `icon` on it,
+ * `panel`'s frame round its visible panel `box` (canvas px): the same dark fill, rim and
+ * rounding on every panel; `highlight`: a bright rim (held or pointed at).
+ */
+function panelFrame(ctx, panel, box, highlight = false) {
+  const k = panel.pxPerMm, line = FRAME_LINE_MM * k * (highlight ? 2 : 1);
+  roundRect(ctx, box.x + line / 2, box.y + line / 2, box.w - line, box.h - line, FRAME_RADIUS_MM * k);
+  ctx.fillStyle = 'rgba(18, 22, 30, 0.62)';
+  ctx.fill();
+  ctx.strokeStyle = highlight ? '#9cc8ff' : 'rgba(255,255,255,0.22)';
+  ctx.lineWidth = line;
+  ctx.stroke();
+}
+
+/**
+ * `panel`'s toggle button (top left, like the windowed panels' header buttons): `icon` on it,
  * highlighted while pointed at.
  */
-function toggleButton(ctx, b, icon, hot) {
-  roundRect(ctx, b.x, b.y, b.w, b.h, 14);
+function toggleButton(ctx, panel, icon, hot) {
+  const b = panel.button, k = panel.pxPerMm;
+  roundRect(ctx, b.x, b.y, b.w, b.h, BUTTON_RADIUS_MM * k);
   ctx.fillStyle = hot ? 'rgba(90, 160, 255, 0.55)' : 'rgba(255,255,255,0.09)';
   ctx.fill();
   if (hot) {
     ctx.strokeStyle = '#9cc8ff';
-    ctx.lineWidth = 5;
+    ctx.lineWidth = BUTTON_LINE_MM * k;
     ctx.stroke();
   }
   drawMenuItemIcon(ctx, icon, b.x + b.w / 2, b.y + b.h / 2, b.w * 0.66);
@@ -172,12 +199,14 @@ function toggleButton(ctx, b, icon, hot) {
 
 // the Right HUD's layout (px): its header (the eye button, the title), the actions (Eat, Excrete:
 // up to two rows), the Tools dropdown, then (open) the tools' well beneath it, indented
-const RH_PAD = 24, RH_BTN = 60, RH_HEAD = RH_PAD + RH_BTN + 14, RH_ROW = 72, RH_GAP = 12, RH_INDENT = 40, RH_WELL_PAD = 18;
+// (sizes match Options': its rows are as tall as Options' buttons, its title and text as big, as seen docked)
+const RH_PAD = 24, RH_BTN = 60, RH_HEAD = RH_PAD + RH_BTN + 29, RH_ROW = 67, RH_GAP = 11, RH_INDENT = 40, RH_WELL_PAD = 18;
+const RH_ROW_RADIUS = 21, RH_ROW_PAD = 21, RH_ICON = 44, RH_TITLE_GAP = 23;
 const RH_SLOTS_X = RH_PAD + RH_INDENT + RH_WELL_PAD; // the first tool slot's left
 const rhWidth = (perRow) => RH_SLOTS_X + perRow * SLOT + (perRow - 1) * SLOT_GAP + RH_WELL_PAD + RH_PAD;
 const rhHeight = (rows) => RH_HEAD + 3 * (RH_ROW + RH_GAP) + 2 * RH_WELL_PAD + rows * SLOT + (rows - 1) * SLOT_GAP + RH_PAD; // (two action rows, the dropdown, the well)
 const RH_MIN_PER_ROW = 3, RH_START_PER_ROW = 5; // tools to a row: at least, and at first (roughly square, like the windowed panel)
-const RH_FONT = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
+const RH_FONT = '500 32px system-ui, -apple-system, Segoe UI, sans-serif';
 
 /**
  * Right HUD (docked on the right controller at first), like the windowed Right panel: an eye button that
@@ -243,50 +272,46 @@ export class RightHudPanel extends CanvasPanel {
     if (open && tools && toolsOpen) y += wellH + RH_GAP;
     // the panel: just the button when hidden, else down to its last row (or the well)
     const panelW = open ? W : RH_BTN + 2 * RH_PAD;
-    const panelH = !open ? RH_BTN + 2 * RH_PAD : this.rows.length ? y - RH_GAP + RH_PAD : RH_HEAD + RH_PAD - 14;
+    const panelH = !open ? RH_BTN + 2 * RH_PAD : this.rows.length ? y - RH_GAP + RH_PAD : RH_BTN + 2 * RH_PAD;
     this.box = { x: 0, y: 0, w: panelW, h: Math.min(H, panelH) };
-    roundRect(ctx, 4, 4, panelW - 8, Math.min(H, panelH) - 8, 34);
-    ctx.fillStyle = 'rgba(18, 22, 30, 0.6)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 3;
-    ctx.stroke();
+    panelFrame(ctx, this, this.box);
     // the eye button
     const b = this.button;
+    // a row: like Options' buttons
     const pressable = (x, y, w, h, hot) => {
-      roundRect(ctx, x, y, w, h, 14);
-      ctx.fillStyle = hot ? 'rgba(90, 160, 255, 0.55)' : 'rgba(255,255,255,0.09)';
+      roundRect(ctx, x, y, w, h, RH_ROW_RADIUS);
+      ctx.fillStyle = hot ? 'rgba(90, 160, 255, 0.55)' : 'rgba(255,255,255,0.10)';
       ctx.fill();
       if (hot) {
         ctx.strokeStyle = '#9cc8ff';
-        ctx.lineWidth = 5;
+        ctx.lineWidth = 4;
         ctx.stroke();
       }
     };
-    toggleButton(ctx, b, 'eye', hover === 'toggle');
+    toggleButton(ctx, this, 'eye', hover === 'toggle');
     if (!open) return void (this.texture.needsUpdate = true);
     this._drawResizeHandle(ctx);
     ctx.fillStyle = '#e8ecf2';
-    ctx.font = '650 38px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.font = TITLE_FONT(this);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(fit(ctx, title, W - (b.x + b.w + 20) - RH_PAD), b.x + b.w + 20, b.y + b.h / 2);
+    ctx.fillText(fit(ctx, title, W - (b.x + b.w + RH_TITLE_GAP) - RH_PAD), b.x + b.w + RH_TITLE_GAP, b.y + b.h / 2);
     // an action: its button's glyph, its name, the blocks it concerns at the right
     const actionRow = (r, name, tokens, types) => {
       const cy = r.y + r.h / 2;
       pressable(r.x, r.y, r.w, r.h, hover === r.id);
-      const gh = 50;
-      drawCell(ctx, tokens, r.x + 14, cy, gh);
-      const gx = r.x + 14 + cellWidth(ctx, tokens, gh) + 16;
+      const gh = RH_ICON;
+      drawCell(ctx, tokens, r.x + RH_ROW_PAD, cy, gh);
+      const gx = r.x + RH_ROW_PAD + cellWidth(ctx, tokens, gh) + 17;
       ctx.font = RH_FONT;
       ctx.fillStyle = '#e8ecf2';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(name, gx, cy);
-      const icon = 52;
+      const icon = RH_ICON;
       types.forEach((type, i) => {
         const tool = TOOLS.find((t) => t.block === type) ?? { id: type, block: type };
-        drawToolIcon(ctx, tool, r.x + r.w - 14 - icon / 2 - i * (icon + 8), cy, icon, style);
+        drawToolIcon(ctx, tool, r.x + r.w - RH_ROW_PAD - icon / 2 - i * (icon + 8), cy, icon, style);
       });
     };
     if (eatRow) actionRow(eatRow, 'Consume', glyphs.eat, actions.eat);
@@ -296,22 +321,22 @@ export class RightHudPanel extends CanvasPanel {
       // (its icon left of its name; a message instead, for a moment), the chevron
       const r = toolsRow, cy = r.y + r.h / 2;
       pressable(r.x, r.y, r.w, r.h, hover === 'tools');
-      const gh = 50;
-      drawCell(ctx, glyphs.tool, r.x + 14, cy, gh);
-      const tx = r.x + 14 + cellWidth(ctx, glyphs.tool, gh) + 16;
+      const gh = RH_ICON;
+      drawCell(ctx, glyphs.tool, r.x + RH_ROW_PAD, cy, gh);
+      const tx = r.x + RH_ROW_PAD + cellWidth(ctx, glyphs.tool, gh) + 17;
       ctx.font = RH_FONT;
       ctx.fillStyle = '#e8ecf2';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText('Tool:', tx, cy);
-      const chevron = 36, valueRight = r.x + r.w - 16 - chevron - 12, icon = 44;
+      const chevron = RH_ICON, valueRight = r.x + r.w - RH_ROW_PAD - chevron - 17, icon = RH_ICON;
       const room = valueRight - (tx + ctx.measureText('Tool: ').width);
       ctx.textAlign = 'right';
       ctx.fillStyle = message ? '#ffd166' : '#e8ecf2';
       const text = fit(ctx, message || label, message ? room : room - icon - 10);
       ctx.fillText(text, valueRight, cy);
       if (!message) drawToolIcon(ctx, TOOLS[toolIndex], valueRight - ctx.measureText(text).width - 10 - icon / 2, cy, icon, style);
-      drawMenuItemIcon(ctx, toolsOpen ? 'dropdownOpen' : 'dropdown', r.x + r.w - 16 - chevron / 2, cy, chevron);
+      drawMenuItemIcon(ctx, toolsOpen ? 'dropdownOpen' : 'dropdown', r.x + r.w - RH_ROW_PAD - chevron / 2, cy, chevron);
     }
     if (toolsRow && toolsOpen) {
       // the selector's well (like Debug's readouts), indented under the dropdown
@@ -396,6 +421,7 @@ export class MenuPanel extends CanvasPanel {
     this.button = { x: 6 + MENU_PAD, y: 6 + MENU_PAD, w: MENU_BTN, h: MENU_BTN };
     this.limits = MENU_LIMITS;
     this.boxMarginPx = 12;
+    this.dockScale = 0.5;
     this.scroll = 0; // px the menu is scrolled down
     this.view = null; // where the menu shows (canvas px: { y0, y1 }); out of it is hidden
     this.rects = [];
@@ -418,27 +444,21 @@ export class MenuPanel extends CanvasPanel {
     ctx.clearRect(0, 0, W, H);
     // Panel is sized to its content, as tall as it may be (the rest of the canvas stays
     // transparent); closed, just the button.
-    const bx = 70, bw = W - 140, top = this.button.y + MENU_BTN + 30;
+    const bx = this.button.x, bw = W - 2 * bx, top = this.button.y + MENU_BTN + 30; // (the buttons line up with the gear, as on the other panels)
     const closed = 2 * MENU_PAD + MENU_BTN;
     const itemsH = model ? this._itemsHeight(ctx, model.items, bw) : 0;
     this.box = model ? { x: 6, y: 6, w: W - 12, h: Math.min(H - 12, top + itemsH + 34) } : { x: 6, y: 6, w: closed, h: closed };
     this.view = { y0: top - 6, y1: this.box.y + this.box.h - 20 };
     this.maxScroll = Math.max(0, top + itemsH - this.view.y1);
     this.scroll = THREE.MathUtils.clamp(this.scroll, 0, this.maxScroll);
-    const { x, y, w, h } = this.box;
-    roundRect(ctx, x, y, w, h, model ? 48 : 34);
-    ctx.fillStyle = 'rgba(18, 22, 30, 0.62)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    toggleButton(ctx, this.button, 'gear', hoverId === 'toggle');
+    panelFrame(ctx, this, this.box);
+    toggleButton(ctx, this, 'gear', hoverId === 'toggle');
     this.rects = [];
     if (model) {
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = '#ffffff';
-      ctx.font = '700 48px system-ui, -apple-system, Segoe UI, sans-serif';
+      ctx.font = TITLE_FONT(this);
       const tx = this.button.x + MENU_BTN + 24;
       ctx.fillText(fit(ctx, model.title, W - MENU_PAD - tx - this._gripPx), tx, this.button.y + MENU_BTN / 2);
       ctx.save();
@@ -451,7 +471,7 @@ export class MenuPanel extends CanvasPanel {
         // the scroll bar, at the right: how much shows, and where
         const span = this.view.y1 - this.view.y0, thumb = Math.max(40, (span * span) / (span + this.maxScroll));
         const ty = this.view.y0 + (span - thumb) * (this.scroll / this.maxScroll);
-        roundRect(ctx, W - 40, ty, 10, thumb, 5);
+        roundRect(ctx, W - 23, ty, 8, thumb, 4); // (in the margin, right of the buttons)
         ctx.fillStyle = 'rgba(255,255,255,0.35)';
         ctx.fill();
       }
@@ -681,13 +701,8 @@ export class ViewPanel extends CanvasPanel {
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-    roundRect(ctx, 4, 4, W - 8, H - 8, 34);
-    ctx.fillStyle = 'rgba(18, 22, 30, 0.6)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 3;
-    ctx.stroke();
-    toggleButton(ctx, this.button, 'monitor', hot);
+    panelFrame(ctx, this, this.box);
+    toggleButton(ctx, this, 'monitor', hot);
     this.texture.needsUpdate = true;
   }
 }
@@ -742,6 +757,7 @@ export class DebugTablet extends CanvasPanel {
     this.mesh.visible = false;
     this.button = { x: TABLET_PAD, y: TABLET_PAD, w: TABLET_BTN, h: TABLET_BTN };
     this.limits = TABLET_SIZE;
+    this.dockScale = 0.5;
     this._last = '';
   }
 
@@ -775,13 +791,8 @@ export class DebugTablet extends CanvasPanel {
     ctx.clearRect(0, 0, W, H);
     const closed = 2 * TABLET_PAD + TABLET_BTN;
     this.box = open ? { x: 0, y: 0, w: W, h: H } : { x: 0, y: 0, w: closed, h: closed };
-    roundRect(ctx, 4, 4, this.box.w - 8, this.box.h - 8, 30);
-    ctx.fillStyle = 'rgba(12, 15, 22, 0.66)';
-    ctx.fill();
-    ctx.strokeStyle = highlight ? '#9cc8ff' : 'rgba(255,255,255,0.22)';
-    ctx.lineWidth = highlight ? 6 : 3;
-    ctx.stroke();
-    toggleButton(ctx, this.button, 'debug', hover === 'toggle');
+    panelFrame(ctx, this, this.box, highlight);
+    toggleButton(ctx, this, 'debug', hover === 'toggle');
     if (!open) return void (this.texture.needsUpdate = true);
 
     const sans = (size, weight = 400) => `${weight} ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
@@ -791,8 +802,8 @@ export class DebugTablet extends CanvasPanel {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffffff';
-    ctx.font = sans(27, 700);
-    const titleX = TABLET_PAD + TABLET_BTN + 14, headY = TABLET_PAD + TABLET_BTN / 2;
+    ctx.font = TITLE_FONT(this);
+    const titleX = TABLET_PAD + TABLET_BTN + 16, headY = TABLET_PAD + TABLET_BTN / 2;
     ctx.fillText('Debug', titleX, headY);
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
@@ -851,7 +862,7 @@ export class DebugTablet extends CanvasPanel {
     const below = HEAD + 14 + (collapsed.claude ? 0 : CLAUDE_H) + HEAD + 14 + (collapsed.logging ? 0 : 4 * LINE + 12);
 
     // Performance: two columns when the tablet is wide enough
-    let y = header('performance', 'Performance', perf[0] ? `${perf[0][1]} FPS` : '', TABLET_PAD + TABLET_BTN + 16);
+    let y = header('performance', 'Performance', perf[0] ? `${perf[0][1]} FPS` : '', TABLET_PAD + TABLET_BTN + 20);
     if (!collapsed.performance) {
       const cols = W >= 700 ? 2 : 1;
       perf.forEach(([k, v], i) => {

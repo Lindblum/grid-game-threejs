@@ -627,14 +627,14 @@ export class Engine {
     this.debugTablet = new DebugTablet(); // Options → Debug, in XR
     this.viewPanel = new ViewPanel(); // back to the Normal view
     // the XR panels, like the windowed ones (each with its toggle button): where each docks at
-    // first (`home`), its size docked, in the gaze dock and held / free (`*Scale`), where it is
+    // first (`home`), its size in the gaze dock and held / free (`*Scale`; docked: the panel's own dockScale), where it is
     // docked now (`dock`: 'left', 'right' or null: free in the room) and where it shows (`on`:
     // that controller, the other when that one's missing, 'gaze' without controllers, or null)
     this._panels = {
-      options: { panel: this.menuPanel, home: 'left', dockScale: 0.5, gazeScale: 1, freeScale: 1 },
-      debug: { panel: this.debugTablet, home: 'left', dockScale: 0.5, gazeScale: 1, freeScale: 1 },
-      view: { panel: this.viewPanel, home: 'left', dockScale: 1, gazeScale: 1, freeScale: 1.6 },
-      right: { panel: this.rightHud, home: 'right', dockScale: 1, gazeScale: 1, freeScale: 1.6 },
+      options: { panel: this.menuPanel, home: 'left', gazeScale: 1, freeScale: 1 },
+      debug: { panel: this.debugTablet, home: 'left', gazeScale: 1, freeScale: 1 },
+      view: { panel: this.viewPanel, home: 'left', gazeScale: 1, freeScale: 1.6 },
+      right: { panel: this.rightHud, home: 'right', gazeScale: 1, freeScale: 1.6 },
     };
     for (const e of Object.values(this._panels)) {
       Object.assign(e, { dock: e.home, on: null });
@@ -2736,13 +2736,13 @@ export class Engine {
   _layoutRow(entries, parent, centred) {
     const boxes = entries.map((e) => e.panel.boxMetres());
     const text = this.state.textSize; // (Options → Accessibility → Text Size)
-    const scales = entries.map((e) => text * (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.dockScale));
+    const scales = entries.map((e) => text * (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.panel.dockScale));
     const widths = boxes.map((b, i) => (b.right - b.left) * scales[i]);
     let x = centred ? -(widths.reduce((a, w) => a + w, 0) + PANEL_DOCK_GAP * (entries.length - 1)) / 2 : -(boxes[0].button - boxes[0].left) * scales[0];
     entries.forEach((e, i) => {
       const m = e.panel.mesh, b = boxes[i], sc = scales[i];
       if (m.parent !== parent) parent.add(m);
-      m.position.set(x - b.left * sc, -b.bottom * sc, 0);
+      m.position.set(x - b.left * sc, -b.bottom * sc, i * 0.0005); // (each a hair in front of the last: no z-fighting where they meet)
       if (centred) m.quaternion.identity();
       else {
         m.quaternion.copy(_panelTilt);
