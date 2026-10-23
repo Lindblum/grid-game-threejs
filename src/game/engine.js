@@ -18,7 +18,7 @@ import {
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
-import { RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
+import { RightHudPanel, MenuPanel, DebugTablet, ViewPanel } from './xrPanels.js';
 import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, VOLUME, CAMERA_SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
@@ -99,7 +99,7 @@ const STEER_SCREEN_COS = 0.35;
  * PANEL_DOCK_ANCHOR, the first one's toggle button over the controller, tilted so their faces
  * tip up toward the eyes (as in xr-music-threejs).
  */
-const XR_PANEL_ORDER = ['options', 'debug', 'right'];
+const XR_PANEL_ORDER = ['options', 'debug', 'view', 'right'];
 const PANEL_DOCK_ANCHOR = new THREE.Vector3(0, 0.05, 0.02);
 const PANEL_DOCK_TILT = -0.5; // radians about the controller's X: the top leans forward
 const PANEL_DOCK_GAP = 0.008; // m between panels docked side by side
@@ -625,6 +625,7 @@ export class Engine {
     this.rightHud = new RightHudPanel();
     this.menuPanel = new MenuPanel();
     this.debugTablet = new DebugTablet(); // Options → Debug, in XR
+    this.viewPanel = new ViewPanel(); // back to the Normal view
     // the XR panels, like the windowed ones (each with its toggle button): where each docks at
     // first (`home`), its size docked, in the gaze dock and held / free (`*Scale`), where it is
     // docked now (`dock`: 'left', 'right' or null: free in the room) and where it shows (`on`:
@@ -632,6 +633,7 @@ export class Engine {
     this._panels = {
       options: { panel: this.menuPanel, home: 'left', dockScale: 0.5, gazeScale: 1, freeScale: 1 },
       debug: { panel: this.debugTablet, home: 'left', dockScale: 0.5, gazeScale: 1, freeScale: 1 },
+      view: { panel: this.viewPanel, home: 'left', dockScale: 1, gazeScale: 1, freeScale: 1.6 },
       right: { panel: this.rightHud, home: 'right', dockScale: 1, gazeScale: 1, freeScale: 1.6 },
     };
     for (const e of Object.values(this._panels)) {
@@ -2424,6 +2426,13 @@ export class Engine {
     this.setState({ screenView: next });
   }
 
+  /** The View panel's button: into XR: HMD Stereo from the window's views, or back to Normal from XR. */
+  toggleHmd() {
+    playTick();
+    if (this.state.inXR) this.selectView('normal');
+    else this.selectView('hmd');
+  }
+
   /**
    * Into XR, straight from the click. Phones: an AR session (ARCore tracking) drawn as one view
    * or, for a viewer, two lens-corrected eyes; without WebXR AR, the handheld motion-sensor view.
@@ -2691,6 +2700,12 @@ export class Engine {
    */
   _layoutPanels() {
     const gaze = this._gazeMode();
+    // Options → Accessibility → Text Size: the panels are that much bigger (free ones grow or shrink in place)
+    const text = this.state.textSize;
+    if (this._panelText && this._panelText !== text) {
+      for (const e of Object.values(this._panels)) if (!e.dock) e.panel.mesh.scale.multiplyScalar(text / this._panelText);
+    }
+    this._panelText = text;
     const rows = { left: [], right: [], gaze: [] };
     for (const key of XR_PANEL_ORDER) {
       const e = this._panels[key], m = e.panel.mesh;
@@ -2720,7 +2735,8 @@ export class Engine {
    */
   _layoutRow(entries, parent, centred) {
     const boxes = entries.map((e) => e.panel.boxMetres());
-    const scales = entries.map((e) => (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.dockScale));
+    const text = this.state.textSize; // (Options → Accessibility → Text Size)
+    const scales = entries.map((e) => text * (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.dockScale));
     const widths = boxes.map((b, i) => (b.right - b.left) * scales[i]);
     let x = centred ? -(widths.reduce((a, w) => a + w, 0) + PANEL_DOCK_GAP * (entries.length - 1)) / 2 : -(boxes[0].button - boxes[0].left) * scales[0];
     entries.forEach((e, i) => {
@@ -2828,7 +2844,7 @@ export class Engine {
       offset: gripInverse.clone().multiply(m.matrixWorld),
       point: at.point.clone().applyMatrix4(gripInverse),
       size: 1,
-      grow: e.freeScale / m.scale.x,
+      grow: (e.freeScale * this.state.textSize) / m.scale.x,
       zone: null,
     };
   }
@@ -3064,6 +3080,7 @@ export class Engine {
         debugSections.toggle('panel');
       },
       rightHud: () => this.toggleRightHud(),
+      view: () => this.toggleHmd(),
       tools: () => this.toggleToolsOpen(),
       eat: () => this.selectedEat(),
       excrete: () => this.selectedExcrete(),
@@ -3210,8 +3227,9 @@ export class Engine {
     if (this.rightHud.mesh.visible) targets.push(this.rightHud.mesh);
     if (menuShown) targets.push(this.menuPanel.mesh);
     if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
+    if (this.viewPanel.mesh.visible) targets.push(this.viewPanel.mesh);
     for (const hit of this.raycaster.intersectObjects(targets, false)) {
-      const key = hit.object === this.menuPanel.mesh ? 'options' : hit.object === this.debugTablet.mesh ? 'debug' : 'right';
+      const key = XR_PANEL_ORDER.find((k) => this._panels[k].panel.mesh === hit.object);
       const { panel } = this._panels[key];
       if (!panel.inBox(hit.uv)) continue;
       if (!gaze && panel.onResizeHandle(hit.uv)) {
@@ -3228,6 +3246,10 @@ export class Engine {
           this._tabletHover = false;
           this._hudHover = 'debug';
         }
+        return hit;
+      }
+      if (key === 'view') {
+        if (panel.onToggle(hit.uv)) this._hudHover = 'view';
         return hit;
       }
       if (key === 'right') {
@@ -3820,6 +3842,8 @@ export class Engine {
       });
       this.rightHud.mesh.visible = playing && !flat;
       this.menuPanel.mesh.visible = !flat; // (closed, just its gear)
+      this.viewPanel.mesh.visible = !flat && this.state.views.includes('hmd'); // (XR: HMD Stereo: not on phones)
+      this.viewPanel.draw(this._hudHover === 'view');
       this._updatePanelGrabs(dt);
       this._layoutPanels();
     }

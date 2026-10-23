@@ -81,10 +81,11 @@ function OverlayView({ engine, s }) {
       {/* (the Game panel, Hud: hidden for now) */}
       {s.screen === 'playing' && !s.inXR && !s.paused && s.gamepadAim && <div className="crosshair" />}
       {s.screen === 'playing' && flat && (
-        // the left column: Options, and the Debug panel as the next row beneath it
+        // the left column: Options, the Debug panel as the next row beneath it, then the View panel
         <div className="side-stack">
           <MenuScreen engine={engine} s={s} />
           {s.debugMode && <DebugPanel engine={engine} />}
+          <ViewPanel engine={engine} s={s} />
         </div>
       )}
       {s.screen === 'playing' && flat && (
@@ -607,6 +608,24 @@ function RightPanel({ engine, s }) {
  * Options, in the top-left corner: its gear button opens it (pausing the game) and closes it
  * again (resuming); closed, only the gear shows. Load and Save (Options → File) open in it too.
  */
+/**
+ * The View panel: one button, to switch between the Normal view (the monitor) and XR: HMD Stereo
+ * (the headset): it shows the one it switches to. Only where a headset can be used.
+ */
+function ViewPanel({ engine, s }) {
+  if (!s.views.includes('hmd')) return null;
+  const label = s.inXR ? 'Normal view' : 'XR: HMD Stereo';
+  return (
+    <aside className="side-panel collapsed">
+      <header className="side-header">
+        <button className="btn side-toggle" title={label} aria-label={label} onClick={blurThen(() => engine.toggleHmd())}>
+          <img src={menuItemIconURL(s.inXR ? 'monitor' : 'xr')} alt="" draggable={false} />
+        </button>
+      </header>
+    </aside>
+  );
+}
+
 function MenuScreen({ engine, s }) {
   const open = engine.isMenuOpen(s);
   const panelRef = useRef(null);

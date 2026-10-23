@@ -659,6 +659,39 @@ export class MenuPanel extends CanvasPanel {
   }
 }
 
+/**
+ * The View panel for XR, like the windowed one: a single button, the monitor, that leaves XR
+ * for the Normal view. Docked on the left controller at first (see Engine's XR panels).
+ */
+export class ViewPanel extends CanvasPanel {
+  constructor() {
+    const size = 2 * RH_PAD + RH_BTN;
+    super(size, size, size * PX_TO_M);
+    this.mesh.name = 'xr-view';
+    this.button = { x: RH_PAD, y: RH_PAD, w: RH_BTN, h: RH_BTN };
+    this.box = { x: 0, y: 0, w: size, h: size };
+    this._last = '';
+  }
+
+  /** `hot`: the button is pointed at. */
+  draw(hot) {
+    const sig = `${hot}`;
+    if (sig === this._last) return;
+    this._last = sig;
+    const { ctx, canvas } = this;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    roundRect(ctx, 4, 4, W - 8, H - 8, 34);
+    ctx.fillStyle = 'rgba(18, 22, 30, 0.6)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    toggleButton(ctx, this.button, 'monitor', hot);
+    this.texture.needsUpdate = true;
+  }
+}
+
 /** `text` broken into lines no wider than maxW (at word breaks; a long word stays whole). */
 function wrapText(ctx, text, maxW) {
   const out = [];
@@ -683,10 +716,12 @@ function fit(ctx, text, maxW) {
 }
 
 /** The debug tablet's pixel density (canvas px per metre): its text is always this size, however big the tablet. */
-const TABLET_PX_PER_M = 1000 / 0.34;
+// (drawn at a lower density than the others' so its text, in smaller px, comes out as big as Options')
+const TABLET_TEXT = 1.45;
+const TABLET_PX_PER_M = 1000 / 0.34 / TABLET_TEXT;
 /** The debug tablet's size (m): at first, and the limits when resizing it (drag its corner handle). */
-export const TABLET_SIZE = { width: 0.34, height: 0.26, minWidth: 0.2, minHeight: 0.16, maxWidth: 0.8, maxHeight: 0.7 };
-const TABLET_PAD = 24, TABLET_BTN = 60; // the Debug button: inset from the corner, and its size
+export const TABLET_SIZE = { width: 0.42, height: 0.44, minWidth: 0.24, minHeight: 0.2, maxWidth: 0.9, maxHeight: 0.8 };
+const TABLET_PAD = Math.round(24 / TABLET_TEXT), TABLET_BTN = Math.round(60 / TABLET_TEXT); // the Debug button (as big as the other panels'): inset from the corner, and its size
 const LOG_COLORS = { log: '#c9d1dc', info: '#9cc8ff', warn: '#ffd166', error: '#ff8a80' };
 
 /**
@@ -756,8 +791,8 @@ export class DebugTablet extends CanvasPanel {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffffff';
-    ctx.font = sans(34, 700);
-    const titleX = TABLET_PAD + TABLET_BTN + 20, headY = TABLET_PAD + TABLET_BTN / 2;
+    ctx.font = sans(27, 700);
+    const titleX = TABLET_PAD + TABLET_BTN + 14, headY = TABLET_PAD + TABLET_BTN / 2;
     ctx.fillText('Debug', titleX, headY);
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
