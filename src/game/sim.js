@@ -23,7 +23,8 @@ function shuffle(a) {
 }
 
 /**
- * Splits blocks into connected groups (blocks touching through any of their faces).
+ * Splits blocks into connected groups (blocks touching through any of their faces; a chain
+ * creature's segments are one group, even where they meet only at an edge, round a corner).
  * Only blocks passing `include` are grouped, and a block only joins through a neighbour
  * `b` it is `linked(b, n)` to (e.g. same type); by default any two included blocks link.
  * `starts` (default: every block) is where groups can begin: pass World.ofType(type) when
@@ -41,6 +42,12 @@ export function connectedGroups(world, include = () => true, linked = () => true
       for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
         const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
         if (n && !seen.has(n) && include(n) && linked(b, n)) {
+          seen.add(n);
+          group.push(n);
+        }
+      }
+      for (const n of world.squirmyOf?.get(b)?.segments ?? []) {
+        if (!seen.has(n) && include(n) && linked(b, n)) {
           seen.add(n);
           group.push(n);
         }
@@ -319,7 +326,7 @@ export function stepSquirmies(world, skip = new Set()) {
     const behavior = head.behavior ?? blockProps(head.type).defaultBehavior;
     if (behavior === BEHAVIOR.WANDER) {
       const cells = [];
-      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      for (const [dx, dy, dz] of stepOffsets(world, head.x, head.y, head.z, head)) {
         const x = head.x + dx, y = head.y + dy, z = head.z + dz;
         if (ok(x, y, z, 1)) cells.push({ x, y, z });
       }
@@ -1010,10 +1017,10 @@ function wander(world, creature) {
 }
 
 /**
- * The offsets a one-block creature (`self`) at (x, y, z) may step along: its neighbours, plus
+ * The offsets a creature (`self`: one-block, or a chain's head) at (x, y, z) may step along: its neighbours, plus
  * (Cube mode) the EDGE_STEPS across one of its cube's edges where at least one of the two cells
  * beside that edge is open, so it goes up a step or round a corner but never squeezes between
- * two blocks.
+ * two blocks (round an edge it slides along an arc: World.edgeVia).
  */
 function stepOffsets(world, x, y, z, self) {
   if (!EDGE_STEPS.length) return NEIGHBOR_DIRS;
@@ -1027,26 +1034,6 @@ function stepOffsets(world, x, y, z, self) {
   ];
 }
 
-/**
- * An edge step's way round its edge (Cube mode): of the two cells beside the edge that `creature`'s
- * step to cell `t` crosses, the open one it passes, preferring one it could stand in (over a
- * corner: the cell past the edge; up a step: the one above it). Null for any other step.
- */
-export function edgeStepVia(world, creature, t) {
-  if (!EDGE_STEPS.length) return null;
-  const d = [t.x - creature.x, t.y - creature.y, t.z - creature.z];
-  if (d.filter((v) => v).length !== 2) return null; // (a step across a face)
-  const open = [0, 1, 2].filter((i) => d[i]).map((i) => {
-    const v = [creature.x, creature.y, creature.z];
-    v[i] += d[i];
-    return { x: v[0], y: v[1], z: v[2] };
-  }).filter((v) => {
-    const b = world.blocks.get(cellKey(v.x, v.y, v.z));
-    return !b || b === creature;
-  });
-  return open.find((v) => isWalkable(world, v.x, v.y, v.z, creature)) ?? open[0] ?? null;
-}
-
 /** Most cells one Walk path search may visit (keeps a turn cheap in big builds). */
 const WALK_SEARCH_LIMIT = 5000;
 /** A walking creature that finds no path this many turns in a row gives up and Wanders. */
@@ -1055,11 +1042,10 @@ export const WALK_GIVE_UP_TURNS = 5;
 /**
  * First step of a shortest path (fewest steps) from creature `creature` to cell `t`, found by
  * breadth-first search; null if there is none. `ok(x, y, z, steps)` says whether a cell can
- * be stepped into `steps` moves from now (default: the creature's isWalkable). One-block
- * creatures also take Cube mode's edge steps (stepOffsets); a Squirmy's body keeps to faces.
+ * be stepped into `steps` moves from now (default: the creature's isWalkable). Creatures also
+ * take Cube mode's edge steps (stepOffsets; a chain's body follows its head round the edge).
  */
 function firstStepToward(world, creature, t, ok = (x, y, z) => isWalkable(world, x, y, z, creature)) {
-  const chain = isChainCreature(creature.type);
   if (!ok(t.x, t.y, t.z, Infinity)) return null;
   const goal = cellKey(t.x, t.y, t.z);
   const firstStep = new Map([[cellKey(creature.x, creature.y, creature.z), null]]); // visited cell -> first step on its path
@@ -1067,7 +1053,7 @@ function firstStepToward(world, creature, t, ok = (x, y, z) => isWalkable(world,
   for (let i = 0; i < queue.length && firstStep.size < WALK_SEARCH_LIMIT; i++) {
     const p = queue[i];
     const via = firstStep.get(cellKey(p.x, p.y, p.z));
-    for (const [dx, dy, dz] of chain ? NEIGHBOR_DIRS : stepOffsets(world, p.x, p.y, p.z, creature)) {
+    for (const [dx, dy, dz] of stepOffsets(world, p.x, p.y, p.z, creature)) {
       const q = { x: p.x + dx, y: p.y + dy, z: p.z + dz, steps: p.steps + 1 };
       const k = cellKey(q.x, q.y, q.z);
       if (firstStep.has(k) || !ok(q.x, q.y, q.z, q.steps)) continue;
@@ -1172,7 +1158,7 @@ export function steeredCell(creature, ok, dirs = NEIGHBOR_DIRS, { keep = false, 
 /**
  * Where a controlled creature (one-block, or a chain's head) may step when steered:
  * { ok(x, y, z), dirs, anyWay } for steeredCell, the same rules its turn uses (a chain's head:
- * squirmyCellOk next step; a one-block creature: isWalkable, with Cube mode's edge steps).
+ * squirmyCellOk next step; a one-block creature: isWalkable; both with Cube mode's edge steps).
  * With nowhere to walk, it may drop into the empty cell straight below its head (dropCell),
  * whichever way it's steered (anyWay), and gravity takes it from there.
  */
@@ -1180,7 +1166,7 @@ function steerRules(world, creature) {
   const rules = isChainCreature(creature.type)
     ? (() => {
         const own = new Set(world.squirmyOf.get(creature)?.segments ?? [creature]);
-        return { ok: (x, y, z) => squirmyCellOk(world, creature, own, x, y, z, true), dirs: NEIGHBOR_DIRS };
+        return { ok: (x, y, z) => squirmyCellOk(world, creature, own, x, y, z, true), dirs: stepOffsets(world, creature.x, creature.y, creature.z, creature) };
       })()
     : { ok: (x, y, z) => isWalkable(world, x, y, z, creature), dirs: stepOffsets(world, creature.x, creature.y, creature.z, creature) };
   if (rules.dirs.some(([dx, dy, dz]) => rules.ok(creature.x + dx, creature.y + dy, creature.z + dz))) return rules;

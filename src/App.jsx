@@ -401,6 +401,8 @@ function DebugPanel({ engine }) {
                 <tr><th>Turn</th><td>{ms(engine.turnMs, 1)}</td></tr>
                 <tr><th>Anim</th><td>{ms(engine.animMs, 2)}</td></tr>
                 <tr><th>Render</th><td>{ms(engine.renderMs, 2)}</td></tr>
+                <tr><th>Draws</th><td>{engine.drawCalls ?? '—'}</td></tr>
+                <tr><th>Triangles</th><td>{engine.triangles?.toLocaleString() ?? '—'}</td></tr>
               </tbody>
             </table>
           </div>

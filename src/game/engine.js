@@ -3,8 +3,8 @@ import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { CameraCollider } from './cameraCollision.js';
 import { InventoryView } from './inventoryView.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-import { STEP_FRACTION, World, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edgeStepVia, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
+import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
+import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
@@ -80,7 +80,9 @@ const _setAxis = new THREE.Vector3(), _setFwd = new THREE.Vector3(), _setWant = 
 /** Creature controls: the next-step dot's radius (cm; a cell's inradius is 1 cm), small enough not to hide the cell. */
 const STEP_MARKER_RADIUS_CM = 0.05;
 /** Creature controls: the lines to the cells a creature could step into, room for this many at once (all controlled creatures). */
-const STEP_LINES_MAX = 256;
+const STEP_LINES_MAX = 512;
+/** Direction Guides: an edge step's arc round its edge (World.edgeVia) is drawn as this many straight pieces. */
+const EDGE_ARC_SEGMENTS = 8;
 // Select tool: the destination being pointed at is a dot (cm), with a dotted line to it from each
 // selected creature's head (dash and gap, cm)
 const TARGET_DOT_RADIUS_CM = 0.08;
@@ -234,7 +236,7 @@ export class Engine {
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
       vsync: true, // Options → Video → VSync: frames paced by the display (off: as fast as they can be drawn; see _applyVSync)
       antialias: true, // Options → Video → Anti-aliasing (the renderer's MSAA: only takes effect when the page loads; see _initRenderer)
-      refraction: true, // Options → Refraction: Crystal (and Water, with Procedural materials) bends what's behind it (Off: just see-through, cheaper)
+      refraction: true, // Options → Refraction: Crystal and Water bend what's behind them, with Procedural materials (Off, or Simple / Solid: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       cameraSpeed: CAMERA_SPEED.default, // Options → Accessibility → Camera Speed: a multiplier on the camera's turning
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
@@ -1148,6 +1150,8 @@ export class Engine {
       ['Turn', ms(this.turnMs, 1)],
       ['Anim', ms(this.animMs, 2)],
       ['Render', ms(this.renderMs, 2)],
+      ['Draws', this.drawCalls == null ? '—' : String(this.drawCalls)],
+      ['Triangles', this.triangles == null ? '—' : this.triangles.toLocaleString()],
     ];
   }
 
@@ -1610,7 +1614,7 @@ export class Engine {
    * on, the way the stick points; any other step (or no floor): `t` itself.
    */
   _stepAim(c, t) {
-    if (!c.floor || !edgeStepVia(this.world, c, t)) return t;
+    if (!c.floor || !this.world.edgeVia(c, t, c)) return t;
     const d = new THREE.Vector3(t.x - c.x, t.y - c.y, t.z - c.z), len = d.length();
     const n = new THREE.Vector3(...c.floor).normalize();
     d.addScaledVector(n, -d.dot(n));
@@ -1621,12 +1625,11 @@ export class Engine {
 
   /**
    * Direction Guides: the line of `c`'s step to cell `t`, `f` (0..1) of the way along, as
-   * [creature, from, to] segments: straight, or for an edge step (Cube mode) bent round its
-   * edge through the cell it passes (sim.js edgeStepVia).
+   * [creature, from, to] segments: straight, or for an edge step (Cube mode) the arc round its
+   * edge it will slide along (_movePath).
    */
   _stepPath(c, t, f) {
-    const via = edgeStepVia(this.world, c, t);
-    const pts = via ? [c, via, t] : [c, t];
+    const pts = this._movePath(c, t, this.world.edgeVia(c, t, c));
     const lens = pts.slice(1).map((b, i) => Math.hypot(b.x - pts[i].x, b.y - pts[i].y, b.z - pts[i].z));
     let left = f * lens.reduce((a, b) => a + b, 0);
     const out = [];
@@ -1636,6 +1639,14 @@ export class Engine {
       left -= lens[i];
     }
     return out;
+  }
+
+  /** The points of a move from `from` to `to`: straight, or (`via`: round an edge, World.edgeVia) along its arc. */
+  _movePath(from, to, via) {
+    if (!via) return [from, to];
+    const pts = [];
+    for (let i = 0; i <= EDGE_ARC_SEGMENTS; i++) pts.push(arcPoint(from, to, via, i / EDGE_ARC_SEGMENTS, new THREE.Vector3()));
+    return pts;
   }
 
   /**
@@ -1670,7 +1681,7 @@ export class Engine {
    * Creature controls: a dot on the cell each controlled creature will step into on its next
    * turn as it is being steered (sim.js nextSteppedCell); none while it isn't steered, or can't
    * go that way (it bumps instead). Lines run from each one's cell to the cells it could step
-   * into (sim.js steppableCells; an edge step's bent round its edge: _stepPath): all the way while the stick is at rest; while it's pushed, as far as it points
+   * into (sim.js steppableCells; an edge step's along its arc round the edge: _stepPath): all the way while the stick is at rest; while it's pushed, as far as it points
    * along each (its cosine with the line on screen; with the step in 3D if the creature is
    * behind the camera): all the way when it points right along it, not at all at 90° or more.
    * While it moves, a line runs from the cell it left to the one it's moving into. All in its
@@ -1693,10 +1704,11 @@ export class Engine {
       for (const { t, cos } of cosines) if (cos > 0) steps.push(...this._stepPath(c, t, cos));
     }
     draw(this.stepLines, steps);
-    draw(this.moveLines, controlled.map((c) => {
+    draw(this.moveLines, controlled.flatMap((c) => {
       const slide = this.world.slideOf(c);
-      return slide && [c, slide.from, slide.to];
-    }).filter(Boolean));
+      const pts = slide ? this._movePath(slide.from, slide.to, slide.via) : [];
+      return pts.slice(1).map((p, i) => [c, pts[i], p]);
+    }));
     this._placeGuideDots(this.stepMarkers, markers);
   }
 
@@ -3813,6 +3825,8 @@ export class Engine {
   _animTotal = 0;
   renderMs = null; // Debug → Performance: renderer.render per frame, ms (averaged like fps; CPU time: issuing the draws, not the GPU finishing them)
   _renderTotal = 0;
+  drawCalls = null; // Debug → Performance: a frame's draw calls and triangles (both eyes in XR; sampled once per FPS window, like fps)
+  triangles = null;
   _fpsFrames = 0;
   _fpsSince = null;
 
@@ -3825,6 +3839,8 @@ export class Engine {
       this._animTotal = 0;
       this.renderMs = this._renderTotal / this._fpsFrames;
       this._renderTotal = 0;
+      this.drawCalls = this.renderer.info.render.calls; // (the last frame's)
+      this.triangles = this.renderer.info.render.triangles;
       this._fpsFrames = 0;
       this._fpsSince = now;
     }

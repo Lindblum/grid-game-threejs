@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RANDOM_BLOCKS } from './tools.js';
 import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature, isChainCreature } from './blocks.js';
-import { GRID, NEIGHBOR_DIRS, cellKey, gridMode, isValidCell, onGridChange, randomCellOnSphere, setGridMode } from './lattice.js';
+import { EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, gridMode, isValidCell, onGridChange, randomCellOnSphere, setGridMode } from './lattice.js';
 import { GRIDS, DEFAULT_GRID, dirName } from './grids.js';
 import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
 import { ClusterBodies, addSmoothShape } from './clusterBody.js';
@@ -148,6 +148,22 @@ function savedDir(front) {
 const _m = new THREE.Matrix4();
 const EMPTY_SET = new Set();
 const _c = new THREE.Color();
+
+/**
+ * The point `f` (0..1) of the way along an edge step's arc (Cube mode: World.edgeVia) from
+ * `from` to `to` round their edge, into `out` (lattice units): the half circle centred on the
+ * edge's midpoint through the open cell `via` beside it, so the mover keeps its distance from
+ * the edge all the way instead of cutting through it.
+ */
+export function arcPoint(from, to, via, f, out) {
+  const ex = (from.x + to.x) / 2, ey = (from.y + to.y) / 2, ez = (from.z + to.z) / 2;
+  const c = Math.cos(Math.PI * f), s = Math.sin(Math.PI * f);
+  return out.set(
+    ex + c * (from.x - ex) + s * (via.x - ex),
+    ey + c * (from.y - ey) + s * (via.y - ey),
+    ez + c * (from.z - ez) + s * (via.z - ez),
+  );
+}
 
 /**
  * Stores the blocks and renders them with one InstancedMesh (used for raycasting), plus
@@ -335,8 +351,9 @@ export class World {
   /**
    * Re-groups chain creature blocks (Squirmy, Slither) into chains. Each block carries the id
    * of the chain it belongs to (`block.chain`, see _chainFor), so two chains that touch stay
-   * two creatures. A chain's blocks must also touch each other: one split apart (a block taken
-   * out of its middle) becomes two chains, the part with the older head keeping the id. Each
+   * two creatures. A chain's blocks must also touch each other, through a face or (Cube mode,
+   * where a head may step round an edge: sim.js stepOffsets) an edge: one split apart (a block
+   * taken out of its middle) becomes two chains, the part with the older head keeping the id. Each
    * chain is ordered by `born` (placement order): the first placed is the head, the last the
    * tail. The head carries the eyes; a block that stops being a head loses them.
    */
@@ -351,7 +368,7 @@ export class World {
       seen.add(start);
       const segments = [start];
       for (let i = 0; i < segments.length; i++) {
-        for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        for (const [dx, dy, dz] of [...NEIGHBOR_DIRS, ...EDGE_STEPS]) {
           const n = this.blocks.get(cellKey(segments[i].x + dx, segments[i].y + dy, segments[i].z + dz));
           if (n && n.type === start.type && n.chain === start.chain && !seen.has(n)) {
             seen.add(n);
@@ -684,7 +701,29 @@ export class World {
     if (!a) return out.set(block.x, block.y, block.z);
     const t = Math.min(1, (now - a.t0) / a.dur);
     // ease in: from standing still up to the even speed (slope 1) by the end
-    return out.lerpVectors(a.from, a.to, a.easeIn ? t * t * (2 - t) : t);
+    const f = a.easeIn ? t * t * (2 - t) : t;
+    return a.via ? arcPoint(a.from, a.to, a.via, f, out) : out.lerpVectors(a.from, a.to, f); // (round an edge: arcPoint)
+  }
+
+  /**
+   * Cube mode's edge steps (lattice.js EDGE_STEPS): for a step from cell `from` to cell `to`
+   * across an edge with a block on one side of it (a block other than `self`, the mover), the
+   * open cell on the other side: the step goes round the edge through it (arcPoint). Null for
+   * any other step, and for one with both sides open (nothing to go round: it goes straight).
+   */
+  edgeVia(from, to, self = null) {
+    if (!EDGE_STEPS.length) return null;
+    const d = [to.x - from.x, to.y - from.y, to.z - from.z];
+    if (d.filter((v) => v).length !== 2) return null; // (a step across a face)
+    const sides = [0, 1, 2].filter((i) => d[i]).map((i) => {
+      const v = [from.x, from.y, from.z];
+      v[i] += d[i];
+      const b = this.blocks.get(cellKey(v[0], v[1], v[2]));
+      return { x: v[0], y: v[1], z: v[2], open: !b || b === self };
+    });
+    if (sides[0].open === sides[1].open) return null;
+    const via = sides[0].open ? sides[0] : sides[1];
+    return { x: via.x, y: via.y, z: via.z };
   }
 
   /**
@@ -979,6 +1018,7 @@ export class World {
     const b = this.blocks.get(k);
     const tk = cellKey(to.x, to.y, to.z);
     if (!b || this.blocks.has(tk) || !isValidCell(to.x, to.y, to.z)) return false;
+    const via = this.edgeVia(b, to, b); // (round an edge: it slides along an arc through this cell)
     this.blocks.delete(k);
     const fromPos = new THREE.Vector3(b.x, b.y, b.z);
     b.x = to.x;
@@ -989,7 +1029,7 @@ export class World {
     this._logChange(to.x, to.y, to.z);
     const easeIn = !this._movingOn(b);
     b.movedTurn = this.turn; // lets rules tell settled blocks from moving ones
-    this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), t0: this.time, dur: durationS * 1000, easeIn });
+    this.anims.set(tk, { from: fromPos, to: new THREE.Vector3(to.x, to.y, to.z), via, t0: this.time, dur: durationS * 1000, easeIn });
     // a creature now faces the way it moved (unless it was carried, e.g. by a falling group);
     // its old and new neighbours may change floors
     // a creature moving under its own power (not carried; a one-block creature, not a body

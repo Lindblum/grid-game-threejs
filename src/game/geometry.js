@@ -191,7 +191,7 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
 
 /**
  * The block materials, one per drawing pass: `opaque` (every style except the see-through
- * ones), `cloud` (Fog, Nimbus), `crystal` (refractive) and `translucent` (Water; refractive with Procedural), plus the
+ * ones), `cloud` (Fog, Nimbus), `crystal` and `translucent` (Water; both refractive with Procedural), plus the
  * `body…` versions for Rendering: Smooth. Each pass draws its own InstancedMesh holding only
  * its blocks (World batches, blockBatch.js); the vertex shader still drops other styles as a
  * safeguard. All have per-instance colour.
@@ -215,7 +215,7 @@ vec3 heightBump(vec3 surfPos, vec3 surfNorm, float h, float scale) {
  * translucency), the procedural code compiled out. The lower levels are for slower GPUs.
  */
 export const MATERIALS = ['solid', 'simple', 'procedural'];
-/** Crystal refraction (see createBlockMaterials): how much light passes through, its index of refraction, and how thick a gem the light crosses (cm). */
+/** Crystal refraction (Materials: Procedural; see createBlockMaterials): how much light passes through, its index of refraction, and how thick a gem the light crosses (cm). */
 export const CRYSTAL_TRANSMISSION = 0.85;
 export const CRYSTAL_IOR = 1.6;
 export const CRYSTAL_THICKNESS_CM = 1.6;
@@ -292,9 +292,10 @@ export function createBlockMaterials() {
   bodyCloudDepth.userData.dither = bodyCloud.userData.dither;
   translucentDepth.userData.dither = translucent.userData.dither;
   bodyTranslucentDepth.userData.dither = bodyTranslucent.userData.dither;
-  // Options → Refraction: On, Crystal (any Materials mode) and Water (Materials: Procedural)
-  // bend the scene behind them (transmission, an extra render pass); Off, they are simply
-  // see-through, alpha-blended at their shader's opacity, which is much cheaper
+  // Options → Refraction: On, Crystal and Water bend the scene behind them (transmission: the
+  // opaque scene drawn again, per eye in XR, into a mipmapped image), with Materials: Procedural
+  // only; Off, or with Simple / Solid (for slower GPUs), they are simply see-through,
+  // alpha-blended at their shader's opacity, which is much cheaper
   let refraction = true;
   const applyRefraction = () => {
     const set = (mats, transmission) => {
@@ -307,11 +308,11 @@ export function createBlockMaterials() {
         m.needsUpdate = true; // recompile with / without transmission
       }
     };
-    set([crystal, bodyCrystal], refraction ? CRYSTAL_TRANSMISSION : 0);
-    const waterRefracts = refraction && options.level === 'procedural';
-    set([translucent, bodyTranslucent], waterRefracts ? 1 : 0);
+    const refracts = refraction && options.level === 'procedural';
+    set([crystal, bodyCrystal], refracts ? CRYSTAL_TRANSMISSION : 0);
+    set([translucent, bodyTranslucent], refracts ? 1 : 0);
     // refracting Water is drawn whole (writing depth, not blended): no depth pre-pass needed
-    translucentDepth.visible = bodyTranslucentDepth.visible = !waterRefracts;
+    translucentDepth.visible = bodyTranslucentDepth.visible = !refracts;
   };
   const setMaterials = (level) => {
     if (!MATERIALS.includes(level) || options.level === level) return;

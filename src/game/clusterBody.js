@@ -609,8 +609,27 @@ export class ClusterBodies {
       P.push(centres[0]);
       T.push(new THREE.Vector3(0, 1, 0));
     } else {
-      const curve = new THREE.CatmullRomCurve3(centres, false, 'centripetal');
-      for (let s = 0; s < samples; s++) P.push(curve.getPoint(s / (samples - 1)));
+      // two segments meeting at an edge (Cube mode: World.edgeVia) bend round it: one more point
+      // between them, on the arc their slides take (at rest, the open cell's centre)
+      const points = [centres[0]], at = [0]; // the spine's points; each segment's index among them
+      for (let i = 1; i < n; i++) {
+        const a = order[i - 1], b = order[i];
+        const via = world.edgeVia(a, b, a);
+        if (via) {
+          const mid = centres[i - 1].clone().add(centres[i]).multiplyScalar(0.5);
+          const out = new THREE.Vector3(via.x - (a.x + b.x) / 2, via.y - (a.y + b.y) / 2, via.z - (a.z + b.z) / 2);
+          points.push(out.setLength(centres[i - 1].distanceTo(mid)).add(mid));
+        }
+        at.push(points.length);
+        points.push(centres[i]);
+      }
+      const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
+      // each segment keeps its stretch of samples (and rings): sample s is between segments
+      // i and i + 1, `frac` of the way (getPoint is even in point index)
+      for (let s = 0; s < samples; s++) {
+        const u = (s / (samples - 1)) * (n - 1), i = Math.min(n - 2, Math.floor(u)), frac = u - i;
+        P.push(curve.getPoint((at[i] + frac * (at[i + 1] - at[i])) / (points.length - 1)));
+      }
       for (let s = 0; s < samples; s++) {
         const t = P[Math.min(s + 1, samples - 1)].clone().sub(P[Math.max(s - 1, 0)]);
         T.push(t.lengthSq() > 1e-12 ? t.normalize() : (T[s - 1]?.clone() ?? new THREE.Vector3(0, 1, 0)));
