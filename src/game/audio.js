@@ -308,6 +308,19 @@ export const SOUND_EFFECTS = {
   controlCreature: { tones: [...bell(NOTE.E5, 0, 0.16, 0.1), ...bell(NOTE.A5, 0.08, 0.25, 0.1)] },
   controlObserver: { tones: [...bell(NOTE.A5, 0, 0.16, 0.1), ...bell(NOTE.E5, 0.08, 0.25, 0.1)] },
   tick: { tones: [{ wave: WAVE_TYPES.SINE, f0: NOTE.Fs6, f1: NOTE.F6, t0: 0, dur: 0.035, gain: 0.05 }] }, // menu navigation, tool change
+  // XR panels: a click as one snaps onto a controller, a softer one as it comes off
+  attach: {
+    tones: [
+      { wave: WAVE_TYPES.SINE, f0: NOTE.E5, f1: NOTE.B5, t0: 0, dur: 0.05, gain: 0.08 },
+      { wave: WAVE_TYPES.NOISE, f0: NOTE.C6, q: 1.2, t0: 0.03, dur: 0.03, gain: 0.06 },
+    ],
+  },
+  detach: {
+    tones: [
+      { wave: WAVE_TYPES.NOISE, f0: NOTE.C6, q: 1.2, t0: 0, dur: 0.03, gain: 0.05 },
+      { wave: WAVE_TYPES.SINE, f0: NOTE.B5, f1: NOTE.E5, t0: 0.02, dur: 0.06, gain: 0.06 },
+    ],
+  },
   // the countdown: "ready" on A5, "go" an octave higher
   ready: { whenRunning: true, tones: [{ wave: WAVE_TYPES.SINE, f0: NOTE.A5, f1: NOTE.A5, t0: 0, dur: 0.16, gain: 0.16 }] }, // countdown, each second before 0
   go: { whenRunning: true, tones: [{ wave: WAVE_TYPES.SINE, f0: NOTE.A6, f1: NOTE.A6, t0: 0, dur: 0.4, gain: 0.18 }] }, // countdown at 0

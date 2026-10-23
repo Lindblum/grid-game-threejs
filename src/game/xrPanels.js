@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { TOOLS } from './tools.js';
-import { drawToolIcon, drawMenuIcon, roundRect } from './icons.js';
+import { drawToolIcon, roundRect } from './icons.js';
 import { drawMenuItemIcon } from './menuIcons.js';
 import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './controls.js';
 import { splitLabel } from './menu.js';
@@ -23,87 +23,62 @@ class CanvasPanel {
     this.material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, toneMapped: false, side: THREE.DoubleSide });
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(widthM, heightM), this.material);
     this.mesh.renderOrder = 10;
+    this.box = null; // the visible panel (canvas px: { x, y, w, h }), set by draw; the rest of the canvas is clear
+    this.button = null; // its toggle button (canvas px)
+  }
+
+  /** `uv` (a ray hit) in canvas px. */
+  _px(uv) {
+    return { px: uv.x * this.canvas.width, py: (1 - uv.y) * this.canvas.height };
+  }
+
+  /** Whether `uv` (a ray hit) is on the visible panel. */
+  inBox(uv) {
+    const b = this.box;
+    if (!b) return false;
+    const { px, py } = this._px(uv);
+    return px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h;
+  }
+
+  /** Whether `uv` is on the toggle button. */
+  onToggle(uv) {
+    const b = this.button;
+    if (!b) return false;
+    const { px, py } = this._px(uv);
+    return px >= b.x - 8 && px <= b.x + b.w + 8 && py >= b.y - 8 && py <= b.y + b.h + 8;
+  }
+
+  /**
+   * The visible panel on the plane, in metres from its centre (at scale 1): { left, right, top,
+   * bottom }, and `button`: the toggle button's centre (x).
+   */
+  boxMetres() {
+    const { width, height } = this.mesh.geometry.parameters, c = this.canvas;
+    const sx = width / c.width, sy = height / c.height;
+    const b = this.box ?? { x: 0, y: 0, w: c.width, h: c.height };
+    const button = this.button ? this.button.x + this.button.w / 2 : b.x + b.w / 2;
+    return { left: -width / 2 + b.x * sx, right: -width / 2 + (b.x + b.w) * sx, top: height / 2 - b.y * sy, bottom: height / 2 - (b.y + b.h) * sy, button: -width / 2 + button * sx };
   }
 }
 
-const PX_TO_M = 0.17 / 1000; // shared pixel density for the controller HUDs
+const PX_TO_M = 0.17 / 1000; // the Right HUD's pixel density (the others match it docked: see Engine's XR_PANELS)
 
-function hudBackground(ctx, W, H) {
-  ctx.clearRect(0, 0, W, H);
-  roundRect(ctx, 4, 4, W - 8, H - 8, 34);
-  ctx.fillStyle = 'rgba(18, 22, 30, 0.6)';
+const SLOT = 104, SLOT_GAP = 14;
+
+/**
+ * A panel's toggle button (top left, like the windowed panels' header buttons): `icon` on it,
+ * highlighted while pointed at.
+ */
+function toggleButton(ctx, b, icon, hot) {
+  roundRect(ctx, b.x, b.y, b.w, b.h, 14);
+  ctx.fillStyle = hot ? 'rgba(90, 160, 255, 0.55)' : 'rgba(255,255,255,0.09)';
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.lineWidth = 3;
-  ctx.stroke();
-}
-
-function hudLabel(ctx, text, x, color = '#e8ecf2') {
-  ctx.fillStyle = color;
-  ctx.font = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, x, 40);
-}
-
-/** Hover just above a controller, tilted back toward the eyes. */
-export const HUD_DOCK = {
-  up: 0.045, // m above the controller's grip
-  forward: 0.09, // m in front of the grip
-  tilt: -Math.PI / 2, // tilted back so the face points up toward the eyes (0 = upright)
-};
-
-export function dockAboveController(mesh) {
-  mesh.position.set(0, HUD_DOCK.up, -HUD_DOCK.forward);
-  mesh.rotation.set(HUD_DOCK.tilt, 0, 0);
-}
-
-const SLOT = 104, SLOT_GAP = 14, SLOT_Y = 72;
-
-/** Left HUD (docked to the left controller): game time and the Menu button. */
-export class LeftHudPanel extends CanvasPanel {
-  constructor() {
-    super(200, 250, 200 * PX_TO_M); // time, Mean Diameter, then the Menu button
-    this.mesh.name = 'xr-hud-left';
-    dockAboveController(this.mesh);
-    this.button = { x: (200 - SLOT) / 2, y: SLOT_Y + 44, w: SLOT, h: SLOT };
-    this._last = '';
+  if (hot) {
+    ctx.strokeStyle = '#9cc8ff';
+    ctx.lineWidth = 5;
+    ctx.stroke();
   }
-
-  draw(hover, menuOpen, timeText = '00:00:00', diameterText = '') {
-    const sig = `${hover}|${menuOpen}|${timeText}|${diameterText}`;
-    if (sig === this._last) return;
-    this._last = sig;
-    const { ctx, canvas } = this;
-    const W = canvas.width, H = canvas.height;
-    hudBackground(ctx, W, H);
-    hudLabel(ctx, timeText, W / 2); // game time HH:mm:ss
-    const { x, y, w, h } = this.button;
-    roundRect(ctx, x, y, w, h, 16);
-    ctx.fillStyle = hover ? 'rgba(90, 160, 255, 0.55)' : menuOpen ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)';
-    ctx.fill();
-    if (hover || menuOpen) {
-      roundRect(ctx, x - 3, y - 3, w + 6, h + 6, 18);
-      ctx.strokeStyle = hover ? '#9cc8ff' : '#ffffff';
-      ctx.lineWidth = 7;
-      ctx.stroke();
-    }
-    drawMenuIcon(ctx, x + w / 2, y + h / 2, w * 0.8);
-    // Mean Diameter between the time and the button
-    ctx.fillStyle = 'rgba(232, 236, 242, 0.75)';
-    ctx.font = '600 28px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(diameterText, W / 2, 84);
-    this.texture.needsUpdate = true;
-  }
-
-  /** uv from a raycast hit -> 'menu' or null. */
-  hitTest(uv) {
-    const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
-    const { x, y, w, h } = this.button;
-    return px >= x - 8 && px <= x + w + 8 && py >= y - 8 && py <= y + h + 8 ? 'menu' : null;
-  }
+  drawMenuItemIcon(ctx, icon, b.x + b.w / 2, b.y + b.h / 2, b.w * 0.66);
 }
 
 // the Right HUD's layout (px): its header (the eye button, the title), the actions (Eat, Excrete:
@@ -113,7 +88,7 @@ const RH_TOOLS_W = TOOLS.length * SLOT + (TOOLS.length - 1) * SLOT_GAP;
 const RH_FONT = '600 34px system-ui, -apple-system, Segoe UI, sans-serif';
 
 /**
- * Right HUD (docked to the right controller), like the windowed Right panel: an eye button that
+ * Right HUD (docked on the right controller at first), like the windowed Right panel: an eye button that
  * shows or hides the rest (hidden: only the button), the title (Observer, or the controlled
  * creature's type), the selected creature's actions when it has any (Eat: the button for it
  * and the blocks it could eat; Excrete: the button and the block that would come out; the
@@ -127,7 +102,6 @@ export class RightHudPanel extends CanvasPanel {
     const H = RH_HEAD + 3 * (RH_ROW + RH_GAP) + 2 * RH_WELL_PAD + SLOT + RH_PAD; // (two action rows, the dropdown, the well)
     super(W, H, W * PX_TO_M);
     this.mesh.name = 'xr-hud-right';
-    dockAboveController(this.mesh);
     this.button = { x: RH_PAD, y: RH_PAD, w: RH_BTN, h: RH_BTN };
     this.slotsX = RH_PAD + RH_INDENT + RH_WELL_PAD;
     this.rows = []; // the pressable rows drawn last ({ id: 'eat' | 'excrete' | 'tools', x, y, w, h })
@@ -168,6 +142,7 @@ export class RightHudPanel extends CanvasPanel {
     // the panel: just the button when hidden, else down to its last row (or the well)
     const panelW = open ? W : RH_BTN + 2 * RH_PAD;
     const panelH = !open ? RH_BTN + 2 * RH_PAD : this.rows.length ? y - RH_GAP + RH_PAD : RH_HEAD + RH_PAD - 14;
+    this.box = { x: 0, y: 0, w: panelW, h: Math.min(H, panelH) };
     roundRect(ctx, 4, 4, panelW - 8, Math.min(H, panelH) - 8, 34);
     ctx.fillStyle = 'rgba(18, 22, 30, 0.6)';
     ctx.fill();
@@ -186,8 +161,7 @@ export class RightHudPanel extends CanvasPanel {
         ctx.stroke();
       }
     };
-    pressable(b.x, b.y, b.w, b.h, hover === 'toggle');
-    drawMenuItemIcon(ctx, 'eye', b.x + b.w / 2, b.y + b.h / 2, b.w * 0.66);
+    toggleButton(ctx, b, 'eye', hover === 'toggle');
     if (!open) return void (this.texture.needsUpdate = true);
     ctx.fillStyle = '#e8ecf2';
     ctx.font = '650 38px system-ui, -apple-system, Segoe UI, sans-serif';
@@ -267,7 +241,7 @@ export class RightHudPanel extends CanvasPanel {
   hitTest(uv) {
     const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
     const inside = (q, m = 0) => px >= q.x - m && px <= q.x + q.w + m && py >= q.y - m && py <= q.y + q.h + m;
-    if (inside(this.button, 8)) return 'toggle';
+    if (this.onToggle(uv)) return 'toggle';
     const row = this.rows.find((r) => inside(r));
     if (row) return row.id;
     if (this.slotsY == null || py < this.slotsY - 6 || py > this.slotsY + SLOT + 6) return null;
@@ -300,49 +274,56 @@ function trailingIcon(it) {
 const BUTTON_H = 70, BUTTON_GAP = 12, TABLE_HEAD = 44, TABLE_ROW = 66;
 const tableHeight = (table) => TABLE_HEAD + tableRows(table).length * TABLE_ROW + BUTTON_GAP;
 
-/** Menu panel for XR: docked above the Left HUD (or floating in front of the face if there is no left controller). */
+const MENU_PAD = 26, MENU_BTN = 64; // the gear button: inset from the panel's corner, and its size
+
+/**
+ * Options for XR, like the windowed Options panel: the gear button (top left) that opens it
+ * (pausing) or closes it, the menu's title beside it, then the menu. Closed, only the button
+ * shows. Docked on the left controller at first (see Engine's XR panels).
+ */
 export class MenuPanel extends CanvasPanel {
   constructor() {
     super(954, 1760, MENU_WIDTH_M); // same pixel density as before (800 px per 0.26 m); tall enough for Options with Controls open
-    this.anchorBottom = false;
     this.mesh.name = 'xr-menu';
     this.material.depthTest = false;
     this.mesh.renderOrder = 20;
+    this.button = { x: 6 + MENU_PAD, y: 6 + MENU_PAD, w: MENU_BTN, h: MENU_BTN };
     this.rects = [];
     this._last = '';
   }
 
+  /** `model`: the menu (menuModel) when open, else null; `hoverId`: the item pointed at, or 'toggle'. */
   draw(model, hoverId) {
-    const sig = JSON.stringify([model, hoverId, this.anchorBottom]);
+    const sig = JSON.stringify([model, hoverId]);
     if (sig === this._last) return;
     this._last = sig;
     const { ctx, canvas } = this;
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-    // Panel is sized to its content (the rest of the canvas stays transparent).
-    const bx = 70, bw = W - 140;
-    const contentH = Math.min(H - 12, 150 + this._itemsHeight(ctx, model.items, bw) + 40);
-    // When docked above the Left HUD the panel grows upward from its bottom edge.
-    const offY = this.anchorBottom ? H - 12 - contentH : 0;
-    this.content = { x: 6, y: 6 + offY, w: W - 12, h: contentH }; // visible panel box (canvas px)
-    ctx.save();
-    ctx.translate(0, offY);
-    roundRect(ctx, 6, 6, W - 12, contentH, 48);
+    // Panel is sized to its content (the rest of the canvas stays transparent); closed, just the button.
+    const bx = 70, bw = W - 140, top = this.button.y + MENU_BTN + 30;
+    const closed = 2 * MENU_PAD + MENU_BTN;
+    this.box = model
+      ? { x: 6, y: 6, w: W - 12, h: Math.min(H - 12, top + this._itemsHeight(ctx, model.items, bw) + 34) }
+      : { x: 6, y: 6, w: closed, h: closed };
+    const { x, y, w, h } = this.box;
+    roundRect(ctx, x, y, w, h, model ? 48 : 34);
     ctx.fillStyle = 'rgba(18, 22, 30, 0.62)';
     ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.22)';
     ctx.lineWidth = 4;
     ctx.stroke();
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 60px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText(model.title, W / 2, 84);
-
+    toggleButton(ctx, this.button, 'gear', hoverId === 'toggle');
     this.rects = [];
-    this._drawItems(ctx, model.items, bx, 150, bw, hoverId, offY);
-    ctx.restore();
+    if (model) {
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '700 48px system-ui, -apple-system, Segoe UI, sans-serif';
+      const tx = this.button.x + MENU_BTN + 24;
+      ctx.fillText(fit(ctx, model.title, W - MENU_PAD - tx), tx, this.button.y + MENU_BTN / 2);
+      this._drawItems(ctx, model.items, bx, top, bw, hoverId);
+    }
     this.texture.needsUpdate = true;
   }
 
@@ -366,20 +347,20 @@ export class MenuPanel extends CanvasPanel {
    * `items` from (x, y), `w` wide, each followed by its open dropdown's choices, or its open
    * section's Controls table and entries (indented). Returns the next y.
    */
-  _drawItems(ctx, items, x, y, w, hoverId, offY) {
+  _drawItems(ctx, items, x, y, w, hoverId) {
     for (const it of items) {
-      y = this._drawItem(ctx, it, x, y, w, hoverId, offY);
-      if (it.dropdown?.open) y = this._drawOptions(ctx, it.dropdown.options, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId, offY);
+      y = this._drawItem(ctx, it, x, y, w, hoverId);
+      if (it.dropdown?.open) y = this._drawOptions(ctx, it.dropdown.options, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId);
       if (it.section?.open) {
         if (it.section.table) y = this._drawControlsTable(ctx, x + OPTION_INDENT, y, x + w, tableRows(it.section.table)) + BUTTON_GAP;
-        y = this._drawItems(ctx, it.section.items, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId, offY);
+        y = this._drawItems(ctx, it.section.items, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId);
       }
     }
     return y;
   }
 
   /** One menu button at (bx, y), `bw` wide. Returns the next y. */
-  _drawItem(ctx, it, bx, y, bw, hoverId, offY) {
+  _drawItem(ctx, it, bx, y, bw, hoverId) {
     const bh = BUTTON_H;
     const hover = it.id === hoverId && !it.disabled;
     roundRect(ctx, bx, y, bw, bh, 22);
@@ -445,7 +426,7 @@ export class MenuPanel extends CanvasPanel {
       ctx.fillText(fit(ctx, value, room), right, y + bh / 2);
     }
     ctx.textAlign = 'center';
-    if (!it.disabled) this.rects.push({ id: it.id, x: bx, y: y + offY, w: bw, h: bh, track });
+    if (!it.disabled) this.rects.push({ id: it.id, x: bx, y, w: bw, h: bh, track });
     return y + bh + BUTTON_GAP;
   }
 
@@ -453,7 +434,7 @@ export class MenuPanel extends CanvasPanel {
    * An open dropdown's choices, two to a row from (x, y): the current one lit and ticked, the ones
    * this device can't use dimmed (and not pointable). Returns the next y.
    */
-  _drawOptions(ctx, options, x, y, w, hoverId, offY) {
+  _drawOptions(ctx, options, x, y, w, hoverId) {
     const cols = optionColumns(ctx, options, w);
     const ow = (w - (cols - 1) * OPTION_GAP) / cols;
     options.forEach((option, i) => {
@@ -478,7 +459,7 @@ export class MenuPanel extends CanvasPanel {
       ctx.fillStyle = '#ffffff';
       ctx.fillText(fit(ctx, option.label, ox + ow - 18 - tx - (option.selected ? CHECK + 10 : 0)), tx, oy + OPTION_H / 2);
       ctx.globalAlpha = 1;
-      if (!option.disabled) this.rects.push({ id: option.id, x: ox, y: oy + offY, w: ow, h: OPTION_H });
+      if (!option.disabled) this.rects.push({ id: option.id, x: ox, y: oy, w: ow, h: OPTION_H });
     });
     return y + Math.ceil(options.length / cols) * (OPTION_H + OPTION_GAP);
   }
@@ -540,11 +521,7 @@ export class MenuPanel extends CanvasPanel {
 
   /** True when `uv` is on the visible panel (not the transparent rest of the canvas). */
   contains(uv) {
-    const c = this.content;
-    if (!c) return false;
-    const px = uv.x * this.canvas.width;
-    const py = (1 - uv.y) * this.canvas.height;
-    return px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h;
+    return this.inBox(uv);
   }
 }
 
@@ -575,16 +552,20 @@ function fit(ctx, text, maxW) {
 const TABLET_PX_PER_M = 1000 / 0.34;
 /** The debug tablet's size (m): at first, and the limits when resizing it (drag its corner handle). */
 export const TABLET_SIZE = { width: 0.34, height: 0.26, minWidth: 0.2, minHeight: 0.16, maxWidth: 0.8, maxHeight: 0.7 };
-const TABLET_GRIP_PX = 64; // the resize handle: this square in the bottom-right corner
+const TABLET_GRIP_PX = 64; // the resize handle: this square in its corner (bottom right; docked, top right)
+const TABLET_PAD = 24, TABLET_BTN = 60; // the Debug button: inset from the corner, and its size
 const LOG_COLORS = { log: '#c9d1dc', info: '#9cc8ff', warn: '#ffd166', error: '#ff8a80' };
 
 /**
- * Debug tablet for XR: a free-floating panel showing the same content as the browser's Debug
- * dock: Performance (FPS and timings), the Inspector (properties of the selected / targeted
- * block), Claude (the prompt: typed with the system keyboard, dictated or cleared; not sent
- * anywhere yet), then the recent console log; each section collapses (trigger on its header). It lives in the scene, can be picked up and moved with
- * either grip, and resized by dragging its bottom-right corner with the trigger: the panel
- * gets bigger or smaller, its text keeps its size (more or fewer rows and log lines fit).
+ * Debug tablet for XR, like the windowed Debug panel: its button (top left) opens or closes it
+ * (closed, only the button shows); open, Performance (FPS and timings), the Inspector
+ * (properties of the selected / targeted block), Claude (the prompt: typed with the system
+ * keyboard, dictated or cleared; not sent anywhere yet), then the recent console log; each
+ * section collapses (trigger on its header). Docked (on the left controller at first) or
+ * free (see Engine's XR panels), and resized by dragging its corner handle with the trigger:
+ * bottom right when free (its top left stays put), top right when docked (it stands on its
+ * bottom edge). The panel gets bigger or smaller, its text keeps its size (more or fewer rows
+ * and log lines fit).
  */
 export class DebugTablet extends CanvasPanel {
   constructor() {
@@ -593,6 +574,9 @@ export class DebugTablet extends CanvasPanel {
     this.mesh.visible = false;
     this.width = TABLET_SIZE.width;
     this.height = TABLET_SIZE.height;
+    this.button = { x: TABLET_PAD, y: TABLET_PAD, w: TABLET_BTN, h: TABLET_BTN };
+    this.corner = 'br'; // where the resize handle is: 'br' (free) or 'tr' (docked)
+    this.open = true;
     this._last = '';
   }
 
@@ -623,15 +607,19 @@ export class DebugTablet extends CanvasPanel {
     this._last = ''; // redraw
   }
 
-  /** Whether `uv` (a ray hit on the tablet) is on its resize handle (bottom-right corner). */
+  /** Whether `uv` (a ray hit on the tablet) is on its resize handle (open, in its corner: see `corner`). */
   onResizeHandle(uv) {
-    const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
-    return px >= this.canvas.width - TABLET_GRIP_PX && py >= this.canvas.height - TABLET_GRIP_PX;
+    if (!this.open) return false;
+    const { px, py } = this._px(uv);
+    const H = this.canvas.height;
+    return px >= this.canvas.width - TABLET_GRIP_PX && (this.corner === 'tr' ? py <= TABLET_GRIP_PX : py >= H - TABLET_GRIP_PX);
   }
 
-  /** The id of the control under `uv` (a section header, the prompt box or a button), else null. */
+  /** The id of the control under `uv` ('toggle': the Debug button; a section header, the prompt box or a button), else null. */
   hitTest(uv) {
-    const px = uv.x * this.canvas.width, py = (1 - uv.y) * this.canvas.height;
+    if (this.onToggle(uv)) return 'toggle';
+    if (!this.open) return null;
+    const { px, py } = this._px(uv);
     const r = (this.hits ?? []).find((q) => px >= q.x && px <= q.x + q.w && py >= q.y && py <= q.y + q.h);
     return r ? r.id : null;
   }
@@ -642,22 +630,29 @@ export class DebugTablet extends CanvasPanel {
    * trigger collapses or expands (shared with the dock). Logging takes the leftover height.
    * d = { info: { title, rows }, perf: [[label, text]], logs, logVersion, highlight (grabbed or
    * pointed at: brighter rim), handleHot (resize handle pointed at / dragged), claude: { prompt,
-   * listening, micSupported, speaking, speechSupported, response }, collapsed: { performance, … }, hover: id under the ray }.
+   * listening, micSupported, speaking, speechSupported, response }, collapsed: { performance, … }, hover: id under the ray,
+   * open (closed: just the Debug button), corner (the resize handle's: 'br' or 'tr') }.
    */
   draw(d) {
-    const { info, perf, logs, logVersion, highlight, handleHot = false, claude, collapsed, hover } = d;
-    const sig = JSON.stringify([info, perf, logVersion, highlight, handleHot, claude, collapsed, hover]);
+    const { info, perf, logs, logVersion, highlight, handleHot = false, claude, collapsed, hover, open = true, corner = 'br' } = d;
+    const sig = JSON.stringify([info, perf, logVersion, highlight, handleHot, claude, collapsed, hover, open, corner]);
     if (sig === this._last) return;
     this._last = sig;
+    this.open = open;
+    this.corner = corner;
     const { ctx } = this;
     const W = this.canvas.width, H = this.canvas.height;
     ctx.clearRect(0, 0, W, H);
-    roundRect(ctx, 4, 4, W - 8, H - 8, 30);
+    const closed = 2 * TABLET_PAD + TABLET_BTN;
+    this.box = open ? { x: 0, y: 0, w: W, h: H } : { x: 0, y: 0, w: closed, h: closed };
+    roundRect(ctx, 4, 4, this.box.w - 8, this.box.h - 8, 30);
     ctx.fillStyle = 'rgba(12, 15, 22, 0.66)';
     ctx.fill();
     ctx.strokeStyle = highlight ? '#9cc8ff' : 'rgba(255,255,255,0.22)';
     ctx.lineWidth = highlight ? 6 : 3;
     ctx.stroke();
+    toggleButton(ctx, this.button, 'debug', hover === 'toggle');
+    if (!open) return void (this.texture.needsUpdate = true);
 
     const sans = (size, weight = 400) => `${weight} ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
     const mono = (size, weight = 400) => `${weight} ${size}px ui-monospace, Consolas, monospace`;
@@ -667,11 +662,13 @@ export class DebugTablet extends CanvasPanel {
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffffff';
     ctx.font = sans(34, 700);
-    ctx.fillText('Debug', PAD, 42);
+    const titleX = TABLET_PAD + TABLET_BTN + 20, headY = TABLET_PAD + TABLET_BTN / 2;
+    ctx.fillText('Debug', titleX, headY);
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
     ctx.font = sans(22);
-    ctx.fillText(fit(ctx, 'grip to move · trigger on corner to resize', W - 200), W - PAD, 42);
+    const hintRight = W - PAD - (corner === 'tr' ? TABLET_GRIP_PX : 0);
+    ctx.fillText(fit(ctx, 'grip: move · double-tap grip: dock', hintRight - titleX - 120), hintRight, headY);
     ctx.textAlign = 'left';
     this.hits = [];
 
@@ -724,7 +721,7 @@ export class DebugTablet extends CanvasPanel {
     const below = HEAD + 14 + (collapsed.claude ? 0 : CLAUDE_H) + HEAD + 14 + (collapsed.logging ? 0 : 4 * LINE + 12);
 
     // Performance: two columns when the tablet is wide enough
-    let y = header('performance', 'Performance', perf[0] ? `${perf[0][1]} FPS` : '', 72);
+    let y = header('performance', 'Performance', perf[0] ? `${perf[0][1]} FPS` : '', TABLET_PAD + TABLET_BTN + 16);
     if (!collapsed.performance) {
       const cols = W >= 700 ? 2 : 1;
       perf.forEach(([k, v], i) => {
@@ -822,14 +819,15 @@ export class DebugTablet extends CanvasPanel {
       }
     }
 
-    // the resize handle: diagonal ridges in the bottom-right corner
+    // the resize handle: diagonal ridges in its corner
     ctx.strokeStyle = handleHot ? '#9cc8ff' : 'rgba(255,255,255,0.4)';
     ctx.lineWidth = handleHot ? 5 : 3;
     ctx.lineCap = 'round';
+    const cy = corner === 'tr' ? 14 : H - 14, dir = corner === 'tr' ? 1 : -1;
     for (const d of [18, 32, 46]) {
       ctx.beginPath();
-      ctx.moveTo(W - 14 - d, H - 14);
-      ctx.lineTo(W - 14, H - 14 - d);
+      ctx.moveTo(W - 14 - d, cy);
+      ctx.lineTo(W - 14, cy + dir * d);
       ctx.stroke();
     }
     this.texture.needsUpdate = true;

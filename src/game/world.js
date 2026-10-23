@@ -188,7 +188,6 @@ export class World {
     this.time = 0;
     this.revision = 0; // bumped whenever blocks are added, removed, moved, retyped or recoloured (see _changed)
     this.stepSeconds = STEP_FRACTION; // length of per-turn animations (s); the engine sets it from the turn length
-    this.fogEnabled = true; // Options → Fog (set by the engine): generateNew skips Fog steps when off
     this.turn = 0; // current game turn, set by the engine; stamped on blocks as movedTurn
     this.listeners = new Map(); // event name -> Set of handlers (see on / emit)
     // clusters: same-type groups of connected non-creature blocks (trees are Wood clusters),
@@ -1080,6 +1079,11 @@ export class World {
    * Options → Rendering: Smooth (on) draws each cluster as one merged, smoothed,
    * smooth-shaded body (clusterBody.js); Blocky (off) draws every block on its own.
    */
+  /** Options → Fog: whether Fog blocks are drawn (hidden, they're still in the world and the simulation). */
+  setFogShown(on) {
+    this.materials.uniforms.uShowFog.value = on ? 1 : 0;
+  }
+
   setSmoothRendering(on) {
     this.materials.uniforms.uSmoothRendering.value = on ? 1 : 0;
     this.clusterBodies.setEnabled(on);
@@ -1586,7 +1590,6 @@ export class World {
       prevMade = madeNow;
       madeNow = [];
       prevShell = null;
-      if (step.type === BLOCK.FOG && !this.fogEnabled) return; // Options → Fog is off
       if (step.deleteAll) {
         // clear every block of its type off the board (e.g. scaffolding laid by earlier lines)
         const gone = [...this.ofType(step.type)];

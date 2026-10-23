@@ -62,6 +62,18 @@ export default function App() {
 
 function Overlay({ engine }) {
   const s = useSyncExternalStore(engine.subscribe, engine.getState);
+  // View Mode → 3D: SBS / Interlaced: the page's UI is drawn for each eye too, a little in front
+  // of the screen (see .eye in styles.css)
+  const stereo = !s.inXR && (s.screenView === 'sbs' || s.screenView === 'interlaced') ? s.screenView : null;
+  if (!stereo) return <OverlayView engine={engine} s={s} />;
+  return ['left', 'right'].map((eye) => (
+    <div key={eye} className={`eye eye-${stereo} eye-${eye}`} style={{ '--row': `${1 / (window.devicePixelRatio || 1)}px` }}>
+      <OverlayView engine={engine} s={s} />
+    </div>
+  ));
+}
+
+function OverlayView({ engine, s }) {
   // the page's own HUD and menus: outside XR, and in front of the view in XR: Phone AR
   const flat = !s.inXR || engine.screenUI(s);
   return (
@@ -212,11 +224,13 @@ function ResizeGrip({ place, title, onStart, onDrag, onReset }) {
         e.preventDefault();
         e.stopPropagation();
         e.currentTarget.setPointerCapture(e.pointerId);
-        from.current = { x: e.clientX, y: e.clientY };
+        // (View Mode → 3D: SBS squeezes the page's UI to half width: a screen px is two of its own)
+        const el = e.currentTarget;
+        from.current = { x: e.clientX, y: e.clientY, sx: el.offsetWidth ? el.getBoundingClientRect().width / el.offsetWidth : 1 };
         onStart();
       }}
       onPointerMove={(e) => {
-        if (from.current) onDrag(from.current.y - e.clientY, e.clientX - from.current.x);
+        if (from.current) onDrag(from.current.y - e.clientY, (e.clientX - from.current.x) / from.current.sx);
       }}
       onPointerUp={() => (from.current = null)}
       onPointerCancel={() => (from.current = null)}
@@ -335,7 +349,7 @@ function DebugSection({ id, icon, title, summary, children }) {
  */
 function DebugPanel({ engine }) {
   const [, setTick] = useState(0);
-  const [open, setOpen] = useStoredNumber('debugOpen', 1);
+  const open = !useSyncExternalStore(debugSections.subscribe, debugSections.getSnapshot).panel; // (shared with the XR tablet)
   const panelRef = useRef(null);
   const [size, grip] = usePanelSize('debugPanel', panelRef);
   const logRef = useRef(null);
@@ -355,7 +369,7 @@ function DebugPanel({ engine }) {
       title="Debug (` / ~ hides it)"
       aria-label={open ? 'Collapse debug' : 'Debug'}
       aria-expanded={!!open}
-      onClick={tickThen(() => setOpen(open ? 0 : 1))}
+      onClick={tickThen(() => debugSections.toggle('panel'))}
     >
       <img src={menuItemIconURL('debug')} alt="" draggable={false} />
     </button>
@@ -622,6 +636,10 @@ function MenuBody({ engine, s, gear, panelRef, size, grip }) {
   const model = menuModel(s);
   const [name, setName] = useState('');
   const fileRef = useRef(null);
+  // moving through the menu with the arrows / D-pad: the focused item scrolls into view
+  useEffect(() => {
+    panelRef.current?.querySelector('.focused')?.scrollIntoView({ block: 'nearest' });
+  }, [s.menuFocus, s.menu, s.section, s.dropdown]);
 
   const doSaveNew = () => engine.menuAction('savenew', name.trim() || undefined);
 

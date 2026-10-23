@@ -232,6 +232,7 @@ function videoItems(state) {
       toggle: true,
       ...(state.antialias !== state.antialiasActive && { sub: 'on reload' }), // (fixed when the page loads)
     },
+    { id: 'vsync', label: `VSync: ${state.vsync ? 'On' : 'Off'}`, icon: state.vsync ? 'vsyncOn' : 'vsyncOff', toggle: true },
   ];
 }
 

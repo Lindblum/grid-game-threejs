@@ -229,6 +229,7 @@ export function createBlockMaterials() {
     uNoiseTex: { value: createNoiseTexture() },
     uAO: { value: 1 }, // Options → Ambient Occlusion: 1 = on, 0 = off
     uSmoothRendering: { value: 0 }, // Options → Rendering: Smooth = 1: blocks flagged blockMerged are hidden here and drawn as cluster bodies
+    uShowFog: { value: 1 }, // Options → Fog: 0 = Fog blocks aren't drawn (they're still there)
   };
   const options = { level: 'procedural' }; // Options → Materials (MATERIALS)
   const opaque = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0 });
@@ -366,6 +367,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         varying float vAO;
         uniform float uDitherIndex;
         uniform float uSmoothRendering;
+        uniform float uShowFog;
         #ifdef MERGED_BODY
         attribute vec3 localPos;
         attribute float blockIndex;
@@ -463,6 +465,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         #else
         if (isTranslucent) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #endif
+        // Options → Fog off: Fog isn't drawn
+        if (uShowFog < 0.5 && abs(blockStyle.x - ${BLOCK_STYLE.fog.toFixed(1)}) < 0.5) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         // hidden block types (Void) are never drawn
         if (${BLOCK_TYPES.filter((t) => t.hidden).map((t) => `abs(blockStyle.x - ${t.style.toFixed(1)}) < 0.5`).join(' || ') || 'false'}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #ifndef MERGED_BODY

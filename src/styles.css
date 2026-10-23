@@ -85,6 +85,28 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   transform: translate(-50%, -50%); background: #fff; border-radius: 50%;
 }
 
+/* View Mode → 3D: SBS / Interlaced: the page's UI once per eye, each laid out on the whole window
+   and shifted toward the other eye (--pop), so the two fuse a little in front of the screen.
+   SBS squeezes each into its half; Interlaced weaves them row by row (the left eye on the 1st,
+   3rd, … rows from the top, as interlaced.js draws the view; --row: one device pixel). Only the
+   topmost copy takes the pointer in Interlaced (a mask doesn't change what's under it) */
+.eye { position: absolute; inset: 0; pointer-events: none; --pop: 0.3vw; }
+.eye-sbs { transform-origin: 0 0; }
+.eye-sbs.eye-left { transform: translateX(calc(var(--pop) / 2)) scaleX(0.5); }
+.eye-sbs.eye-right { transform: translateX(calc(50vw - var(--pop) / 2)) scaleX(0.5); }
+.eye-interlaced.eye-left { transform: translateX(var(--pop)); }
+.eye-interlaced.eye-right { transform: translateX(calc(-1 * var(--pop))); }
+.eye-interlaced {
+  -webkit-mask-size: 100% calc(2 * var(--row)); mask-size: 100% calc(2 * var(--row));
+  -webkit-mask-repeat: repeat; mask-repeat: repeat;
+}
+.eye-interlaced.eye-left {
+  -webkit-mask-image: linear-gradient(#000 50%, transparent 50%); mask-image: linear-gradient(#000 50%, transparent 50%);
+}
+.eye-interlaced.eye-right {
+  -webkit-mask-image: linear-gradient(transparent 50%, #000 50%); mask-image: linear-gradient(transparent 50%, #000 50%);
+}
+
 /* the left column (as in 4d-viewer-threejs): Options, then the Debug panel as the next row.
    Each panel keeps the same frame and padding open or closed; closed, only its button shows.
    Neither outgrows the window: the header stays put, the body scrolls */

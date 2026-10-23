@@ -46,7 +46,16 @@ const OBSERVER_CONTROLS = [
     action: 'Options (pauses)',
     mk: { g: ['key:Esc', 'sep:/', 'hud:menu'], t: 'Esc or Enter, or click the gear button (top left)' },
     pad: { g: ['pad:start'], t: 'Start / Menu button' },
-    xr: { g: ['hud:menu', 'sep:/', 'xr:Y'], t: 'Point at the gear on the left HUD and pull the trigger, or press Y' },
+    xr: { g: ['hud:menu', 'sep:/', 'xr:Y'], t: 'Point at the gear (Options, on the left controller) and pull the trigger, or press Y' },
+  },
+  {
+    action: 'Move / dock a panel',
+    mk: { g: ['text:—'], t: 'The panels keep to the window’s corners: drag a panel’s corner grip to resize it' },
+    pad: { g: ['text:—'], t: 'The panels keep to the window’s corners' },
+    xr: {
+      g: ['xr:grip:L', 'sep:/', 'xr:grip:R'],
+      t: 'Grip a panel (touching or pointing at it) to take it; let go near the other controller to dock it there, anywhere else to leave it. Double-tap a grip at a panel to dock it on that controller, or at nothing to undock that controller’s panels',
+    },
   },
   {
     action: 'Rotate view',

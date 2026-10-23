@@ -18,7 +18,7 @@ import {
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
-import { LeftHudPanel, RightHudPanel, MenuPanel, DebugTablet, dockAboveController } from './xrPanels.js';
+import { RightHudPanel, MenuPanel, DebugTablet } from './xrPanels.js';
 import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, VOLUME, CAMERA_SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
@@ -93,9 +93,27 @@ const SEE_THROUGH_REACH_CM = 0.45;
 /** How far (px) the pointer may move between a left press and its release for it to be a click (the tool) rather than a drag (the camera). */
 const CLICK_MAX_MOVE_PX = 6;
 const STEER_SCREEN_COS = 0.35;
-/** XR debug tablet, docked beside the Left HUD: the gap between them (m); dropped within this of the Left HUD (m), it docks again. */
-const TABLET_DOCK_GAP_M = 0.012;
-const TABLET_DOCK_SNAP_M = 0.3;
+/**
+ * XR panels (Options, Debug, the Right HUD; see _layoutPanels): docked on a controller, they
+ * stand side by side in its pointing frame (-Z forward, +Y up), their bottoms on
+ * PANEL_DOCK_ANCHOR, the first one's toggle button over the controller, tilted so their faces
+ * tip up toward the eyes (as in xr-music-threejs).
+ */
+const XR_PANEL_ORDER = ['options', 'debug', 'right'];
+const PANEL_DOCK_ANCHOR = new THREE.Vector3(0, 0.05, 0.02);
+const PANEL_DOCK_TILT = -0.5; // radians about the controller's X: the top leans forward
+const PANEL_DOCK_GAP = 0.008; // m between panels docked side by side
+const PANEL_DOCK_REACH = 0.12; // m: a held panel let go this near the other controller docks there
+const PANEL_TOUCH_REACH = 0.03; // m: a grip this near a panel's face takes it
+const PANEL_GROW_RATE = 12; // per second: a panel in the hand eases to its free size
+const GRIP_TAP_S = 0.3; // a grip pressed no longer than this is a tap…
+const GRIP_DOUBLE_TAP_S = 0.35; // …and pressed again within this, a double tap
+const PANEL_PULSE = { grab: [0.6, 50], detach: [0.4, 30], dock: [0.9, 80], zone: [0.25, 20] }; // haptics: [strength, ms]
+const _panelRay = new THREE.Raycaster();
+const _panelOffset = new THREE.Matrix4();
+const _panelStep = new THREE.Matrix4();
+const _panelWorld = new THREE.Matrix4();
+const _panelTilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PANEL_DOCK_TILT);
 /** Keyboard creature controls: each direction key as a left stick push ([right, down], like the gamepad's axes). */
 const KEY_STICK = {
   KeyW: [0, -1], ArrowUp: [0, -1],
@@ -211,8 +229,9 @@ export class Engine {
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
       speed: SPEED.default, // Options → Speed: 0x–4x (0x: stopped), where 1x is 60 turns a minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
-      fog: true, // Options → Fog: Fog template steps in New scenes
+      fog: true, // Options → Fog: Fog blocks are drawn (off: hidden, and the pointer passes through them)
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
+      vsync: true, // Options → Video → VSync: frames paced by the display (off: as fast as they can be drawn; see _applyVSync)
       antialias: true, // Options → Video → Anti-aliasing (the renderer's MSAA: only takes effect when the page loads; see _initRenderer)
       refraction: true, // Options → Refraction: Crystal (and Water, with Procedural materials) bends what's behind it (Off: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
@@ -281,7 +300,36 @@ export class Engine {
     this._syncCount();
     this._clock = 0;
     playReady(); // T -3 (silent until the page has had a click or key press: browser audio policy)
-    this.renderer.setAnimationLoop(this._tick);
+    // (an XR session always runs on the headset's own frame loop)
+    this.renderer.xr.addEventListener('sessionstart', () => this._applyVSync());
+    this.renderer.xr.addEventListener('sessionend', () => this._applyVSync());
+    this._applyVSync();
+  }
+
+  /**
+   * Options → Video → VSync. On: a frame per display refresh (requestAnimationFrame, through
+   * three's animation loop). Off: the next frame starts as soon as one is done (a message
+   * loop), so the frame rate isn't capped at the refresh rate; the browser still shows them
+   * at its own refreshes. An XR session, or a hidden page, always waits for its frames.
+   */
+  _applyVSync() {
+    const free = !this.state.vsync && !this.renderer.xr.isPresenting;
+    if (this._loopFree === free) return;
+    this._loopFree = free;
+    if (!free) {
+      this._freeLoop = null;
+      this.renderer.setAnimationLoop(this._tick);
+      return;
+    }
+    this.renderer.setAnimationLoop(null);
+    const loop = (this._freeLoop = new MessageChannel());
+    loop.port1.onmessage = () => {
+      if (this._freeLoop !== loop) return;
+      if (document.hidden) return void requestAnimationFrame(() => loop.port2.postMessage(0)); // (rests while hidden)
+      this._tick(performance.now());
+      loop.port2.postMessage(0);
+    };
+    loop.port2.postMessage(0);
   }
 
   // ---------------------------------------------------------------- state
@@ -302,7 +350,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -319,7 +367,6 @@ export class Engine {
     const on = !this.state.debugMode;
     this.setState({ debugMode: on });
     if (!on) claudePrompt.stopDictation();
-    if (on && this._immersive) this._placeDebugTablet();
     this._saveOptions(); // (the menu saves on leaving Options; the key saves at once)
     console.info(`Debug mode ${on ? 'on' : 'off'}`);
   }
@@ -359,7 +406,7 @@ export class Engine {
     // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
     if (typeof saved.movementGuides === 'boolean' && !bool('directionGuides')) this.setState({ directionGuides: saved.movementGuides }); // (its old name)
-    for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
+    for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
@@ -570,14 +617,25 @@ export class Engine {
     this.rayDot = new THREE.Mesh(new THREE.SphereGeometry(0.003, 12, 8), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
     this.rayDot.visible = false;
 
-    this.leftHud = new LeftHudPanel();
     this.rightHud = new RightHudPanel();
     this.menuPanel = new MenuPanel();
-    this.menuPanel.mesh.visible = false;
-    this.scene.add(this.menuPanel.mesh);
     this.debugTablet = new DebugTablet(); // Options → Debug, in XR
-    this.scene.add(this.debugTablet.mesh);
-    this._tabletGrab = null; // { slot, offset: Matrix4 } while a grip holds the tablet
+    // the XR panels, like the windowed ones (each with its toggle button): where each docks at
+    // first (`home`), its size docked, in the gaze dock and held / free (`*Scale`), where it is
+    // docked now (`dock`: 'left', 'right' or null: free in the room) and where it shows (`on`:
+    // that controller, the other when that one's missing, 'gaze' without controllers, or null)
+    this._panels = {
+      options: { panel: this.menuPanel, home: 'left', dockScale: 0.5, gazeScale: 1, freeScale: 1 },
+      debug: { panel: this.debugTablet, home: 'left', dockScale: 0.5, gazeScale: 1, freeScale: 1 },
+      right: { panel: this.rightHud, home: 'right', dockScale: 1, gazeScale: 1, freeScale: 1.6 },
+    };
+    for (const e of Object.values(this._panels)) {
+      Object.assign(e, { dock: e.home, on: null });
+      e.panel.mesh.visible = false;
+      this.scene.add(e.panel.mesh);
+    }
+    this._panelGrabs = { left: null, right: null }; // a panel held in that hand's grip (see _takePanel)
+    this._gripTaps = { left: null, right: null }; // each grip's last press and tap, for double taps
     this._tabletResizing = false; // the right trigger is dragging the tablet's resize handle
     this._tabletHandleHover = false; // the right controller ray is on the tablet's resize handle
     try {
@@ -622,18 +680,15 @@ export class Engine {
         this.hands[hand] = slot;
         if (hand === 'right') {
           ctrl.add(this.rayLine);
-          grip.add(this.rightHud.mesh);
-          dockAboveController(this.rightHud.mesh);
           this.scene.add(this.rayDot);
-        } else {
-          grip.add(this.leftHud.mesh);
-          dockAboveController(this.leftHud.mesh);
         }
       });
       ctrl.addEventListener('disconnected', () => {
         for (const h of ['left', 'right']) if (this.hands[h] === slot) this.hands[h] = null;
         if (this.rayLine.parent === ctrl) ctrl.remove(this.rayLine);
-        for (const hud of [this.leftHud, this.rightHud]) if (hud.mesh.parent === grip) grip.remove(hud.mesh);
+        // its panels go to the other controller (or the gaze dock) next frame; one it held stays where it is
+        for (const h of ['left', 'right']) if (this._panelGrabs[h]?.slot === slot) this._panelGrabs[h] = null;
+        for (const e of Object.values(this._panels)) if (e.panel.mesh.parent === ctrl) this.scene.attach(e.panel.mesh);
         slot.source = null;
         slot.gripHeld = false;
         this._beginGrab();
@@ -649,17 +704,15 @@ export class Engine {
         }
       });
       // Grips: one hand drags the build, both hands rotate + scale it (Tilt Brush style).
-      // A grip near the debug tablet (or the right grip while its ray is on it) moves the tablet instead.
+      // A grip touching or pointing at a panel takes the panel instead, and a double tap docks
+      // or undocks panels (see _gripPanelStart).
       ctrl.addEventListener('squeezestart', () => {
-        if (this._tryGrabTablet(slot)) return;
+        if (this._gripPanelStart(slot)) return;
         slot.gripHeld = true;
         this._beginGrab();
       });
       ctrl.addEventListener('squeezeend', () => {
-        if (this._tabletGrab?.slot === slot) {
-          this._tabletGrab = null;
-          this._dockTabletIfNear();
-        }
+        this._gripPanelEnd(slot);
         slot.gripHeld = false;
         this._beginGrab();
       });
@@ -930,7 +983,6 @@ export class Engine {
   pause() {
     if (this.state.screen !== 'playing') return;
     this.setState({ paused: true, menu: 'main', page: 0, dropdown: null, menuFocus: this.state.gamepadAim ? focusables(menuModel(this.state))[0]?.id ?? null : null });
-    if (this._immersive) this._placeMenuPanel();
     playPause();
   }
 
@@ -1999,11 +2051,11 @@ export class Engine {
 
   /** Game clock: runs only while playing (not while the menu is open). One turn per turnSeconds (Options → Speed). */
   /**
-   * Options → Fog: on, New scenes include the template's Fog steps; off, they're skipped (Fog
-   * already in the world stays).
+   * Options → Fog: whether Fog is drawn. Off, it's hidden (still in the world: it drifts, and
+   * the simulation sees it as before) and the pointer passes through it.
    */
   setFog(on) {
-    this.world.fogEnabled = on;
+    this.world.setFogShown(on);
     this.setState({ fog: on });
   }
 
@@ -2253,6 +2305,10 @@ export class Engine {
     if (id === 'rain') return this.setState({ rain: !s.rain });
     if (id === 'fog') return this.setFog(!s.fog);
     if (id === 'antialias') return this.setState({ antialias: !s.antialias });
+    if (id === 'vsync') {
+      this.setState({ vsync: !s.vsync });
+      return this._applyVSync();
+    }
     if (id === 'debug') return this.toggleDebug();
     if (id === 'rendering') {
       this.world.setSmoothRendering(!s.smoothRendering); // Smooth: clusters drawn as merged, smoothed bodies
@@ -2432,7 +2488,6 @@ export class Engine {
       if (stereo) this.phoneStereo.enable();
       else this.phoneStereo.disable();
     }
-    if (stereo && this.isMenuOpen()) this._placeMenuPanel(); // the page's menu gives way to the in-world one
     this._applyBackground();
   }
 
@@ -2471,8 +2526,10 @@ export class Engine {
   _beginImmersive() {
     this._xrFrames = 0;
     this._needsXRPlacement = true;
-    this._needsTabletPlacement = true; // debug tablet: re-placed each session…
-    this._tabletDocked = true; // …docked on the left controller
+    // each session, the panels start docked where they belong
+    for (const e of Object.values(this._panels)) Object.assign(e, { dock: e.home, on: null });
+    this._panelGrabs = { left: null, right: null };
+    this._gripTaps = { left: null, right: null };
     this._gazeDockAnchor = null;
     this.gazeDwell.reset();
     this.controls.enabled = false;
@@ -2484,17 +2541,16 @@ export class Engine {
     this._releaseBackButton();
     this._setDomOverlay(false);
     this.phoneStereo.disable();
-    this.debugTablet.mesh.visible = false;
-    this._tabletGrab = null;
     this._xrMode = null;
-    if (this.menuPanel.mesh.parent !== this.scene) this.scene.add(this.menuPanel.mesh);
-    this.menuPanel.mesh.scale.setScalar(1);
-    for (const hud of [this.leftHud, this.rightHud]) if (hud.mesh.parent === this.gazeDock) this.gazeDock.remove(hud.mesh);
+    this._panelGrabs = { left: null, right: null };
+    for (const e of Object.values(this._panels)) {
+      e.panel.mesh.visible = false;
+      this.scene.add(e.panel.mesh);
+    }
     this.reticle.group.visible = false;
     this.worldRoot.position.set(0, 0, 0);
     this.worldRoot.quaternion.identity();
     this.worldRoot.scale.setScalar(CM);
-    this.menuPanel.mesh.visible = false;
     this.rayDot.visible = false;
     this._grab = null;
     if (this._savedView) {
@@ -2536,23 +2592,13 @@ export class Engine {
   }
 
   /**
-   * Hands-free XR: lays the HUDs out in the gaze dock (tools at the bottom, the time and Menu
-   * button above them, the menu above that), which floats ahead of the head and swings round to
-   * the front once the head turns or moves well away from it.
+   * Hands-free XR: the gaze dock (the panels stand in it side by side: see _layoutPanels)
+   * floats ahead of the head and swings round to the front once the head turns or moves well
+   * away from it.
    */
   _updateGazeDock(dt) {
     if (!this._gazeMode()) return;
     const dock = this.gazeDock;
-    const left = this.leftHud.mesh, right = this.rightHud.mesh;
-    if (left.parent !== dock || right.parent !== dock) {
-      dock.add(left, right);
-      left.rotation.set(0, 0, 0);
-      right.rotation.set(0, 0, 0);
-      const leftH = left.geometry.parameters.height, rightH = right.geometry.parameters.height;
-      left.position.set(0, 0, 0);
-      right.position.set(0, -(leftH + rightH) / 2 - 0.006, 0);
-      if (this.isMenuOpen()) this._placeMenuPanel();
-    }
     const { pos, dir } = this._headPose();
     const yaw = Math.atan2(-dir.x, -dir.z);
     const turn = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b)); // signed, -π…π
@@ -2584,73 +2630,9 @@ export class Engine {
   }
 
   /**
-   * Places the debug tablet. Docked (the default; see _dockTabletIfNear): on the left controller,
-   * in the Left HUD's plane, beside it toward the right hand (where the right controller's ray
-   * reaches it), its top-left corner level with the HUD's top (so resizing it from its
-   * bottom-right corner keeps that corner put). Undocked, or with no left controller: in front
-   * of the player, a little to the left and below eye level.
-   */
-  _placeDebugTablet() {
-    const tablet = this.debugTablet, m = tablet.mesh, hud = this.leftHud.mesh;
-    if (this._tabletDocked && hud.parent) {
-      if (m.parent !== hud) hud.add(m);
-      const { width: hudW, height: hudH } = hud.geometry.parameters;
-      m.position.set(hudW / 2 + TABLET_DOCK_GAP_M + tablet.width / 2, hudH / 2 - tablet.height / 2, 0);
-      m.rotation.set(0, 0, 0);
-      m.scale.setScalar(1);
-      this._needsTabletPlacement = false;
-      return;
-    }
-    if (m.parent !== this.scene) this.scene.add(m);
-    m.scale.setScalar(1);
-    const { pos, dir } = this._headPose();
-    const flat = new THREE.Vector3(dir.x, 0, dir.z);
-    if (flat.lengthSq() < 1e-6) flat.set(0, 0, -1);
-    flat.normalize();
-    const left = new THREE.Vector3(flat.z, 0, -flat.x);
-    m.position.copy(pos).addScaledVector(flat, 0.5).addScaledVector(left, 0.22);
-    m.position.y -= 0.12;
-    m.lookAt(pos);
-    this._needsTabletPlacement = false;
-  }
-
-  /**
-   * Starts moving the tablet with this controller's grip if it is within reach (or pointed at).
-   * Docked, only the other hand's grip takes it (the left grip still grabs the world), and it
-   * comes off the hand (undocked) as it's picked up.
-   */
-  _tryGrabTablet(slot) {
-    const m = this.debugTablet.mesh;
-    if (!m.visible) return false;
-    if (this._tabletDocked && this.leftHud.mesh.parent === slot.grip) return false;
-    const local = m.worldToLocal(this._gripPos(slot));
-    const { width, height } = m.geometry.parameters;
-    const near = Math.abs(local.z) < 0.12 && Math.abs(local.x) < width / 2 + 0.06 && Math.abs(local.y) < height / 2 + 0.06;
-    const pointed = this.hands.right === slot && this._tabletHover;
-    if (!near && !pointed) return false;
-    if (this._tabletDocked) {
-      this._tabletDocked = false;
-      this.scene.attach(m); // (keeping where it is)
-    }
-    slot.grip.updateMatrixWorld();
-    m.updateMatrixWorld();
-    this._tabletGrab = { slot, offset: slot.grip.matrixWorld.clone().invert().multiply(m.matrixWorld) };
-    return true;
-  }
-
-  /** The tablet let go of: dropped near the left controller (its Left HUD), it docks there again. */
-  _dockTabletIfNear() {
-    const hud = this.leftHud.mesh;
-    if (!hud.parent) return;
-    const d = this.debugTablet.mesh.getWorldPosition(new THREE.Vector3()).distanceTo(hud.getWorldPosition(new THREE.Vector3()));
-    if (d > TABLET_DOCK_SNAP_M) return;
-    this._tabletDocked = true;
-    this._placeDebugTablet();
-  }
-
-  /**
-   * While the trigger drags the tablet's resize handle: its bottom-right corner follows where
-   * the right controller's ray meets the tablet's plane (its top-left corner stays put).
+   * While the trigger drags the tablet's resize handle: that corner follows where the right
+   * controller's ray meets the tablet's plane. Free, it's the bottom-right corner (the top left
+   * stays put); docked, the top right (it stands on its bottom edge, its left edge in place).
    */
   _updateTabletResize() {
     if (!this._tabletResizing || !this._setRayFromController()) return;
@@ -2661,7 +2643,7 @@ export class Engine {
     const hit = this.raycaster.ray.intersectPlane(plane, new THREE.Vector3());
     if (!hit) return;
     const local = m.worldToLocal(hit); // metres, centred on the tablet
-    tablet.setSize(local.x + tablet.width / 2, tablet.height / 2 - local.y);
+    tablet.setSize(local.x + tablet.width / 2, tablet.corner === 'tr' ? local.y + tablet.height / 2 : tablet.height / 2 - local.y);
   }
 
   /** The resize drag is over: remember the tablet's size. */
@@ -2673,13 +2655,212 @@ export class Engine {
     } catch {}
   }
 
-  /** While grabbed, the tablet keeps its pose relative to the hand holding it. */
-  _updateTabletGrab() {
-    const g = this._tabletGrab;
+  // ---------------------------------------------------------------- XR panels (docking)
+
+  /** 'left' or 'right': the hand of controller `slot`, or null. */
+  _handOf(slot) {
+    return this.hands.left === slot ? 'left' : this.hands.right === slot ? 'right' : null;
+  }
+
+  /**
+   * Puts each XR panel where it belongs this frame: docked panels stand side by side on their
+   * controller (Options, Debug, the Right HUD, in that order), or on the other one when theirs
+   * is missing, or in the gaze dock without controllers; free ones stay where they are in the
+   * room; a held one follows its hand (_updatePanelGrabs).
+   */
+  _layoutPanels() {
+    const gaze = this._gazeMode();
+    const rows = { left: [], right: [], gaze: [] };
+    for (const key of XR_PANEL_ORDER) {
+      const e = this._panels[key], m = e.panel.mesh;
+      if (this._panelGrabs.left?.key === key || this._panelGrabs.right?.key === key) continue;
+      if (!e.dock) {
+        e.on = null;
+        if (m.parent !== this.scene) this.scene.attach(m);
+        continue;
+      }
+      const other = e.dock === 'left' ? 'right' : 'left';
+      e.on = gaze ? 'gaze' : this.hands[e.dock] ? e.dock : this.hands[other] ? other : 'gaze';
+      if (m.visible) rows[e.on].push(e);
+    }
+    for (const hand of ['left', 'right']) if (rows[hand].length) this._layoutRow(rows[hand], this.hands[hand].ctrl, false);
+    if (rows.gaze.length) this._layoutRow(rows.gaze, this.gazeDock, true);
+  }
+
+  /**
+   * Panels `entries` side by side in `parent`, left to right, standing on their bottom edges:
+   * on a controller, the first one's toggle button over it, tilted back (PANEL_DOCK_*); in the
+   * gaze dock (`centred`), the row centred and upright.
+   */
+  _layoutRow(entries, parent, centred) {
+    const boxes = entries.map((e) => e.panel.boxMetres());
+    const scales = entries.map((e) => (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.dockScale));
+    const widths = boxes.map((b, i) => (b.right - b.left) * scales[i]);
+    let x = centred ? -(widths.reduce((a, w) => a + w, 0) + PANEL_DOCK_GAP * (entries.length - 1)) / 2 : -(boxes[0].button - boxes[0].left) * scales[0];
+    entries.forEach((e, i) => {
+      const m = e.panel.mesh, b = boxes[i], sc = scales[i];
+      if (m.parent !== parent) parent.add(m);
+      m.position.set(x - b.left * sc, -b.bottom * sc, 0);
+      if (centred) m.quaternion.identity();
+      else {
+        m.quaternion.copy(_panelTilt);
+        m.position.applyQuaternion(_panelTilt).add(PANEL_DOCK_ANCHOR);
+      }
+      m.scale.setScalar(sc);
+      x += widths[i] + PANEL_DOCK_GAP;
+    });
+  }
+
+  /**
+   * The panel controller `slot` (of `hand`) touches (its grip within PANEL_TOUCH_REACH of the
+   * panel's face) or else points at, not counting those docked on it: { key, point } or null.
+   */
+  _panelAt(hand, slot) {
+    const shown = XR_PANEL_ORDER.filter((key) => this._panels[key].panel.mesh.visible && this._panels[key].on !== hand);
+    const pos = this._gripPos(slot);
+    for (const key of shown) {
+      const { panel } = this._panels[key], m = panel.mesh;
+      m.updateWorldMatrix(true, false);
+      const local = m.worldToLocal(pos.clone());
+      const r = PANEL_TOUCH_REACH / m.getWorldScale(new THREE.Vector3()).x;
+      const b = panel.boxMetres();
+      if (Math.abs(local.z) < r && local.x > b.left - r && local.x < b.right + r && local.y > b.bottom - r && local.y < b.top + r) return { key, point: pos };
+    }
+    slot.ctrl.updateMatrixWorld();
+    _panelRay.set(new THREE.Vector3().setFromMatrixPosition(slot.ctrl.matrixWorld), new THREE.Vector3(0, 0, -1).transformDirection(slot.ctrl.matrixWorld));
+    _panelRay.far = 3;
+    const meshes = shown.map((key) => this._panels[key].panel.mesh);
+    for (const hit of _panelRay.intersectObjects(meshes, false)) {
+      const key = shown[meshes.indexOf(hit.object)];
+      if (this._panels[key].panel.inBox(hit.uv)) return { key, point: hit.point };
+    }
+    return null;
+  }
+
+  /**
+   * A grip pressed (as in xr-music-threejs). Soon after a short tap of it, a double tap: it
+   * docks the panel it touches or points at on this controller, or, at no panel, lets go of
+   * the panels docked on this controller, leaving them where they are; it takes nothing.
+   * Otherwise, touching or pointing at a panel, it takes that (see _takePanel). Returns whether
+   * the grip is the panels' (else it moves the build).
+   */
+  _gripPanelStart(slot) {
+    const hand = this._handOf(slot);
+    if (!hand) return false;
+    const now = performance.now() / 1000;
+    const tap = (this._gripTaps[hand] ??= { pressedAt: -1, tappedAt: -Infinity, double: false });
+    tap.double = now - tap.tappedAt < GRIP_DOUBLE_TAP_S;
+    tap.tappedAt = -Infinity;
+    tap.pressedAt = now;
+    const at = this._panelAt(hand, slot);
+    if (tap.double) {
+      this._dockByDoubleTap(hand, at?.key ?? null);
+      return true;
+    }
+    if (!at) return false;
+    this._takePanel(hand, slot, at);
+    return true;
+  }
+
+  /** A grip let go: a held panel let go near the other controller docks there; anywhere else it stays put. */
+  _gripPanelEnd(slot) {
+    const hand = this._handOf(slot);
+    if (!hand) return;
+    const now = performance.now() / 1000, tap = this._gripTaps[hand];
+    if (tap) tap.tappedAt = !tap.double && now - tap.pressedAt <= GRIP_TAP_S ? now : -Infinity;
+    const g = this._panelGrabs[hand];
     if (!g) return;
-    const m = this.debugTablet.mesh;
-    g.slot.grip.updateMatrixWorld();
-    new THREE.Matrix4().multiplyMatrices(g.slot.grip.matrixWorld, g.offset).decompose(m.position, m.quaternion, m.scale);
+    this._panelGrabs[hand] = null;
+    const e = this._panels[g.key];
+    const zone = this._dockZone(hand, e);
+    if (!zone) return;
+    e.dock = zone;
+    playSfx('attach');
+    this._pulse(...PANEL_PULSE.dock, zone);
+  }
+
+  /**
+   * `hand`'s grip takes panel `at.key` (off its dock, if it was docked, with a click): held
+   * rigidly, easing to its free size about the point it was taken by.
+   */
+  _takePanel(hand, slot, at) {
+    const e = this._panels[at.key], m = e.panel.mesh;
+    if (e.on) {
+      playSfx('detach');
+      this._pulse(...PANEL_PULSE.detach, hand);
+    } else this._pulse(...PANEL_PULSE.grab, hand);
+    e.dock = null;
+    e.on = null;
+    for (const h of ['left', 'right']) if (this._panelGrabs[h]?.key === at.key) this._panelGrabs[h] = null; // (the other hand lets go)
+    this.scene.attach(m); // (keeping where it is)
+    slot.grip.updateMatrixWorld();
+    m.updateMatrixWorld();
+    const gripInverse = slot.grip.matrixWorld.clone().invert();
+    this._panelGrabs[hand] = {
+      key: at.key,
+      slot,
+      offset: gripInverse.clone().multiply(m.matrixWorld),
+      point: at.point.clone().applyMatrix4(gripInverse),
+      size: 1,
+      grow: e.freeScale / m.scale.x,
+      zone: null,
+    };
+  }
+
+  /** A double tap of `hand`'s grip: see _gripPanelStart. */
+  _dockByDoubleTap(hand, key) {
+    if (key) {
+      for (const h of ['left', 'right']) if (this._panelGrabs[h]?.key === key) this._panelGrabs[h] = null;
+      this._panels[key].dock = hand;
+      playSfx('attach');
+      this._pulse(...PANEL_PULSE.dock, hand);
+      return;
+    }
+    const mine = Object.values(this._panels).filter((e) => e.on === hand);
+    if (!mine.length) return;
+    for (const e of mine) {
+      Object.assign(e, { dock: null, on: null });
+      this.scene.attach(e.panel.mesh);
+    }
+    playSfx('detach');
+    this._pulse(...PANEL_PULSE.detach, hand);
+  }
+
+  /** The other controller, when it's within PANEL_DOCK_REACH of panel `e` (held in `hand`): where letting go docks it; else null. */
+  _dockZone(hand, e) {
+    const other = hand === 'left' ? 'right' : 'left';
+    const slot = this.hands[other];
+    if (!slot) return null;
+    const m = e.panel.mesh, b = e.panel.boxMetres();
+    m.updateWorldMatrix(true, false);
+    const at = this._gripPos(slot);
+    // the nearest point of the visible panel
+    const local = m.worldToLocal(at.clone());
+    local.set(THREE.MathUtils.clamp(local.x, b.left, b.right), THREE.MathUtils.clamp(local.y, b.bottom, b.top), 0);
+    return m.localToWorld(local).distanceTo(at) < PANEL_DOCK_REACH ? other : null;
+  }
+
+  /** Held panels keep their pose in the hand, easing to their free size; a tick as one comes within reach of a dock. */
+  _updatePanelGrabs(dt) {
+    for (const hand of ['left', 'right']) {
+      const g = this._panelGrabs[hand];
+      if (!g) continue;
+      const e = this._panels[g.key], m = e.panel.mesh;
+      if (!m.visible) {
+        this._panelGrabs[hand] = null;
+        continue;
+      }
+      g.size += (g.grow - g.size) * (1 - Math.exp(-PANEL_GROW_RATE * Math.min(dt, 0.1)));
+      const { x, y, z } = g.point;
+      _panelOffset.makeTranslation(x, y, z).multiply(_panelStep.makeScale(g.size, g.size, g.size));
+      _panelOffset.multiply(_panelStep.makeTranslation(-x, -y, -z)).multiply(g.offset);
+      g.slot.grip.updateMatrixWorld();
+      _panelWorld.multiplyMatrices(g.slot.grip.matrixWorld, _panelOffset).decompose(m.position, m.quaternion, m.scale);
+      m.updateMatrixWorld();
+      const zone = this._dockZone(hand, e);
+      if (zone && zone !== g.zone) this._pulse(...PANEL_PULSE.zone, zone);
+      g.zone = zone;
+    }
   }
 
   // ---------------------------------------------------------------- XR grab (grips)
@@ -2767,33 +2948,6 @@ export class Engine {
     this.worldRoot.position.copy(pos).addScaledVector(dir, 0.5);
   }
 
-  /** Pause panel 50 cm in front of the face, facing the player. */
-  /**
-   * Docks the menu above the Left HUD, in the HUD's plane. Without a left controller
-   * it floats 50 cm in front of the face instead.
-   */
-  _placeMenuPanel() {
-    const m = this.menuPanel.mesh;
-    const hud = this.leftHud.mesh;
-    m.scale.setScalar(this.state.phone ? PHONE_MENU_SCALE : 1);
-    if (hud.parent) {
-      if (m.parent !== hud) hud.add(m);
-      const hudH = hud.geometry.parameters.height;
-      const menuH = m.geometry.parameters.height * m.scale.y;
-      m.position.set(0, hudH / 2 + 0.008 + menuH / 2, 0);
-      m.rotation.set(0, 0, 0);
-      this.menuPanel.anchorBottom = true;
-    } else {
-      if (m.parent !== this.scene) this.scene.add(m);
-      const { pos, dir } = this._headPose();
-      m.position.copy(pos).addScaledVector(dir, 0.5);
-      m.lookAt(pos);
-      this.menuPanel.anchorBottom = false;
-    }
-    m.visible = true;
-    this._menuHover = null;
-  }
-
   /**
    * Applies Options → Background: the solid colour, the skybox panorama, or passthrough
    * (nothing drawn behind the scene, in an XR passthrough session; elsewhere the solid colour).
@@ -2854,8 +3008,9 @@ export class Engine {
     return null;
   }
 
-  _pulse(intensity, ms) {
-    const gp = this.hands.right?.source?.gamepad;
+  /** A haptic pulse on `hand`'s controller. */
+  _pulse(intensity, ms, hand = 'right') {
+    const gp = this.hands[hand]?.source?.gamepad;
     const act = gp?.hapticActuators?.[0];
     try {
       if (act?.pulse) act.pulse(intensity, ms);
@@ -2867,6 +3022,10 @@ export class Engine {
 
   _onRightTrigger() {
     if (this._hudHover === 'menu') return this.toggleMenu();
+    if (this._hudHover === 'debug') {
+      playTick();
+      return debugSections.toggle('panel');
+    }
     if (this._hudHover === 'rightHud') return this.toggleRightHud();
     if (this._hudHover === 'tools') return this.toggleToolsOpen();
     if (this._hudHover === 'eat') return this.selectedEat();
@@ -2990,7 +3149,7 @@ export class Engine {
     this.rayDot.visible = false;
 
     const menuOpen = this.isMenuOpen(s);
-    const panelOpen = xr && menuOpen && !this.screenUI(s); // the in-world pause panel (not with the page's own menus)
+    const menuShown = xr && this.menuPanel.mesh.visible; // the in-world Options (not with the page's own menus)
     this._menuHover = null;
     this._menuPanelHover = false; // ray is on the pause panel (button or not)
     this._tabletHover = false;
@@ -3001,26 +3160,29 @@ export class Engine {
     let uiHit = null;
 
     if (xr && (gaze ? this._setRayFromHead() : this._setRayFromController())) {
-      // UI first: the left HUD's Menu button and the start/pause panel (and for the gaze, the tool slots).
+      // UI first: the panels (Options, Debug, the Right HUD; for the gaze, the tool slots too).
       this.raycaster.far = 3;
       const targets = [];
-      if (this.leftHud.mesh.visible && this.leftHud.mesh.parent) targets.push(this.leftHud.mesh);
-      if (this.rightHud.mesh.visible && this.rightHud.mesh.parent) targets.push(this.rightHud.mesh); // (its eye button; the gaze: its tools too)
-      if (panelOpen) targets.push(this.menuPanel.mesh);
+      if (this.rightHud.mesh.visible) targets.push(this.rightHud.mesh);
+      if (menuShown) targets.push(this.menuPanel.mesh);
       if (this.debugTablet.mesh.visible) targets.push(this.debugTablet.mesh);
       for (const hit of this.raycaster.intersectObjects(targets, false)) {
         if (hit.object === this.debugTablet.mesh) {
-          this._tabletHover = true; // grip now grabs it; the trigger resizes it from its corner handle
+          if (!this.debugTablet.inBox(hit.uv)) continue;
+          this._tabletHover = true; // the grip takes it; the trigger resizes it from its corner handle
           this._tabletHandleHover = !gaze && this.debugTablet.onResizeHandle(hit.uv); // (resizing needs a held trigger)
           this._tabletHoverId = this._tabletHandleHover ? null : this.debugTablet.hitTest(hit.uv);
+          if (this._tabletHoverId === 'toggle') {
+            this._tabletHoverId = null;
+            this._tabletHover = false;
+            this._hudHover = 'debug';
+          }
           uiHit = hit;
           break;
-        } else if (hit.object === this.leftHud.mesh) {
-          if (this.leftHud.hitTest(hit.uv)) {
-            this._hudHover = 'menu';
-            uiHit = hit;
-            break;
-          }
+        } else if (hit.object === this.menuPanel.mesh && this.menuPanel.onToggle(hit.uv)) {
+          this._hudHover = 'menu';
+          uiHit = hit;
+          break;
         } else if (hit.object === this.rightHud.mesh) {
           const slot = this.rightHud.hitTest(hit.uv);
           if (slot === 'toggle' || slot === 'tools' || slot === 'eat' || slot === 'excrete') {
@@ -3033,7 +3195,7 @@ export class Engine {
             uiHit = hit;
             break;
           }
-        } else if (this.menuPanel.contains(hit.uv)) {
+        } else if (menuOpen && this.menuPanel.contains(hit.uv)) {
           // only the visible panel counts; its transparent margin is "outside"
           this._menuHover = this.menuPanel.hitTest(hit.uv);
           this._menuHoverUV = hit.uv;
@@ -3065,7 +3227,7 @@ export class Engine {
         this.rayDot.visible = true;
       }
     }
-    if (panelOpen) this.menuPanel.draw(menuModel(s), this._menuHover);
+    if (menuShown) this.menuPanel.draw(menuOpen ? menuModel(s) : null, this._hudHover === 'menu' ? 'toggle' : this._menuHover);
 
     if (s.screen === 'playing' && !s.paused && !uiHit && this.toolsReady(s) && this.toolsAvailable(s)) {
       let ok = false;
@@ -3108,11 +3270,20 @@ export class Engine {
     }
   }
 
+  /**
+   * View Mode → 3D: SBS / Interlaced: the eyes converge on the camera's target, so what you're
+   * looking at sits at the screen and the page's UI (a little in front of it) stays in front.
+   */
+  _setStereoFocus() {
+    this.camera.focus = Math.max(this.camera.near * 2, this.camera.position.distanceTo(this.controls.target));
+  }
+
   /** View Mode → 3D: SBS (half side-by-side, for 3D TVs): each eye squeezed into half the screen. */
   _renderSideBySide() {
     const r = this.renderer, cam = this.camera;
     this._sbs ??= Object.assign(new THREE.StereoCamera(), { eyeSep: SBS_EYE_SEPARATION });
     cam.updateMatrixWorld();
+    this._setStereoFocus();
     this._sbs.update(cam);
     r.getSize(_sbsSize);
     const half = _sbsSize.x / 2;
@@ -3139,13 +3310,17 @@ export class Engine {
       this.phoneStereo.update(dt, s.background === 'passthrough');
       this.phoneStereo.render(this.scene, this.camera); // a plain render unless Phone Viewer
     } else if (s.screenView === 'sbs') this._renderSideBySide();
-    else if (s.screenView === 'interlaced') (this._interlaced ??= new Interlaced(SBS_EYE_SEPARATION)).render(this.renderer, this.scene, this.camera);
+    else if (s.screenView === 'interlaced') {
+      this._setStereoFocus();
+      (this._interlaced ??= new Interlaced(SBS_EYE_SEPARATION)).render(this.renderer, this.scene, this.camera);
+    }
     else this.renderer.render(this.scene, this.camera);
   }
 
   _pick() {
     const hits = this.raycaster.intersectObjects(this.world.pickMeshes, false);
-    const h = hits.find((x) => x.instanceId != null);
+    // (hidden Fog, Options → Fog off, isn't there to point at)
+    const h = hits.find((x) => x.instanceId != null && (this.state.fog || this.world.blockAtHit(x)?.type !== BLOCK.FOG));
     if (!h) {
       // Empty world: allow placing the first block at the origin.
       if (this.world.size === 0) return { block: null, place: [0, 0, 0], placeFree: true, faceType: null };
@@ -3510,7 +3685,6 @@ export class Engine {
       if (this._needsXRPlacement && this._xrFrames > 2) {
         this._needsXRPlacement = false;
         this._placeWorldInFront();
-        if (this.isMenuOpen()) this._placeMenuPanel();
       }
       this._pollGamepads();
       this._updateGrab();
@@ -3519,24 +3693,22 @@ export class Engine {
       const dbg = this.state.debugMode && !flat;
       this.debugTablet.mesh.visible = dbg;
       if (dbg) {
-        // docked (beside the Left HUD): placed every frame (it follows the hand, and its size);
-        // undocked: once, in front of the player
-        if (this._xrFrames > 2 && (this._tabletDocked || this._needsTabletPlacement !== false)) this._placeDebugTablet();
-        this._updateTabletGrab();
         this._updateTabletResize();
+        const grabbed = this._panelGrabs.left?.key === 'debug' || this._panelGrabs.right?.key === 'debug';
         this.debugTablet.draw({
           info: this.debugInfo(),
           perf: this.performanceRows(),
           logs: getLogs(120),
           logVersion: getLogVersion(),
-          highlight: !!this._tabletGrab || this._tabletHover,
+          highlight: grabbed || this._tabletHover,
           handleHot: this._tabletResizing || this._tabletHandleHover,
           claude: { ...claudePrompt.getSnapshot(), response: claudePrompt.responseText() },
           collapsed: debugSections.getSnapshot(),
-          hover: this._tabletHoverId,
+          hover: this._hudHover === 'debug' ? 'toggle' : this._tabletHoverId,
+          open: !debugSections.getSnapshot().panel,
+          corner: this._panels.debug.on ? 'tr' : 'br', // (docked, it stands on its bottom edge)
         });
       } else {
-        this._tabletGrab = null;
         this._endTabletResize();
       }
       let msg = null;
@@ -3555,15 +3727,10 @@ export class Engine {
         style: { materials: this.state.materials, smooth: this.state.smoothRendering },
         hover: this._hudHover === 'rightHud' ? 'toggle' : this._hudHover ?? this._toolHover,
       });
-      this.leftHud.draw(this._hudHover === 'menu', this.state.paused, Engine.formatTime(this.state.gameTime), Engine.formatDiameter(this.state.blockCount));
       this.rightHud.mesh.visible = playing && !flat;
-      this.leftHud.mesh.visible = playing && !flat;
-      const open = this.isMenuOpen() && !flat;
-      // keep the menu docked to the left hand (re-dock if the controller connects / disconnects)
-      if (open && (this.leftHud.mesh.parent ? this.menuPanel.mesh.parent !== this.leftHud.mesh : this.menuPanel.mesh.parent !== this.scene)) {
-        this._placeMenuPanel();
-      }
-      this.menuPanel.mesh.visible = open;
+      this.menuPanel.mesh.visible = !flat; // (closed, just its gear)
+      this._updatePanelGrabs(dt);
+      this._layoutPanels();
     }
     this._dt = dt;
     this._updateTarget();
@@ -3589,6 +3756,7 @@ export class Engine {
   }
 
   dispose() {
+    this._freeLoop = null;
     this.renderer.setAnimationLoop(null);
     if (this.state.handheld) this._exitHandheld();
     setMusicLevel(0); // fades out

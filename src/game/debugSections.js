@@ -1,5 +1,6 @@
 // The Debug panel's sections, top to bottom, and which are collapsed: shared by the browser's
-// Debug dock and the XR debug tablet, and remembered in this browser.
+// Debug dock and the XR debug tablet, and remembered in this browser. `panel` is the whole panel
+// (its Debug button): collapsed, only the button shows.
 
 export const DEBUG_SECTIONS = ['performance', 'inspector', 'claude', 'logging'];
 
@@ -12,7 +13,7 @@ const read = (id) => {
   }
 };
 
-let collapsed = Object.freeze(Object.fromEntries(DEBUG_SECTIONS.map((id) => [id, read(id)])));
+let collapsed = Object.freeze(Object.fromEntries([...DEBUG_SECTIONS, 'panel'].map((id) => [id, read(id)])));
 const listeners = new Set();
 
 export const debugSections = {

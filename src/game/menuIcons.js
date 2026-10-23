@@ -14,7 +14,7 @@ const GEAR_PATHS = [
 ];
 let gearPaths = null; // Path2D, made on first use
 
-/** Options icon: a gear (the Options button, and the Left HUD's in XR), `size` across, centred at (cx, cy). */
+/** Options icon: a gear (the Options button, in XR too), `size` across, centred at (cx, cy). */
 export function drawMenuIcon(ctx, cx, cy, size, color = '#e8ecf2') {
   gearPaths ??= GEAR_PATHS.map((d) => new Path2D(d));
   const k = size / 20; // the gear is 20 units across (2.3–21.7 wide, 2.6–22.6 tall)
@@ -446,6 +446,24 @@ const DRAW = {
     ctx.globalAlpha *= 0.4;
     line(ctx, P, [[0.16, 0.66], [0.66, 0.16]]); // (its soft fringe)
     line(ctx, P, [[0.34, 0.84], [0.84, 0.34]]);
+  },
+  vsyncOn(ctx, P) {
+    // VSync: a display, and in it a frame edge running straight down (no tearing)
+    line(ctx, P, [[0.14, 0.2], [0.86, 0.2], [0.86, 0.68], [0.14, 0.68], [0.14, 0.2]]);
+    line(ctx, P, [[0.5, 0.68], [0.5, 0.82]]);
+    line(ctx, P, [[0.34, 0.82], [0.66, 0.82]]);
+    line(ctx, P, [[0.44, 0.3], [0.44, 0.58]]);
+  },
+  vsyncOff(ctx, P) {
+    // the same display, its picture torn: the edge jumps sideways halfway down
+    line(ctx, P, [[0.14, 0.2], [0.86, 0.2], [0.86, 0.68], [0.14, 0.68], [0.14, 0.2]]);
+    line(ctx, P, [[0.5, 0.68], [0.5, 0.82]]);
+    line(ctx, P, [[0.34, 0.82], [0.66, 0.82]]);
+    line(ctx, P, [[0.4, 0.3], [0.4, 0.44]]);
+    line(ctx, P, [[0.56, 0.44], [0.56, 0.58]]);
+    ctx.globalAlpha *= 0.4;
+    line(ctx, P, [[0.22, 0.44], [0.78, 0.44]]); // (the tear)
+    ctx.globalAlpha /= 0.4;
   },
   aaOff(ctx, P) {
     // the same edge, jagged: stair steps
