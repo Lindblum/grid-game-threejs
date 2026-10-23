@@ -18,7 +18,7 @@ const SMOOTH_LAMBDA = 0.5;
 const SMOOTH_MU = -0.53;
 
 /** A chain creature's tube (ClusterBodies._createTube): radius (cm; a cell's inradius is 1 cm), sides, rings per segment (even) and per end cap. */
-const TUBE_RADIUS_CM = 0.95;
+export const TUBE_RADIUS_CM = 0.95;
 const TUBE_SIDES = 16;
 const TUBE_RINGS_PER_SEGMENT = 6;
 const TUBE_CAP_RINGS = 4;
@@ -166,6 +166,36 @@ export function buildBody(blocks, flat = false) {
     vertexCount: n, smooth: pos, ownerIdx, ownerCount, tris: tris.subarray(0, nt),
     rBlock, rFace, rLocal, rWeld,
   };
+}
+
+/**
+ * A lone block's shape in Smooth rendering (a one-block body: its cell smoothed), added to
+ * `g` (createBlockGeometry's cell): each vertex where smoothing puts it, packed into its
+ * `faceIndex` attribute as yzw (x stays the face; one attribute slot, not another: the
+ * instanced block shader is at WebGL's limit of 16). The block shader draws smooth-shaded blocks (World.setSmooth: growing in when excreted,
+ * shrinking away when eaten, InventoryView's items) with it while Rendering is Smooth, so they
+ * look like the bodies they come from or go into. `g.userData.smoothRadius`: its furthest
+ * vertex from the centre (cm).
+ */
+export function addSmoothShape(g) {
+  const topo = buildBody([{ x: 0, y: 0, z: 0 }]);
+  const key = (x, y, z) => `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+  const to = new Map(); // rest place (cm) -> welded vertex
+  for (let r = 0; r < topo.rWeld.length; r++) to.set(key(topo.rLocal[r * 3], topo.rLocal[r * 3 + 1], topo.rLocal[r * 3 + 2]), topo.rWeld[r]);
+  const pos = g.getAttribute('position'), face = g.getAttribute('faceIndex');
+  const out = new Float32Array(pos.count * 4);
+  let radius = 0;
+  for (let v = 0; v < pos.count; v++) {
+    const w = to.get(key(pos.getX(v), pos.getY(v), pos.getZ(v)));
+    const x = w === undefined ? pos.getX(v) : topo.smooth[w * 3];
+    const y = w === undefined ? pos.getY(v) : topo.smooth[w * 3 + 1];
+    const z = w === undefined ? pos.getZ(v) : topo.smooth[w * 3 + 2];
+    out.set([face.getX(v), x, y, z], v * 4);
+    radius = Math.max(radius, Math.hypot(x, y, z));
+  }
+  g.setAttribute('faceIndex', new THREE.BufferAttribute(out, 4));
+  g.userData.smoothRadius = radius;
+  return g;
 }
 
 /**

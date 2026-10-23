@@ -4,7 +4,7 @@ import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, is
 import { GRID, NEIGHBOR_DIRS, cellKey, gridMode, isValidCell, onGridChange, randomCellOnSphere, setGridMode } from './lattice.js';
 import { GRIDS, DEFAULT_GRID, dirName } from './grids.js';
 import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
-import { ClusterBodies } from './clusterBody.js';
+import { ClusterBodies, addSmoothShape } from './clusterBody.js';
 import { BlockBatch } from './blockBatch.js';
 import { SOLID_TYPES, stepFog, stepGroups, stepSink, stepWater } from './sim.js';
 import { CreatureEyes, orientCreature } from './creature.js';
@@ -159,7 +159,7 @@ const _c = new THREE.Color();
 export class World {
   constructor(parent) {
     this.parent = parent;
-    this.geometry = createBlockGeometry(); // the block's shape, shared by every batch
+    this.geometry = addSmoothShape(createBlockGeometry()); // the block's shape (and its Smooth rendering one), shared by every batch
     this.materials = createBlockMaterials();
     this.blocks = new Map(); // key -> { x, y, z, type, batch, index }
     this.anims = new Map(); // key -> { from, to, t0, dur } for sliding blocks
@@ -231,7 +231,7 @@ export class World {
     this.clear();
     this.clusterBodies.clear();
     const old = this.geometry;
-    this.geometry = createBlockGeometry();
+    this.geometry = addSmoothShape(createBlockGeometry());
     for (const batch of this._batchList) batch.setBaseGeometry(this.geometry);
     old.dispose();
   }

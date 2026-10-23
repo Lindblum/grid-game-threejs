@@ -25,6 +25,12 @@ const OBSERVER_CONTROLS = [
     xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right, or open the Right HUD’s Tool dropdown and point at a tool (the left controller reaches it)' },
   },
   {
+    action: 'Deselect',
+    mk: { g: ['mouse:R'], t: 'Right click (without dragging): no creature selected any more (cancels the Select tool’s target)' },
+    pad: { g: ['pad:X'], t: 'X: no creature selected any more (cancels the Select tool’s target)' },
+    xr: { g: ['text:—'], t: 'Point the Select tool at empty space and pull the trigger' },
+  },
+  {
     action: 'Consume (selected creature)',
     mk: { g: ['key:E'], t: 'E: the selected creature consumes the block in front of it. Hold E and press WASD / the arrows to choose which block (it consumes on letting go)' },
     pad: { g: ['pad:Y', 'sep:+', 'stick:L:any'], t: 'Y: the selected creature consumes the block in front of it. Hold Y and push the left stick to choose which block (it consumes on letting go)' },
@@ -39,7 +45,7 @@ const OBSERVER_CONTROLS = [
   {
     action: 'Wander / Wait (selected creature)',
     mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
-    pad: { g: ['pad:X'], t: 'X: Wait, or resume what it was doing (toggle)' },
+    pad: { g: ['pad:view'], t: 'View (Back): Wait, or resume what it was doing (toggle)' },
     xr: { g: ['xr:Y', 'sep:/', 'xr:X'], t: 'Left Y: Wander (opens the menu when nothing is selected), left X: Wait' },
   },
   {
@@ -59,7 +65,7 @@ const OBSERVER_CONTROLS = [
   },
   {
     action: 'Rotate view',
-    mk: { g: ['mouse:L', 'sep:/', 'mouse:R'], t: 'Left- or right-drag (a left click without dragging uses the tool)' },
+    mk: { g: ['mouse:L', 'sep:/', 'mouse:R'], t: 'Left- or right-drag (a left click without dragging uses the tool; a right click deselects)' },
     pad: { g: ['stick:R:any'], t: 'Right stick' },
     xr: { g: ['xr:grip:L', 'sep:+', 'xr:grip:R'], t: 'Hold both grips and turn your hands around each other (or walk around)' },
   },

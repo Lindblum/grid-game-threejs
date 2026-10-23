@@ -4,7 +4,7 @@ import { CameraCollider } from './cameraCollision.js';
 import { InventoryView } from './inventoryView.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
+import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edgeStepVia, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
@@ -777,6 +777,8 @@ export class Engine {
     this._onPointerLeave = () => (this.mouse = null);
     this._onPointerDown = (e) => {
       unlockAudio();
+      // a right click, released where it was pressed, deselects (_onPointerUp); a right drag orbits
+      if (e.button === 2) this._rightPress = { x: e.clientX, y: e.clientY, id: e.pointerId };
       if (e.button !== 0) return;
       this._onPointerMove(e);
       // the dimmed backdrop lets clicks through to the canvas: a click beside the pause
@@ -787,6 +789,13 @@ export class Engine {
       this._press = { x: e.clientX, y: e.clientY, id: e.pointerId };
     };
     this._onPointerUp = (e) => {
+      if (e.button === 2) {
+        const right = this._rightPress;
+        this._rightPress = null;
+        if (!right || right.id !== e.pointerId || Math.hypot(e.clientX - right.x, e.clientY - right.y) > CLICK_MAX_MOVE_PX) return;
+        if (this.state.screen === 'playing' && !this.state.paused && !this.state.inXR) this.cancelSelection();
+        return;
+      }
       const press = this._press;
       this._press = null;
       if (e.button !== 0 || !press || press.id !== e.pointerId) return;
@@ -1589,17 +1598,53 @@ export class Engine {
     return best;
   }
 
-  /** Each cell `c` could step into, with its cosine on screen: see _screenCosines. */
+  /** Each cell `c` could step into, with its cosine on screen (along the way it heads: _stepAim): see _screenCosines. */
   _stepCosines(c, sx, sy) {
-    return this._screenCosines(c, steppableCells(this.world, c), sx, sy);
+    return this._screenCosines(c, steppableCells(this.world, c), sx, sy, (t) => this._stepAim(c, t));
+  }
+
+  /**
+   * Where `c`'s step to cell `t` heads along the ground it walks on: for an edge step (Cube
+   * mode: over a corner, up a step, round onto a wall's other side) its part along `c`'s floor
+   * (the part toward or away from the floor dropped), so going over an edge reads as straight
+   * on, the way the stick points; any other step (or no floor): `t` itself.
+   */
+  _stepAim(c, t) {
+    if (!c.floor || !edgeStepVia(this.world, c, t)) return t;
+    const d = new THREE.Vector3(t.x - c.x, t.y - c.y, t.z - c.z), len = d.length();
+    const n = new THREE.Vector3(...c.floor).normalize();
+    d.addScaledVector(n, -d.dot(n));
+    if (d.lengthSq() < 1e-6) return t;
+    d.setLength(len);
+    return { x: c.x + d.x, y: c.y + d.y, z: c.z + d.z };
+  }
+
+  /**
+   * Direction Guides: the line of `c`'s step to cell `t`, `f` (0..1) of the way along, as
+   * [creature, from, to] segments: straight, or for an edge step (Cube mode) bent round its
+   * edge through the cell it passes (sim.js edgeStepVia).
+   */
+  _stepPath(c, t, f) {
+    const via = edgeStepVia(this.world, c, t);
+    const pts = via ? [c, via, t] : [c, t];
+    const lens = pts.slice(1).map((b, i) => Math.hypot(b.x - pts[i].x, b.y - pts[i].y, b.z - pts[i].z));
+    let left = f * lens.reduce((a, b) => a + b, 0);
+    const out = [];
+    for (let i = 0; i < lens.length && left > 1e-9; i++) {
+      const a = pts[i], b = pts[i + 1], k = Math.min(1, left / lens[i]);
+      out.push([c, a, { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k }]);
+      left -= lens[i];
+    }
+    return out;
   }
 
   /**
    * Each of `cells` (`t`) with the cosine (`cos`) between the stick's direction (`sx`, `sy`:
-   * right, down) and the line from cell `c` to it as drawn on screen; null when `c` is behind
-   * the camera. A line seen end-on, or reaching behind the camera, is left out.
+   * right, down) and the line from cell `c` to it as drawn on screen (to `aim(t)`, if given);
+   * null when `c` is behind the camera. A line seen end-on, or reaching behind the camera, is
+   * left out.
    */
-  _screenCosines(c, cells, sx, sy) {
+  _screenCosines(c, cells, sx, sy, aim = null) {
     const s = GRID.scale;
     const toScreen = (x, y, z) => {
       const p = this.worldRoot.localToWorld(new THREE.Vector3(x * s, y * s, z * s)).project(this.camera);
@@ -1610,7 +1655,8 @@ export class Engine {
     const stick = Math.hypot(sx, sy);
     const out = [];
     for (const t of cells) {
-      const to = toScreen(t.x, t.y, t.z);
+      const p = aim ? aim(t) : t;
+      const to = toScreen(p.x, p.y, p.z);
       if (!to) continue;
       const vx = (to.x - from.x) * this.camera.aspect, vy = to.y - from.y; // NDC y is up
       const len = Math.hypot(vx, vy);
@@ -1624,7 +1670,7 @@ export class Engine {
    * Creature controls: a dot on the cell each controlled creature will step into on its next
    * turn as it is being steered (sim.js nextSteppedCell); none while it isn't steered, or can't
    * go that way (it bumps instead). Lines run from each one's cell to the cells it could step
-   * into (sim.js steppableCells): all the way while the stick is at rest; while it's pushed, as far as it points
+   * into (sim.js steppableCells; an edge step's bent round its edge: _stepPath): all the way while the stick is at rest; while it's pushed, as far as it points
    * along each (its cosine with the line on screen; with the step in 3D if the creature is
    * behind the camera): all the way when it points right along it, not at all at 90° or more.
    * While it moves, a line runs from the cell it left to the one it's moving into. All in its
@@ -1644,9 +1690,7 @@ export class Engine {
         const st = c.steer ?? [0, 0, 0];
         return { t, cos: (d[0] * st[0] + d[1] * st[1] + d[2] * st[2]) / Math.hypot(...d) };
       });
-      for (const { t, cos } of cosines) {
-        if (cos > 0) steps.push([c, c, { x: c.x + (t.x - c.x) * cos, y: c.y + (t.y - c.y) * cos, z: c.z + (t.z - c.z) * cos }]);
-      }
+      for (const { t, cos } of cosines) if (cos > 0) steps.push(...this._stepPath(c, t, cos));
     }
     draw(this.stepLines, steps);
     draw(this.moveLines, controlled.map((c) => {
@@ -1842,10 +1886,22 @@ export class Engine {
   }
 
   /**
-   * Gamepad X: toggles Wait for the selected creatures. If they are all waiting, each resumes
-   * what it was doing before (its `heldBehavior`: Wander, or Walk on to its target); otherwise
-   * each one not yet waiting remembers what it was doing and waits, until X again (or it is
-   * deselected). Plays wait.wav / assign.wav, or ineffective.wav with nothing selected.
+   * Gamepad X / right click: cancels the Select tool's orders in the making: every creature is
+   * deselected (no target dot, no dotted lines; under Creature controls, back to Observer).
+   * Returns whether anything was selected.
+   */
+  cancelSelection() {
+    if (!this.selected.length) return false;
+    this._setSelected([]);
+    playTick();
+    return true;
+  }
+
+  /**
+   * Gamepad View (Back): toggles Wait for the selected creatures. If they are all waiting, each
+   * resumes what it was doing before (its `heldBehavior`: Wander, or Walk on to its target);
+   * otherwise each one not yet waiting remembers what it was doing and waits, until View again
+   * (or it is deselected). Plays wait.wav / assign.wav, or ineffective.wav with nothing selected.
    */
   selectedToggleWait() {
     if (!this.selected.length || !this.toolsReady()) {
@@ -3664,7 +3720,8 @@ export class Engine {
     }
     // Y: a selected creature eats (what's in front of it), B: excretes (what's in its tail's slot):
     // on letting go, the way the left stick chose meanwhile (_padAim)
-    if (edge(2)) this.selectedToggleWait(); // X: selected creatures wait, or resume what they were doing
+    if (edge(2)) this.cancelSelection(); // X: deselect (cancels the Select tool's orders)
+    if (edge(8)) this.selectedToggleWait(); // View (Back): selected creatures wait, or resume what they were doing
     if (edge(4)) this.cycleTool(-1); // LB
     if (edge(5)) this.cycleTool(1); // RB
     // the triggers zoom (LT out, RT in; the left stick doesn't); in the creature's view the

@@ -7,6 +7,7 @@
 //   pad:A|B|X|Y            Xbox-style face button
 //   pad:LB|RB|LT|RT        bumpers / triggers
 //   pad:start              Start / Menu button
+//   pad:view               View / Back button
 //   stick:L|R:x|y|any      gamepad thumbstick (with direction arrows)
 //   stick:L|R:press        gamepad thumbstick pressed in (L3 / R3)
 //   dpad:lr|ud|any         D-pad with highlighted arms
@@ -74,7 +75,7 @@ export function glyphWidth(ctx, token, h) {
     case 'pad':
       if (a === 'LB' || a === 'RB') return h * 1.15;
       if (a === 'LT' || a === 'RT') return h * 0.95;
-      if (a === 'start') return h * 0.95;
+      if (a === 'start' || a === 'view') return h * 0.95;
       return h * 0.9;
     case 'stick': case 'dpad': case 'hud': case 'crosshair': return h * 0.95;
     case 'xr':
@@ -196,6 +197,17 @@ export function drawGlyph(ctx, token, x, cy, h) {
         }
         ctx.lineWidth = lw * 0.8;
         ctx.stroke();
+      } else if (a === 'view') {
+        // two overlapping windows, like the Xbox View button
+        const bh = h * 0.52;
+        rr(ctx, x + lw, cy - bh / 2, w - 2 * lw, bh, bh / 2);
+        ctx.fillStyle = '#343b4a';
+        ctx.fill();
+        ctx.stroke();
+        ctx.lineWidth = lw * 0.8;
+        const s = h * 0.17;
+        ctx.strokeRect(cx - s * 0.75, cy - s * 0.75, s, s * 0.8);
+        ctx.strokeRect(cx - s * 0.25, cy - s * 0.25, s, s * 0.8);
       }
       break;
     }

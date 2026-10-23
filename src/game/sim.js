@@ -5,7 +5,7 @@
 // only take Water that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
-import { EDGE_STEPS, NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
+import { EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
 import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly } from './blocks.js';
 
 
@@ -575,18 +575,22 @@ export function blockInFront(world, creature) {
   return world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz)) ?? null;
 }
 
-/** Lattice offsets within `radius` blocks (sphere of radius * 2 cm), cached per radius. */
+/**
+ * Offsets to the active grid's cells within `radius` blocks (sphere of radius * 2 cm), cached
+ * per grid and radius. Each grid's cells are closed under subtraction, so an offset is a cell
+ * offset exactly when it is itself a cell (GRID.isValid); lattice units are GRID.scale cm.
+ */
 const sightOffsets = new Map();
 function offsetsWithin(radius) {
-  if (!sightOffsets.has(radius)) {
-    const r = radius * 2, r2 = r * r, list = [];
-    for (let x = -r; x <= r; x++) for (let y = -r; y <= r; y++) for (let z = -r; z <= r; z++) {
-      const allEven = !(x & 1) && !(y & 1) && !(z & 1), allOdd = x & 1 && y & 1 && z & 1;
-      if ((allEven || allOdd) && (x || y || z) && x * x + y * y + z * z <= r2) list.push([x, y, z]);
+  const key = `${GRID.id}:${radius}`;
+  if (!sightOffsets.has(key)) {
+    const r = (radius * 2) / GRID.scale, r2 = r * r, n = Math.floor(r + 1e-9), list = [];
+    for (let x = -n; x <= n; x++) for (let y = -n; y <= n; y++) for (let z = -n; z <= n; z++) {
+      if ((x || y || z) && GRID.isValid(x, y, z) && x * x + y * y + z * z <= r2 + 1e-9) list.push([x, y, z]);
     }
-    sightOffsets.set(radius, list);
+    sightOffsets.set(key, list);
   }
-  return sightOffsets.get(radius);
+  return sightOffsets.get(key);
 }
 
 /**
@@ -1021,6 +1025,26 @@ function stepOffsets(world, x, y, z, self) {
     ...NEIGHBOR_DIRS,
     ...EDGE_STEPS.filter(([dx, dy, dz]) => (dx && open(x + dx, y, z)) || (dy && open(x, y + dy, z)) || (dz && open(x, y, z + dz))),
   ];
+}
+
+/**
+ * An edge step's way round its edge (Cube mode): of the two cells beside the edge that `creature`'s
+ * step to cell `t` crosses, the open one it passes, preferring one it could stand in (over a
+ * corner: the cell past the edge; up a step: the one above it). Null for any other step.
+ */
+export function edgeStepVia(world, creature, t) {
+  if (!EDGE_STEPS.length) return null;
+  const d = [t.x - creature.x, t.y - creature.y, t.z - creature.z];
+  if (d.filter((v) => v).length !== 2) return null; // (a step across a face)
+  const open = [0, 1, 2].filter((i) => d[i]).map((i) => {
+    const v = [creature.x, creature.y, creature.z];
+    v[i] += d[i];
+    return { x: v[0], y: v[1], z: v[2] };
+  }).filter((v) => {
+    const b = world.blocks.get(cellKey(v.x, v.y, v.z));
+    return !b || b === creature;
+  });
+  return open.find((v) => isWalkable(world, v.x, v.y, v.z, creature)) ?? open[0] ?? null;
 }
 
 /** Most cells one Walk path search may visit (keeps a turn cheap in big builds). */

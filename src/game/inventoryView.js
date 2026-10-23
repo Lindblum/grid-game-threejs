@@ -11,11 +11,19 @@
 // block along, digesting) slides there; an excreted one shrinks away as it moves
 // to where the excreted block appears. Each takes a step (World.stepSeconds), eased like
 // World.appear.
+//
+// Items are drawn like a lone block of their type: smooth-shaded, so in Rendering: Smooth
+// rounded (the smoothed cell a one-block body has, see addSmoothShape; shadeFlat types stay
+// flat), and in a chain creature (a round tube, ClusterBodies._createTube) small enough to
+// stay inside it.
 import * as THREE from 'three';
 import { BlockBatch } from './blockBatch.js';
-import { BLOCK_COLORS, blockProps } from './blocks.js';
+import { BLOCK_COLORS, blockProps, isChainCreature } from './blocks.js';
+import { TUBE_RADIUS_CM } from './clusterBody.js';
 
 const INVENTORY_SCALE = 0.8;
+/** In Smooth rendering, a chain creature's items reach out at most this fraction of its tube's radius. */
+const TUBE_FILL = 0.9;
 
 const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
@@ -67,8 +75,12 @@ export class InventoryView {
       for (const batch of this.batches.values()) batch.setBaseGeometry(world.geometry);
       this.geometry = world.geometry;
     }
+    // in Smooth rendering, a chain creature is a tube: its items shrink to fit inside
+    const smooth = world.materials.uniforms.uSmoothRendering.value === 1;
+    const tubeFit = smooth ? Math.min(1, (TUBE_FILL * TUBE_RADIUS_CM) / (INVENTORY_SCALE * world.geometry.userData.smoothRadius)) : 1;
     for (const batch of this.batches.values()) batch.clear();
-    for (const items of this.queues.values()) {
+    for (const [creature, items] of this.queues) {
+      const fit = isChainCreature(creature.type) ? tubeFit : 1;
       for (const item of items) {
         // where its slot is drawn (sliding with the body), or on the way there
         world.renderedPosition(item.slot, now, _p);
@@ -80,7 +92,7 @@ export class InventoryView {
           if (e >= 1) item.anim = null;
         }
         item.pos.copy(_p);
-        this._draw(item.type, item.seed, item.pos, item.scale);
+        this._draw(item.type, item.seed, item.pos, item.scale * fit);
       }
     }
     this.leaving = this.leaving.filter((item) => {
@@ -146,6 +158,6 @@ export class InventoryView {
     batch.attr('blockStyle').setXYZW(item.index, blockProps(type).style, seed, 0, 0);
     batch.attr('blockTexOrigin').setXYZ(item.index, seed * 7.31, seed * 3.17, seed * 5.53); // (each its own patch of pattern)
     batch.attr('blockMerged').setX(item.index, 0);
-    batch.attr('blockSmooth').setX(item.index, 1); // rounded, like an excreted block
+    batch.attr('blockSmooth').setX(item.index, blockProps(type).shadeFlat ? 0 : 1); // rounded (Rendering: Smooth), like an excreted block
   }
 }

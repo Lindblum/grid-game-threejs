@@ -361,7 +361,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       .replace(
         '#include <common>',
         `#include <common>
-        attribute float faceIndex;
+        attribute vec4 faceIndex; // x: the face (FACE_DIRS index); yzw, blocks only: the vertex on a lone block's Smooth rendering shape (addSmoothShape)
         attribute vec4 aoFaces;
         attribute vec4 blockStyle;
         varying float vAO;
@@ -409,7 +409,9 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         vSeeThrough = blockSeeThrough;
         vSmooth = blockSmooth * uSmoothRendering; // only with Rendering: Smooth (Blocky keeps every block flat)
         vDither = abs(float(gl_InstanceID) - uDitherIndex) < 0.5 ? 1.0 : 0.0;
-        vec3 blockPos = position;
+        // smooth-shaded, it takes a lone block's rounded shape too (like the body it came from)
+        transformed = mix(position, faceIndex.yzw, vSmooth);
+        vec3 blockPos = transformed;
         vTexOrigin = blockTexOrigin;
         #endif
         vStyle = blockStyle.x;
@@ -460,7 +462,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         #endif
         #ifndef MERGED_BODY
         // also skip faces shared with a block of the same translucent type (no inner walls, less overdraw)
-        if (((int(blockStyle.z + 0.5) >> int(faceIndex + 0.5)) & 1) == 1) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        if (((int(blockStyle.z + 0.5) >> int(faceIndex.x + 0.5)) & 1) == 1) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         #endif
         #else
         if (isTranslucent) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);

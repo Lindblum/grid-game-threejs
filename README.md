@@ -44,9 +44,10 @@ as Truncated Octahedron. See `src/game/grids.js`.
 | Change tool | ← / → or 1–9, 0 | LB / RB | Right stick left/right |
 | Options (pauses) | Esc / Enter, or the gear (top left) | Start | The gear (Options, on the left controller), or Y |
 | Orbit / zoom / pan | Left- or right-drag / wheel / middle-drag | Right stick / LT, RT / D-pad | Both grips: rotate and scale; one grip: drag |
+| Deselect | Right click (without dragging) | X | Select tool at empty space |
 | Move / dock a panel | — | — | Grip a panel to take it; let go near the other controller to dock it. Double-tap a grip at a panel: dock it there; at nothing: undock |
 
-With a creature selected, on the XR controllers: **B** consumes, **A** excretes, **Y** wanders, **X** waits (gamepad: **Y** consumes, **B** excretes; hold either and aim with the left stick; keyboard: **E** consumes, **Q** excretes, held with WASD / the arrows to aim). Controlling a creature, WASD or the arrows move it.
+With a creature selected, on the XR controllers: **B** consumes, **A** excretes, **Y** wanders, **X** waits (gamepad: **Y** consumes, **B** excretes, **View** waits; hold Y or B and aim with the left stick; keyboard: **E** consumes, **Q** excretes, held with WASD / the arrows to aim). Controlling a creature, WASD or the arrows move it.
 The full table is under **Options → Controls** in the game.
 
 ## How it works
