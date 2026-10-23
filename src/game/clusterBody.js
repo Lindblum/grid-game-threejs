@@ -168,12 +168,16 @@ export function buildBody(blocks, flat = false) {
   };
 }
 
-/** The clusters to draw: World.clusterOf's groups, over the blocks that aren't animating in / out. */
-function clustersOf(world) {
-  const skip = (block) => block.vanishing || world.vanishing.has(block) || world.appearing.has(block);
+/**
+ * The clusters to draw: World.clusterOf's groups, over the blocks that aren't animating in /
+ * out, and not of `hidden` types; only those of `types`, if given.
+ */
+function clustersOf(world, hidden, types = null) {
+  const skip = (block) => block.vanishing || world.vanishing.has(block) || world.appearing.has(block) || hidden.has(block.type);
   const done = new Set();
   const out = [];
-  for (const b of world.blocks.values()) {
+  const blocks = types ? [...types].flatMap((type) => [...world.ofType(type)]) : world.blocks.values();
+  for (const b of blocks) {
     if (done.has(b) || skip(b)) continue;
     const blocks = world.clusterOf(b).filter((x) => !skip(x) && !done.has(x));
     for (const x of blocks) done.add(x);
@@ -195,6 +199,7 @@ export class ClusterBodies {
     this._byBlock = new Map(); // block -> its body
     this._bodyAtCell = new Map(); // cell key -> the body that had a block there when built
     this._seeThrough = new Set(); // bodies drawn see-through (setSeeThrough)
+    this.hiddenTypes = new Set(); // block types not drawn at all just now (Options → Fog off): no bodies built for them
     this._revision = -1; // world.revision the bodies were last brought up to date for
     this._world = null;
   }
@@ -211,6 +216,22 @@ export class ClusterBodies {
     this.bodies.clear();
     this._byBlock.clear();
     this._bodyAtCell.clear();
+  }
+
+  /**
+   * Blocks of `type` drawn or not (Options → Fog). Hidden, its bodies go and none are built
+   * (its blocks' instances are hidden by the shader too); shown again, they're built.
+   */
+  setTypeHidden(world, type, hidden) {
+    if (hidden === this.hiddenTypes.has(type)) return;
+    if (hidden) this.hiddenTypes.add(type);
+    else this.hiddenTypes.delete(type);
+    if (!this.enabled || this._revision < 0) return; // (built in full when next needed)
+    if (hidden) {
+      for (const body of [...this.bodies]) if (body.blocks[0]?.type === type) this._remove(world, body, null);
+    } else {
+      for (const blocks of clustersOf(world, this.hiddenTypes, [type])) this._add(world, blocks);
+    }
   }
 
   _dispose(body) {
@@ -274,7 +295,7 @@ export class ClusterBodies {
   _rebuildAll(world) {
     this.clear();
     world.clearMergedFlags();
-    for (const blocks of clustersOf(world)) this._add(world, blocks);
+    for (const blocks of clustersOf(world, this.hiddenTypes)) this._add(world, blocks);
   }
 
   /**
@@ -286,7 +307,7 @@ export class ClusterBodies {
    */
   _rebuildChanged(world, since) {
     const log = world.changeLog;
-    const skip = (block) => block.vanishing || world.vanishing.has(block) || world.appearing.has(block);
+    const skip = (block) => block.vanishing || world.vanishing.has(block) || world.appearing.has(block) || this.hiddenTypes.has(block.type);
     const stale = new Set(), seeds = new Set();
     for (let i = since; i < log.length; i += 3) {
       const x = log[i], y = log[i + 1], z = log[i + 2];

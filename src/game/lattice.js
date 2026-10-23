@@ -35,9 +35,11 @@ export function setGridMode(id) {
 
 /**
  * Map key of cell (x, y, z): one number packing the three coordinates (each within
- * ±KEY_HALF), much faster to build and look up than a string, and no garbage.
+ * ±KEY_HALF: cells further out aren't valid, see isValidCell), much faster to build and look
+ * up than a string, and no garbage: 10 bits each keeps every key under 2^30, a small integer
+ * to the JS engine (a bigger one is a heap number: one allocation per lookup).
  */
-const KEY_SPAN = 1 << 17;
+const KEY_SPAN = 1 << 10;
 const KEY_HALF = KEY_SPAN / 2;
 export const cellKey = (x, y, z) => ((x + KEY_HALF) * KEY_SPAN + (y + KEY_HALF)) * KEY_SPAN + (z + KEY_HALF);
 
@@ -50,6 +52,7 @@ export function parseKey(k) {
 /** True when (x, y, z) is a cell of the active grid. */
 export function isValidCell(x, y, z) {
   if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)) return false;
+  if (Math.max(Math.abs(x), Math.abs(y), Math.abs(z)) >= KEY_HALF - 4) return false; // (beyond what cellKey packs, neighbours included)
   return GRID.isValid(x, y, z);
 }
 

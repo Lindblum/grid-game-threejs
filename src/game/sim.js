@@ -787,6 +787,7 @@ function growFrom(world, from, cell, type) {
 
 /** Block types with `sinkable` (blocks.js): they sink through Water they can't hold on in. */
 const SINKABLE_TYPES = BLOCK_TYPES.filter((t) => t.sinkable).map((t) => t.id);
+const SINKABLE_SET = new Set(SINKABLE_TYPES);
 
 /**
  * Sinking, every turn: a cluster of a sinkable type (a Crawly on its own) that touches no
@@ -799,16 +800,27 @@ const SINKABLE_TYPES = BLOCK_TYPES.filter((t) => t.sinkable).map((t) => t.id);
 export function stepSink(world, skip = new Set()) {
   const moved = new Set();
   const done = new Set();
+  // only a cluster touching Water can sink into it: start from the Water side (far fewer blocks
+  // to look at than all the Stone and Dirt, which is most of the world)
+  const starts = new Set();
+  for (const w of world.ofType(BLOCK.WATER)) {
+    if (w.vanishing) continue;
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const n = world.blocks.get(cellKey(w.x + dx, w.y + dy, w.z + dz));
+      if (n && SINKABLE_SET.has(n.type)) starts.add(n);
+    }
+  }
   for (const type of SINKABLE_TYPES) {
-    for (const start of [...world.ofType(type)]) {
-      if (done.has(start)) continue;
+    for (const start of starts) {
+      if (start.type !== type || done.has(start) || world.blocks.get(cellKey(start.x, start.y, start.z)) !== start) continue; // (gone, or moved, since)
       const cluster = world.clusterOf(start);
       for (const b of cluster) done.add(b);
       if (cluster.some((block) => skip.has(block) || moved.has(block) || block.vanishing || canFly(block))) continue;
       // holding on to something it can walk on: it doesn't sink (its own body doesn't count:
-      // a Squirmy's segments can walk on Squirmy, and every one touches the next)
+      // a Squirmy's segments can walk on Squirmy, and every one touches the next); a type that
+      // walks on nothing (Stone, Dirt) never holds on
       const members = new Set(cluster);
-      const holds = cluster.some((block) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => {
+      const holds = !!blockProps(type).walkableBlocks?.length && cluster.some((block) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => {
         const n = world.blocks.get(cellKey(block.x + dx, block.y + dy, block.z + dz));
         return n && !members.has(n) && canWalkOn(block.type, n.type);
       }));

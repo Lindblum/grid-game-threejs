@@ -1082,6 +1082,7 @@ export class World {
   /** Options → Fog: whether Fog blocks are drawn (hidden, they're still in the world and the simulation). */
   setFogShown(on) {
     this.materials.uniforms.uShowFog.value = on ? 1 : 0;
+    this.clusterBodies.setTypeHidden(this, BLOCK.FOG, !on); // (Smooth rendering: no Fog bodies built while it's hidden)
   }
 
   setSmoothRendering(on) {
