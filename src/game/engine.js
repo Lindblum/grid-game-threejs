@@ -37,6 +37,14 @@ const DROP_SLIDE_S = 0.15;
 /** XR grab: how far (lattice units) from where it's let go a dropped creature looks for cells it fits; then round where it was taken from, further. */
 const DROP_SEARCH = 6;
 const DROP_SEARCH_HOME = 24;
+/** XR: each controller's touch ball (cyan), what it picks creatures up by: its radius (m), and where it is in the controller's target-ray space (5 cm out in front). */
+const TOUCH_BALL_RADIUS = 0.01;
+const TOUCH_BALL_AT = new THREE.Vector3(0, 0, -0.05);
+const TOUCH_BALL_COLOR = '#22d3ee';
+/** XR grab haptics, [strength, ms]: picking a creature up, letting it go, and the hum while carrying it (a pulse every CARRY_HUM_EVERY s, so they run together). */
+const CARRY_PULSE = { take: [0.6, 50], drop: [0.5, 40], hum: [0.12, 60] };
+const CARRY_HUM_EVERY = 0.05;
+const TOUCH_BALL_HOT = 1.6; // its size on a creature it would pick up (or one it carries)
 const GAZE_RAY_LENGTH = 2.0; // hands-free XR: how far the gaze reaches (tools and UI)
 const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS and 3D: Interlaced, m
 // hands-free XR: the HUDs (and the menu above them) float this far ahead, this far below the eyes,
@@ -696,12 +704,20 @@ export class Engine {
       const ctrl = r.xr.getController(i);
       const grip = r.xr.getControllerGrip(i);
       grip.add(factory.createControllerModel(grip));
-      const slot = { ctrl, grip, source: null, gripHeld: false };
+      // the touch ball: a grip with it on a creature picks the creature up (_creatureAtHand)
+      const ball = new THREE.Mesh(this._touchBallGeo ??= new THREE.SphereGeometry(TOUCH_BALL_RADIUS, 16, 12), new THREE.MeshBasicMaterial({ color: TOUCH_BALL_COLOR, toneMapped: false }));
+      ball.position.copy(TOUCH_BALL_AT);
+      ball.raycast = () => {};
+      ball.name = 'xr-touch-ball';
+      ball.visible = false; // (controllers only: not hands or screen taps)
+      ctrl.add(ball);
+      const slot = { ctrl, grip, ball, source: null, gripHeld: false };
       ctrl.addEventListener('connected', (e) => {
         // articulated hands and screen taps aren't controllers: they leave the gaze in charge,
         // and their select (pinch, tap) clicks what it is on (see selectstart)
         if (e.data.hand || e.data.targetRayMode === 'screen' || e.data.targetRayMode === 'transient-pointer') return;
         slot.source = e.data;
+        ball.visible = true;
         const hand = e.data.handedness === 'left' ? 'left' : 'right';
         this.hands[hand] = slot;
         if (hand === 'right') {
@@ -716,6 +732,7 @@ export class Engine {
         // a creature it carried goes back into the grid, where it was last held
         for (const h of ['left', 'right']) if (this.hands[h] === slot && this.heldBodies.held.has(h)) this._putHeld(h, this.heldBodies.held.get(h).at);
         for (const h of ['left', 'right']) if (this.hands[h] === slot) this.hands[h] = null;
+        ball.visible = false;
         if (this.rayLine.parent === ctrl) ctrl.remove(this.rayLine);
         if (this.rayLineLeft.parent === ctrl) ctrl.remove(this.rayLineLeft);
         // its panels go to the other controller (or the gaze dock) next frame; one it held stays where it is
@@ -738,10 +755,10 @@ export class Engine {
           this._endResize();
         }
       });
-      // Grips: one hand drags the build, both hands rotate + scale it (Tilt Brush style).
-      // A grip touching or pointing at a panel takes the panel instead, and a double tap docks
+      // Grips: a grip touching or pointing at a panel takes the panel, and a double tap docks
       // or undocks panels (see _gripPanelStart); one touching or pointing at a creature picks
-      // it up out of the grid, until it's let go (_grabCreature).
+      // it up out of the grid, until it's let go (_grabCreature). On nothing, one grip does
+      // nothing; both together move, rotate and scale the build (Tilt Brush style).
       ctrl.addEventListener('squeezestart', () => {
         if (this._gripPanelStart(slot)) return;
         if (this._grabCreature(slot)) return;
@@ -3024,19 +3041,18 @@ export class Engine {
     return slot.grip.getWorldPosition(new THREE.Vector3());
   }
 
-  /** Where `slot`'s grip is in the build (the World's cm). */
+  /** Where `slot`'s touch ball is in the build (the World's cm): what it picks creatures up by, and carries them at. */
   _gripCm(slot) {
     this.worldRoot.updateWorldMatrix(true, false);
-    return this.worldRoot.worldToLocal(this._gripPos(slot));
+    slot.ctrl.updateMatrixWorld();
+    return this.worldRoot.worldToLocal(slot.ball.getWorldPosition(new THREE.Vector3()));
   }
 
-  /**
-   * The creature `hand`'s grip is on: the one with a block the grip touches (inside its cell,
-   * near enough), else the one its ray points at. Null if none.
-   */
-  _creatureAtHand(hand, slot) {
+  /** The creature `slot`'s touch ball is on (within reach of one of its blocks' centres), or null. */
+  _creatureTouched(slot) {
     const p = this._gripCm(slot).divideScalar(GRID.scale); // (lattice units)
-    const reach = 0.6 * Math.min(...NEIGHBOR_DIRS.map(([x, y, z]) => Math.hypot(x, y, z))); // a little past a cell's middle
+    // a little past a cell's middle, plus the ball
+    const reach = 0.6 * Math.min(...NEIGHBOR_DIRS.map(([x, y, z]) => Math.hypot(x, y, z))) + TOUCH_BALL_RADIUS / (this.worldRoot.scale.x * GRID.scale); // (m -> lattice units at the build's scale)
     let best = null, bestD = reach;
     const cx = Math.round(p.x), cy = Math.round(p.y), cz = Math.round(p.z);
     for (let x = cx - 2; x <= cx + 2; x++) {
@@ -3051,7 +3067,16 @@ export class Engine {
         }
       }
     }
-    if (best) return this._creatureOf(best);
+    return best && this._creatureOf(best);
+  }
+
+  /**
+   * The creature `hand`'s grip would pick up: the one its touch ball is on, else the one its
+   * ray points at. Null if none.
+   */
+  _creatureAtHand(hand, slot) {
+    const touched = this._creatureTouched(slot);
+    if (touched) return touched;
     if (!this._setRayFromController(hand)) return null;
     this.raycaster.far = XR_RAY_LENGTH;
     return this._creatureOf(this._pick()?.block); // (the pointer's ray is set again next frame)
@@ -3077,6 +3102,7 @@ export class Engine {
     if (!records) return false;
     this.heldBodies.hold(hand, records, offsets, home, at);
     playWait(sound);
+    this._pulse(...CARRY_PULSE.take, hand);
     return true;
   }
 
@@ -3102,6 +3128,7 @@ export class Engine {
       h.records.forEach((r, i) => this.world.slideIn(this.world.get(cell.x + r.dx, cell.y + r.dy, cell.z + r.dz), from[i], DROP_SLIDE_S));
     }
     playAssign(this._soundAt(head));
+    this._pulse(...CARRY_PULSE.drop, hand);
   }
 
   /** The cell nearest point `p` (lattice units), within `radius`, where a body (World.takeBody's records) fits with its head there; null if none. */
@@ -3118,42 +3145,45 @@ export class Engine {
     return cells.find((c) => this.world.fitsBody(records, c.x, c.y, c.z)) ?? null;
   }
 
-  /** Per frame: carried creatures follow their hands. */
+  /** Per frame: carried creatures follow their hands; a touch ball on a creature (or carrying one) grows. */
   _updateHeld() {
+    for (const hand of ['left', 'right']) {
+      const slot = this.hands[hand];
+      if (!slot) continue;
+      const hot = this.heldBodies.held.has(hand) || (this.state.screen === 'playing' && !!this._creatureTouched(slot));
+      slot.ball.scale.setScalar(hot ? TOUCH_BALL_HOT : 1);
+      // carrying: a steady, soft hum (the creature wriggling)
+      const h = this.heldBodies.held.get(hand);
+      if (h && (h.humAt ?? 0) <= performance.now() / 1000) {
+        h.humAt = performance.now() / 1000 + CARRY_HUM_EVERY;
+        this._pulse(...CARRY_PULSE.hum, hand);
+      }
+    }
     if (!this.heldBodies.held.size) return this.heldBodies.update(() => null);
     this.heldBodies.update((hand) => (this.hands[hand] ? this._gripCm(this.hands[hand]) : null));
   }
 
-  /** (Re)start a grab whenever a grip is pressed or released, from the build's current pose. */
+  /** (Re)start a grab whenever a grip is pressed or released, from the build's current pose: both grips on nothing hold the build (one alone doesn't). */
   _beginGrab() {
     const held = ['left', 'right'].map((h) => this.hands[h]).filter((sl) => sl && sl.gripHeld);
     const r = this.worldRoot;
-    if (!held.length) {
+    if (held.length < 2) {
       this._grab = null;
       return;
     }
-    const base = { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x };
-    if (held.length === 1) {
-      this._grab = { ...base, hands: held, p0: this._gripPos(held[0]) };
-    } else {
-      const a = this._gripPos(held[0]), b = this._gripPos(held[1]);
-      this._grab = { ...base, hands: held, mid0: a.clone().add(b).multiplyScalar(0.5), v0: b.clone().sub(a) };
-    }
+    const a = this._gripPos(held[0]), b = this._gripPos(held[1]);
+    this._grab = { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x, hands: held, mid0: a.clone().add(b).multiplyScalar(0.5), v0: b.clone().sub(a) };
   }
 
   /**
-   * One grip: translate the build with the hand.
-   * Both grips: the midpoint between the hands translates it, the change in the hand-to-hand
-   * direction rotates it, and the change in hand distance scales it — all about the midpoint.
+   * Both grips: the midpoint between the hands translates the build, the change in the
+   * hand-to-hand direction rotates it, and the change in hand distance scales it — all about
+   * the midpoint.
    */
   _updateGrab() {
     const g = this._grab;
     if (!g) return;
     const r = this.worldRoot;
-    if (g.hands.length === 1) {
-      r.position.copy(g.pos).add(this._gripPos(g.hands[0]).sub(g.p0));
-      return;
-    }
     const a = this._gripPos(g.hands[0]), b = this._gripPos(g.hands[1]);
     const mid = a.clone().add(b).multiplyScalar(0.5);
     const v = b.clone().sub(a);

@@ -67,7 +67,7 @@ const OBSERVER_CONTROLS = [
     action: 'Carry a creature',
     mk: { g: ['text:—'], t: 'XR only' },
     pad: { g: ['text:—'], t: 'XR only' },
-    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Grip a creature (touching or pointing at it) to pick it up out of the grid; let go to put it back in, in the nearest cells it fits' },
+    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Grip a creature (touching or pointing at it) to pick it up out of the grid; let go to put it back in, in the nearest cells it fits. It wriggles (shakes, and buzzes in your hand) while you carry it' },
   },
   {
     action: 'Rotate view',
@@ -85,7 +85,7 @@ const OBSERVER_CONTROLS = [
     action: 'Pan / move',
     mk: { g: ['mouse:M'], t: 'Middle-drag' },
     pad: { g: ['dpad:any'], t: 'D-pad' },
-    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Hold either grip and move your hand to drag the build' },
+    xr: { g: ['xr:grip:L', 'sep:+', 'xr:grip:R'], t: 'Hold both grips (on nothing) and move your hands together to drag the build' },
   },
   {
     action: 'Menu select',

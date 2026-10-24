@@ -4,6 +4,8 @@
 // keeps the shape it has in the grid). Let go, the engine puts it back into the nearest cells
 // it fits (World.putBody).
 //
+// A carried creature shakes in the hand (SHAKE_CM, SHAKE_HZ): it wriggles to get free.
+//
 // Its blocks are drawn like lone blocks of their type (as InventoryView draws items):
 // smooth-shaded, so in Rendering: Smooth rounded; shadeFlat types stay flat.
 import * as THREE from 'three';
@@ -13,6 +15,11 @@ import { BLOCK_COLORS, blockProps } from './blocks.js';
 const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
 const _p = new THREE.Vector3();
+const _shake = new THREE.Vector3();
+
+/** A carried creature's shake: how far it moves (cm) and how fast, per axis (Hz; uneven, so it doesn't settle into a pattern). */
+const SHAKE_CM = 0.12;
+const SHAKE_HZ = [17, 23, 19];
 
 export class HeldBodies {
   /** `parent`: where they're drawn (the World's parent: lattice cm). */
@@ -59,10 +66,13 @@ export class HeldBodies {
       this.geometry = world.geometry;
     }
     for (const batch of this.batches.values()) batch.clear();
+    const t = performance.now() / 1000;
     for (const [hand, h] of this.held) {
       const at = handAt(hand);
       if (at) h.at.copy(at);
-      h.records.forEach((r, i) => this._draw(r.type, h.seeds[i], _p.copy(h.at).add(h.offsets[i])));
+      const phase = hand === 'left' ? 1.7 : 0; // (two carried at once don't shake in step)
+      _shake.set(...SHAKE_HZ.map((hz, k) => Math.sin(2 * Math.PI * hz * t + phase + k * 2.1))).multiplyScalar(SHAKE_CM);
+      h.records.forEach((r, i) => this._draw(r.type, h.seeds[i], _p.copy(h.at).add(h.offsets[i]).add(_shake)));
     }
     for (const batch of this.batches.values()) {
       batch.mesh.visible = batch.count > 0;
