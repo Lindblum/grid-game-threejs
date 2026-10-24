@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { CameraCollider } from './cameraCollision.js';
 import { InventoryView } from './inventoryView.js';
+import { HeldBodies } from './heldBodies.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
 import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
@@ -11,7 +12,7 @@ import { claudePrompt } from './claudePrompt.js';
 import { debugSections } from './debugSections.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
-import { GRID, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
+import { GRID, NEIGHBOR_DIRS, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
 import { EDGE_SHADE, MATERIALS, cellFaces } from './geometry.js';
 import {
   playPlace, playDelete, playTick, playResume, playPause, playLoad, playSave, playError, unlockAudio, setSoundVolume,
@@ -19,7 +20,7 @@ import {
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
 import { RightHudPanel, MenuPanel, DebugTablet, ViewPanel } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, VOLUME, CAMERA_SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
 import { Interlaced } from './interlaced.js';
@@ -31,6 +32,11 @@ const CM = 0.01; // world units are metres; lattice units are cm
 const FPS_WINDOW_MS = 500; // Debug → Performance: FPS is averaged over this long
 const COUNTDOWN_SECONDS = 3; // the page, New and Load all start with a T -3 … 0 countdown before play
 const XR_RAY_LENGTH = 1.0; // 1 m
+/** XR grab: a dropped creature slides from the hand into its cells over this long (s). */
+const DROP_SLIDE_S = 0.15;
+/** XR grab: how far (lattice units) from where it's let go a dropped creature looks for cells it fits; then round where it was taken from, further. */
+const DROP_SEARCH = 6;
+const DROP_SEARCH_HOME = 24;
 const GAZE_RAY_LENGTH = 2.0; // hands-free XR: how far the gaze reaches (tools and UI)
 const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS and 3D: Interlaced, m
 // hands-free XR: the HUDs (and the menu above them) float this far ahead, this far below the eyes,
@@ -234,6 +240,8 @@ export class Engine {
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
       fog: true, // Options → Fog: Fog blocks are drawn (off: hidden, and the pointer passes through them)
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
+      xrResolution: XR_RESOLUTION.default, // Options → Video → XR Resolution: the headset's framebuffer scale (setXRResolution)
+      xrResolutionActive: null, // the XR session's own (fixed when it starts), while in one
       vsync: true, // Options → Video → VSync: frames paced by the display (off: as fast as they can be drawn; see _applyVSync)
       antialias: true, // Options → Video → Anti-aliasing (the renderer's MSAA: only takes effect when the page loads; see _initRenderer)
       refraction: true, // Options → Refraction: Crystal and Water bend what's behind them, with Procedural materials (Off, or Simple / Solid: just see-through, cheaper)
@@ -353,7 +361,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -411,6 +419,7 @@ export class Engine {
     if (typeof saved.movementGuides === 'boolean' && !bool('directionGuides')) this.setState({ directionGuides: saved.movementGuides }); // (its old name)
     for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
+    if (typeof saved.xrResolution === 'number') this.setXRResolution(saved.xrResolution);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
     if (bool('fog')) this.setFog(saved.fog);
@@ -595,6 +604,8 @@ export class Engine {
     this.aimDots = [];
     // Accessibility → View Internal: the selected / controlled creatures' inventories, inside them
     this.inventoryView = new InventoryView(this.world, root);
+    // XR grab: creatures held in the hands, out of the world (see _grabCreature)
+    this.heldBodies = new HeldBodies(this.world, root);
     // a new grid mode (World.setGridMode): every wireframe takes the new block shape
     onGridChange(() => {
       for (const hl of [this.placeHL, this.deleteHL]) buildWireframe(hl);
@@ -702,6 +713,8 @@ export class Engine {
         }
       });
       ctrl.addEventListener('disconnected', () => {
+        // a creature it carried goes back into the grid, where it was last held
+        for (const h of ['left', 'right']) if (this.hands[h] === slot && this.heldBodies.held.has(h)) this._putHeld(h, this.heldBodies.held.get(h).at);
         for (const h of ['left', 'right']) if (this.hands[h] === slot) this.hands[h] = null;
         if (this.rayLine.parent === ctrl) ctrl.remove(this.rayLine);
         if (this.rayLineLeft.parent === ctrl) ctrl.remove(this.rayLineLeft);
@@ -727,14 +740,17 @@ export class Engine {
       });
       // Grips: one hand drags the build, both hands rotate + scale it (Tilt Brush style).
       // A grip touching or pointing at a panel takes the panel instead, and a double tap docks
-      // or undocks panels (see _gripPanelStart).
+      // or undocks panels (see _gripPanelStart); one touching or pointing at a creature picks
+      // it up out of the grid, until it's let go (_grabCreature).
       ctrl.addEventListener('squeezestart', () => {
         if (this._gripPanelStart(slot)) return;
+        if (this._grabCreature(slot)) return;
         slot.gripHeld = true;
         this._beginGrab();
       });
       ctrl.addEventListener('squeezeend', () => {
         this._gripPanelEnd(slot);
+        this._dropCreature(slot);
         slot.gripHeld = false;
         this._beginGrab();
       });
@@ -2152,6 +2168,7 @@ export class Engine {
     if (value == null) return;
     if (id === 'speed') this.setSpeed(value);
     if (id === 'textSize') this.setTextSize(value);
+    if (id === 'xrResolution') this.setXRResolution(value);
     if (id === 'cameraSpeed') this.setCameraSpeed(value);
     if (id === 'music') this.setMusicVolume(value);
     if (id === 'sound') this.setSoundVolume(value);
@@ -2190,6 +2207,18 @@ export class Engine {
     const v = Math.round(raw / TEXT_SIZE.step) * TEXT_SIZE.step;
     document.documentElement.style.setProperty('--text-scale', String(v));
     if (v !== this.state.textSize) this.setState({ textSize: v });
+  }
+
+  /**
+   * Options → Video → XR Resolution: the headset's framebuffer scale, snapped to the slider's
+   * steps. The browser fixes it when an XR session starts, so a change shows from the next one.
+   */
+  setXRResolution(scale) {
+    const n = Number(scale);
+    const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : XR_RESOLUTION.default, XR_RESOLUTION.min, XR_RESOLUTION.max);
+    const v = Math.round(raw / XR_RESOLUTION.step) / Math.round(1 / XR_RESOLUTION.step); // (in twentieths, like _volume)
+    if (!this.renderer.xr.isPresenting) this.renderer.xr.setFramebufferScaleFactor(v);
+    if (v !== this.state.xrResolution) this.setState({ xrResolution: v });
   }
 
   /** -1 when the camera's orbiting is inverted (Options → Accessibility: Observer or Control Camera, by the control schema), else 1. */
@@ -2540,7 +2569,9 @@ export class Engine {
       );
       this._savedView = { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() };
       this.renderer.xr.setReferenceSpaceType('local-floor');
+      this.renderer.xr.setFramebufferScaleFactor(this.state.xrResolution); // (Options → Video → XR Resolution)
       await this.renderer.xr.setSession(session);
+      this.setState({ xrResolutionActive: this.state.xrResolution });
       session.addEventListener('end', () => this._leaveImmersive());
       this._xrMode = mode;
       if (session.domOverlayState) this._setDomOverlay(true);
@@ -2642,10 +2673,13 @@ export class Engine {
   }
 
   _leaveImmersive() {
+    for (const [hand, h] of [...this.heldBodies.held]) this._putHeld(hand, h.at); // (carried creatures go back where they were last held)
+    this.heldBodies.update(() => null);
     this._releaseBackButton();
     this._setDomOverlay(false);
     this.phoneStereo.disable();
     this._xrMode = null;
+    this.setState({ xrResolutionActive: null });
     this._panelGrabs = { left: null, right: null };
     this._endResize();
     this._uiPress = null;
@@ -2990,6 +3024,106 @@ export class Engine {
     return slot.grip.getWorldPosition(new THREE.Vector3());
   }
 
+  /** Where `slot`'s grip is in the build (the World's cm). */
+  _gripCm(slot) {
+    this.worldRoot.updateWorldMatrix(true, false);
+    return this.worldRoot.worldToLocal(this._gripPos(slot));
+  }
+
+  /**
+   * The creature `hand`'s grip is on: the one with a block the grip touches (inside its cell,
+   * near enough), else the one its ray points at. Null if none.
+   */
+  _creatureAtHand(hand, slot) {
+    const p = this._gripCm(slot).divideScalar(GRID.scale); // (lattice units)
+    const reach = 0.6 * Math.min(...NEIGHBOR_DIRS.map(([x, y, z]) => Math.hypot(x, y, z))); // a little past a cell's middle
+    let best = null, bestD = reach;
+    const cx = Math.round(p.x), cy = Math.round(p.y), cz = Math.round(p.z);
+    for (let x = cx - 2; x <= cx + 2; x++) {
+      for (let y = cy - 2; y <= cy + 2; y++) {
+        for (let z = cz - 2; z <= cz + 2; z++) {
+          const b = isValidCell(x, y, z) && this.world.get(x, y, z);
+          const d = b && Math.hypot(x - p.x, y - p.y, z - p.z);
+          if (b && d < bestD && this._creatureOf(b)) {
+            best = b;
+            bestD = d;
+          }
+        }
+      }
+    }
+    if (best) return this._creatureOf(best);
+    if (!this._setRayFromController(hand)) return null;
+    this.raycaster.far = XR_RAY_LENGTH;
+    return this._creatureOf(this._pick()?.block); // (the pointer's ray is set again next frame)
+  }
+
+  /**
+   * XR: a grip on a creature (touching it, or pointing at it) takes it out of the grid
+   * (World.takeBody) to be carried in that hand, with the Select tool's sound; it's out of the
+   * selection, and the game goes on without it. Returns whether it took one.
+   */
+  _grabCreature(slot) {
+    const hand = this._handOf(slot);
+    if (!hand || this.state.screen !== 'playing' || this.heldBodies.held.has(hand)) return false;
+    const creature = this._creatureAtHand(hand, slot);
+    if (!creature) return false;
+    const body = this.world.clusterOf(creature); // head .. tail
+    const at = this._gripCm(slot), now = this.world.time;
+    const offsets = body.map((b) => this.world.renderedPosition(b, now, new THREE.Vector3()).sub(at));
+    const home = { x: body[0].x, y: body[0].y, z: body[0].z };
+    const sound = this._soundAt(creature);
+    if (this.selected.some((c) => body.includes(c))) this._setSelected(this.selected.filter((c) => !body.includes(c))); // (back to what it was doing)
+    const records = this.world.takeBody(body);
+    if (!records) return false;
+    this.heldBodies.hold(hand, records, offsets, home, at);
+    playWait(sound);
+    return true;
+  }
+
+  /** XR: a grip let go of the creature it carried: it goes back into the grid (_putHeld). */
+  _dropCreature(slot) {
+    const hand = this._handOf(slot);
+    if (hand && this.heldBodies.held.has(hand)) this._putHeld(hand, this._gripCm(slot));
+  }
+
+  /**
+   * Puts the creature `hand` carries back into the grid, its head in the nearest cell to where
+   * it's let go (`at`: the hand, cm) where the whole body fits, sliding there from the hand,
+   * with the Select tool's target sound. With no room near, it goes near where it was taken from.
+   */
+  _putHeld(hand, at) {
+    const h = this.heldBodies.release(hand);
+    if (!h) return;
+    const from = h.offsets.map((o) => o.clone().add(at).divideScalar(GRID.scale)); // each block, let go (lattice units)
+    const cell = this._nearestFit(h.records, from[0], DROP_SEARCH) ?? this._nearestFit(h.records, new THREE.Vector3(h.home.x, h.home.y, h.home.z), DROP_SEARCH_HOME);
+    const head = cell && this.world.putBody(h.records, cell.x, cell.y, cell.z);
+    if (!head) return void playSfx('ineffective', 0); // (nowhere at all: it's gone)
+    if (!this.state.paused) {
+      h.records.forEach((r, i) => this.world.slideIn(this.world.get(cell.x + r.dx, cell.y + r.dy, cell.z + r.dz), from[i], DROP_SLIDE_S));
+    }
+    playAssign(this._soundAt(head));
+  }
+
+  /** The cell nearest point `p` (lattice units), within `radius`, where a body (World.takeBody's records) fits with its head there; null if none. */
+  _nearestFit(records, p, radius) {
+    const cx = Math.round(p.x), cy = Math.round(p.y), cz = Math.round(p.z), cells = [];
+    for (let x = cx - radius; x <= cx + radius; x++) {
+      for (let y = cy - radius; y <= cy + radius; y++) {
+        for (let z = cz - radius; z <= cz + radius; z++) {
+          if (isValidCell(x, y, z)) cells.push({ x, y, z, d: (x - p.x) ** 2 + (y - p.y) ** 2 + (z - p.z) ** 2 });
+        }
+      }
+    }
+    cells.sort((a, b) => a.d - b.d);
+    return cells.find((c) => this.world.fitsBody(records, c.x, c.y, c.z)) ?? null;
+  }
+
+  /** Per frame: carried creatures follow their hands. */
+  _updateHeld() {
+    if (!this.heldBodies.held.size) return this.heldBodies.update(() => null);
+    this.heldBodies.update((hand) => (this.hands[hand] ? this._gripCm(this.hands[hand]) : null));
+  }
+
   /** (Re)start a grab whenever a grip is pressed or released, from the build's current pose. */
   _beginGrab() {
     const held = ['left', 'right'].map((h) => this.hands[h]).filter((sl) => sl && sl.gripHeld);
@@ -3046,6 +3180,8 @@ export class Engine {
    * XR: the build is reset to life size / upright and its origin placed 50 cm in front of the eyes.
    */
   _resetPlayerView() {
+    this.heldBodies.clear(); // (they were the old world's)
+    this.heldBodies.update(() => null);
     if (this._immersive) {
       this._grab = null;
       this.worldRoot.quaternion.identity();
@@ -3890,6 +4026,7 @@ export class Engine {
       }
       this._pollGamepads();
       this._updateGrab();
+      this._updateHeld();
       this._updateGazeDock(dt);
       const flat = this.screenUI(); // the page's UI is in front instead (XR: Phone AR)
       const dbg = this.state.debugMode && !flat;

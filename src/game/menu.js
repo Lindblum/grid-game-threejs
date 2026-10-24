@@ -31,6 +31,8 @@ export const SPEED = Object.freeze({ min: 0, max: 4, step: 0.25, default: 1, tur
 
 /** Options → Accessibility → Text Size: a multiplier on the page UI's text, 75% to 200% in steps of 25%. */
 export const TEXT_SIZE = Object.freeze({ min: 0.75, max: 2, step: 0.25, default: 1 });
+/** Options → Video → XR Resolution: the headset's framebuffer scale (1 = the browser's recommended size; pixels drawn go with its square). */
+export const XR_RESOLUTION = Object.freeze({ min: 0.5, max: 1, step: 0.05, default: 1 });
 
 /** Options → Accessibility → Music and Sounds: a volume, 0% (off) to 100% in steps of 10%. */
 export const VOLUME = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
@@ -233,6 +235,13 @@ function videoItems(state) {
       ...(state.antialias !== state.antialiasActive && { sub: 'on reload' }), // (fixed when the page loads)
     },
     { id: 'vsync', label: `VSync: ${state.vsync ? 'On' : 'Off'}`, icon: state.vsync ? 'vsyncOn' : 'vsyncOff', toggle: true },
+    {
+      id: 'xrResolution',
+      // (set when an XR session starts: a change shows from the next one)
+      label: `XR Resolution: ${Math.round(state.xrResolution * 100)}%${state.xrResolutionActive != null && state.xrResolution !== state.xrResolutionActive ? ' (next XR)' : ''}`,
+      icon: 'xrResolution',
+      slider: { min: XR_RESOLUTION.min, max: XR_RESOLUTION.max, step: XR_RESOLUTION.step, value: state.xrResolution },
+    },
   ];
 }
 

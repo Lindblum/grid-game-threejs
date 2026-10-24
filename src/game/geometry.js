@@ -320,13 +320,27 @@ export function createBlockMaterials() {
     for (const m of all) m.needsUpdate = true; // recompile with SOLID_MATERIALS, SIMPLE_MATERIALS or neither
     applyRefraction();
   };
+  // Dithered blocks (World.setDithered, setSeeThrough) drop pixels with `discard`, compiled in
+  // (DISCARDS) only while something is dithered: a shader that can discard loses the GPU's
+  // early depth test (on mobile GPUs like the Quest's, its whole depth pre-pass), so every
+  // hidden surface behind the nearest gets shaded in full. The see-through body materials
+  // always have it.
+  let discards = false;
+  const setDiscards = (on) => {
+    if (discards === on) return;
+    discards = on;
+    for (const m of all) {
+      m.userData.discards = on;
+      m.needsUpdate = true; // (each variant compiled once, then cached)
+    }
+  };
   const setRefraction = (on) => {
     if (refraction === on) return;
     refraction = on;
     applyRefraction();
   };
   applyRefraction();
-  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, cloudDepth, bodyCloudDepth, translucentDepth, bodyTranslucentDepth, uniforms, setMaterials, setRefraction };
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, cloudDepth, bodyCloudDepth, translucentDepth, bodyTranslucentDepth, uniforms, setMaterials, setRefraction, setDiscards };
 }
 
 /**
@@ -356,6 +370,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
     if (crystalPass) shader.defines = { ...shader.defines, CRYSTAL_PASS: '' };
     if (mergedBody) shader.defines = { ...shader.defines, MERGED_BODY: '' };
     if (seeThrough) shader.defines = { ...shader.defines, SEE_THROUGH: seeThrough.toFixed(1) };
+    if (seeThrough || mat.userData.discards) shader.defines = { ...shader.defines, DISCARDS: '' };
     if (options.level === 'solid') shader.defines = { ...shader.defines, SOLID_MATERIALS: '' };
     if (options.level === 'simple') shader.defines = { ...shader.defines, SIMPLE_MATERIALS: '' };
     shader.vertexShader = shader.vertexShader
@@ -516,6 +531,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       .replace(
         '#include <clipping_planes_fragment>',
         `#include <clipping_planes_fragment>
+        #ifdef DISCARDS
         // 50 % screen-door transparency: drop every other pixel in a checkerboard
         if (vDither > 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0) < 1.0) discard;
         // Accessibility → View Internal (see-through level 2): 3/4 opaque (one pixel in each 2×2
@@ -533,6 +549,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         }
         #ifdef DOUBLE_SIDED
         if ((vSeeThrough < 0.5 || vSeeThrough > 1.5) && !gl_FrontFacing) discard;
+        #endif
         #endif`
       )
       .replace(
@@ -1016,5 +1033,5 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       );
   };
   mat.customProgramCacheKey = () =>
-    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}${seeThrough ? `-see${seeThrough}` : ''}-${options.level}`;
+    `${translucentPass ? (cloudPass ? 'grid-block-cloud' : crystalPass ? 'grid-block-crystal' : 'grid-block-translucent') : 'grid-block-opaque'}${mergedBody ? '-body' : ''}${seeThrough ? `-see${seeThrough}` : ''}${mat.userData.discards ? '-discards' : ''}-${options.level}`;
 }

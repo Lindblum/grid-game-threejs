@@ -64,6 +64,12 @@ const OBSERVER_CONTROLS = [
     },
   },
   {
+    action: 'Carry a creature',
+    mk: { g: ['text:—'], t: 'XR only' },
+    pad: { g: ['text:—'], t: 'XR only' },
+    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Grip a creature (touching or pointing at it) to pick it up out of the grid; let go to put it back in, in the nearest cells it fits' },
+  },
+  {
     action: 'Rotate view',
     mk: { g: ['mouse:L', 'sep:/', 'mouse:R'], t: 'Left- or right-drag (a left click without dragging uses the tool; a right click deselects)' },
     pad: { g: ['stick:R:any'], t: 'Right stick' },

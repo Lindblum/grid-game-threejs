@@ -454,6 +454,15 @@ const DRAW = {
     line(ctx, P, [[0.34, 0.82], [0.66, 0.82]]);
     line(ctx, P, [[0.44, 0.3], [0.44, 0.58]]);
   },
+  xrResolution(ctx, P) {
+    // XR Resolution: a pixel grid, its cells coarser toward one corner
+    line(ctx, P, [[0.16, 0.16], [0.84, 0.16], [0.84, 0.84], [0.16, 0.84], [0.16, 0.16]]);
+    line(ctx, P, [[0.5, 0.16], [0.5, 0.84]]);
+    line(ctx, P, [[0.16, 0.5], [0.84, 0.5]]);
+    ctx.globalAlpha *= 0.5;
+    line(ctx, P, [[0.33, 0.16], [0.33, 0.5]]);
+    line(ctx, P, [[0.16, 0.33], [0.5, 0.33]]);
+  },
   vsyncOff(ctx, P) {
     // the same display, its picture torn: the edge jumps sideways halfway down
     line(ctx, P, [[0.14, 0.2], [0.86, 0.2], [0.86, 0.68], [0.14, 0.68], [0.14, 0.2]]);

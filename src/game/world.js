@@ -802,10 +802,18 @@ export class World {
       this.materials.opaque.needsUpdate = true; // (DOUBLE_SIDED: compiled once, then cached)
     }
     this.clusterBodies.setSeeThrough(blocks, internal);
+    this._updateDiscards();
+  }
+
+  /** The block materials can discard pixels only while some block is dithered (see setDiscards in geometry.js). */
+  _updateDiscards() {
+    this.materials.setDiscards(this._dithered != null || this._seeThrough?.size > 0);
   }
 
   /** Draw this block 50 % see-through (dithered); pass null to clear. Only its own pass fades it. */
   setDithered(block) {
+    this._dithered = block;
+    this._updateDiscards();
     for (const [batch, materials] of this._batchMaterials) {
       const v = block && block.batch === batch ? block.index : -1;
       for (const m of materials) m.userData.dither.value = v;
@@ -893,6 +901,73 @@ export class World {
     this._dirty();
     this._reorientAround(x, y, z);
     return true;
+  }
+
+  /**
+   * XR grab: takes a creature's body `blocks` (head first: World.clusterOf's order) out of the
+   * world, returning what putBody needs to put it back: each block's offset from the head
+   * (lattice units) and its state (facing, behavior, walk target, inventory, buffs, …).
+   * Null if a block of it is shrinking away.
+   */
+  takeBody(blocks) {
+    if (blocks.some((b) => b.vanishing || this.blocks.get(cellKey(b.x, b.y, b.z)) !== b)) return null;
+    const head = blocks[0];
+    const records = blocks.map((b) => ({
+      dx: b.x - head.x, dy: b.y - head.y, dz: b.z - head.z, type: b.type,
+      front: b.front ? [...b.front] : null,
+      behavior: b.behavior,
+      walkTarget: b.walkTarget ? { ...b.walkTarget } : null,
+      trappedTurns: b.trappedTurns,
+      assigned: !!b.isAssignedBehavior,
+      inventory: b.inventory,
+      smooth: !!b.shadeSmooth,
+      buffs: b.buffs?.map(({ type, turns, charges }) => ({ type, turns, charges })) ?? [],
+      born: b.born,
+      segment: !!b.segmentOf, // a Buzzy's body segment (of the head)
+    }));
+    for (const b of [...blocks].reverse()) this.remove(b.x, b.y, b.z); // tail first: no segment breaks off on its own
+    return records;
+  }
+
+  /** Whether takeBody's `records` fit with the head in cell (x, y, z): every cell valid and empty. */
+  fitsBody(records, x, y, z) {
+    return records.every((r) => isValidCell(x + r.dx, y + r.dy, z + r.dz) && !this.blocks.has(cellKey(x + r.dx, y + r.dy, z + r.dz)));
+  }
+
+  /** Puts a body taken by takeBody back, its head in cell (x, y, z) (see fitsBody). Returns the head, or null. */
+  putBody(records, x, y, z) {
+    if (!this.fitsBody(records, x, y, z)) return null;
+    const chain = isChainCreature(records[0].type) ? this._nextChain++ : null; // (a chain of its own, even beside one of its type)
+    const placed = records.map((r) => {
+      this.add(x + r.dx, y + r.dy, z + r.dz, r.type, { chain });
+      return this.get(x + r.dx, y + r.dy, z + r.dz);
+    });
+    placed.forEach((b, i) => {
+      const r = records[i];
+      if (r.front) b.front = r.front;
+      if (canBehave(b.type, r.behavior)) b.behavior = r.behavior;
+      if (r.walkTarget) b.walkTarget = r.walkTarget;
+      if (r.trappedTurns) b.trappedTurns = r.trappedTurns;
+      if (r.assigned) b.isAssignedBehavior = true;
+      if (r.inventory) b.inventory = r.inventory;
+      if (r.smooth) this.setSmooth(b, true);
+      for (const bf of r.buffs) this.addBuff(b, bf.type, bf.turns, bf.charges);
+      if (r.born != null) b.born = r.born;
+      if (r.segment) this._attachSegment(placed[0], b);
+    });
+    if (chain != null) this.refreshSquirmies(); // (its head by the restored order)
+    for (const b of placed) {
+      if (isChainCreature(b.type) && !b.isHead) continue;
+      orientCreature(this, b); // its floor where it landed
+      this.eyes.track(b, 0);
+    }
+    return placed[0];
+  }
+
+  /** Slides `block` in from point `from` (lattice units, anywhere) to its cell over `durationS` (an XR-dropped creature). */
+  slideIn(block, from, durationS) {
+    this.anims.set(cellKey(block.x, block.y, block.z), { from: from.clone(), to: new THREE.Vector3(block.x, block.y, block.z), t0: this.time, dur: durationS * 1000, easeIn: false });
+    this._dirty();
   }
 
   /**
