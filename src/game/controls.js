@@ -34,13 +34,13 @@ const OBSERVER_CONTROLS = [
     action: 'Consume (selected creature)',
     mk: { g: ['key:E'], t: 'E: the selected creature consumes the block in front of it. Hold E and press WASD / the arrows to choose which block (it consumes on letting go)' },
     pad: { g: ['pad:Y', 'sep:+', 'stick:L:any'], t: 'Y: the selected creature consumes the block in front of it. Hold Y and push the left stick to choose which block (it consumes on letting go)' },
-    xr: { g: ['xr:B'], t: 'B: the selected creature consumes the block in front of it' },
+    xr: { g: ['xr:B', 'sep:+', 'xr:stick:L:any'], t: 'B: the selected creature consumes the block in front of it. Hold B and push the left thumbstick to choose which block (it consumes on letting go)' },
   },
   {
     action: 'Excrete (selected creature)',
     mk: { g: ['key:Q'], t: 'Q: the selected creature excretes the item in its tail slot. Hold Q and press WASD / the arrows to choose where (it excretes on letting go)' },
     pad: { g: ['pad:B', 'sep:+', 'stick:L:any'], t: 'B: the selected creature excretes the item in its tail slot. Hold B and push the left stick to choose where (it excretes on letting go)' },
-    xr: { g: ['xr:A'], t: 'A: the selected creature excretes the item in its tail slot' },
+    xr: { g: ['xr:A', 'sep:+', 'xr:stick:L:any'], t: 'A: the selected creature excretes the item in its tail slot. Hold A and push the left thumbstick to choose where (it excretes on letting go)' },
   },
   {
     action: 'Wander / Wait (selected creature)',
@@ -144,13 +144,13 @@ export const CreatureControlSchema = {
       action: 'Move creature',
       mk: { g: ['key:W', 'key:A', 'key:S', 'key:D', 'sep:/', 'key:↑', 'key:←', 'key:↓', 'key:→'], t: 'WASD or the arrow keys: move the controlled creature, relative to the camera (on its turn)' },
       pad: { g: ['stick:L:any'], t: 'Left stick: moves the selected creature, relative to the camera (on its turn)' },
-      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+      xr: { g: ['xr:stick:L:any'], t: 'Left thumbstick: moves the controlled creature, relative to your view (on its turn)' },
     },
     {
       action: 'Move away from camera',
       mk: { g: ['key:Shift'], t: 'Shift (held): the creature steps the way most nearly away from the camera' },
       pad: { g: ['stick:L:press'], t: 'L3 (hold the left stick in): the creature steps the way most nearly away from the camera' },
-      xr: { g: ['text:—'], t: 'No XR controller binding yet' },
+      xr: { g: ['xr:stick:L:any', 'text:click'], t: 'Hold the left thumbstick in: the creature steps the way most nearly away from you' },
     },
     ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action)),
     {

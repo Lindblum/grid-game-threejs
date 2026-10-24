@@ -14,14 +14,14 @@ import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSi
 import { SELECT_GREEN } from './icons.js';
 import { GRID, NEIGHBOR_DIRS, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
 import { EDGE_SHADE, MATERIALS, cellFaces, createBlockGeometry } from './geometry.js';
-import { createTouchBallMaterial, touchBallTime } from './touchBall.js';
+import { ENERGY_BLUE, createTouchBallMaterial, touchBallTime } from './touchBall.js';
 import {
   playPlace, playDelete, playTick, playResume, playPause, playLoad, playSave, playError, unlockAudio, setSoundVolume,
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
 import { RightHudPanel, MenuPanel, DebugTablet, ViewPanel } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, VIBRATION, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
 import { Interlaced } from './interlaced.js';
@@ -254,6 +254,7 @@ export class Engine {
       refraction: true, // Options → Refraction: Crystal and Water bend what's behind them, with Procedural materials (Off, or Simple / Solid: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       cameraSpeed: CAMERA_SPEED.default, // Options → Accessibility → Camera Speed: a multiplier on the camera's turning
+      vibration: VIBRATION.default, // Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 1 (_pulse)
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
       directionGuides: true, // Options → Accessibility → Direction Guides (or G): Creature controls' step lines and dots, and aimed Eat / Excrete's
       viewInternal: false, // Options → Accessibility → View Internal: the selected / controlled creatures see-through, their inventories inside
@@ -368,7 +369,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'vibration', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -428,6 +429,7 @@ export class Engine {
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (typeof saved.xrResolution === 'number') this.setXRResolution(saved.xrResolution);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
+    if (typeof saved.vibration === 'number') this.setVibration(saved.vibration);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
     if (bool('fog')) this.setFog(saved.fog);
   }
@@ -565,8 +567,8 @@ export class Engine {
     // you could select, and the target cell's dot (plus its per-turn spreading copies)
     this.selectHLs = []; // glow spheres (makeGlowMaterial): one per block of each selected creature…
     this.hoverHLs = []; // …and, lighter, of a creature you could select
-    this._selectGlow = makeGlowMaterial(SELECT_GREEN, 0.55);
-    this._hoverGlow = makeGlowMaterial('#9be8a8', 0.35);
+    this._selectGlow = makeGlowMaterial(ENERGY_BLUE, 0.55); // (the XR touch balls' blue)
+    this._hoverGlow = makeGlowMaterial('#a6dcff', 0.35);
     this._hoverCreature = null;
     this._targetDotGeo = new THREE.SphereGeometry(TARGET_DOT_RADIUS_CM, 16, 12);
     this.targetHL = new THREE.Mesh(this._targetDotGeo, new THREE.MeshBasicMaterial({ color: SELECT_GREEN, toneMapped: false }));
@@ -1853,6 +1855,39 @@ export class Engine {
     return false;
   }
 
+  /**
+   * XR: holding the right controller's B / A (Eat / Excrete) works like the gamepad's Y / B
+   * (_padAim): the left stick aims it, with Direction Guides showing the ways, and letting go
+   * does it (never aimed: the usual Eat / Excrete). Returns whether one is being aimed.
+   */
+  _xrAim(gp, ax) {
+    const s = this.state;
+    const ok = s.screen === 'playing' && !s.paused && !!gp;
+    if (this._aim && this._aim.source !== 'xr') return false;
+    const down = (i) => !!gp?.buttons[i]?.pressed;
+    const was = (this._xrAimPrev ??= {});
+    if (!this._aim && ok) {
+      for (const [button, kind] of [[5, 'eat'], [4, 'excrete']]) {
+        if (down(button) && !was[button]) {
+          this._aim = { kind, source: 'xr', button, stick: null };
+          break;
+        }
+      }
+    }
+    was[4] = down(4);
+    was[5] = down(5);
+    const a = this._aim;
+    if (!a) return false;
+    if (!ok) return void (this._aim = null);
+    if (down(a.button)) {
+      const sx = ax(0), sy = ax(1);
+      if (sx || sy) a.stick = [sx, sy]; // (the last way it was pushed counts)
+      return true;
+    }
+    this._finishAim(a); // let go: do it
+    return false;
+  }
+
   /** Carries out aim `a` (its button / key let go): the way it was aimed, or, never aimed, the usual Eat / Excrete. */
   _finishAim(a) {
     this._aim = null;
@@ -2116,8 +2151,7 @@ export class Engine {
         glow.scale.setScalar(radius);
       });
     };
-    const watched = new Set(this._pov ? this._bodyOf(this._pov.creature) : []); // (this close, its own outline would crowd the view)
-    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)).filter((b) => !watched.has(b)), this._selectGlow);
+    place(this.selectHLs, this.selected.flatMap((creature) => this._bodyOf(creature)), this._selectGlow); // (a controlled creature too: it's the selection)
     place(this.hoverHLs, this._hoverCreature ? this._bodyOf(this._hoverCreature) : [], this._hoverGlow);
     for (const p of this._pulses) {
       if (!p.obj.visible) continue;
@@ -2198,6 +2232,7 @@ export class Engine {
     if (id === 'textSize') this.setTextSize(value);
     if (id === 'xrResolution') this.setXRResolution(value);
     if (id === 'cameraSpeed') this.setCameraSpeed(value);
+    if (id === 'vibration') this.setVibration(value);
     if (id === 'music') this.setMusicVolume(value);
     if (id === 'sound') this.setSoundVolume(value);
   }
@@ -2215,6 +2250,16 @@ export class Engine {
     const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : CAMERA_SPEED.default, CAMERA_SPEED.min, CAMERA_SPEED.max);
     const v = Math.round(raw / CAMERA_SPEED.step) / Math.round(1 / CAMERA_SPEED.step); // (in tenths, like _volume)
     if (v !== this.state.cameraSpeed) this.setState({ cameraSpeed: v });
+  }
+
+  /** Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 1, snapped to the slider's steps; a buzz at the new strength shows it. */
+  setVibration(v) {
+    const n = Number(v);
+    const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : VIBRATION.default, VIBRATION.min, VIBRATION.max);
+    v = Math.round(raw / VIBRATION.step) / Math.round(1 / VIBRATION.step); // (in tenths, like _volume)
+    if (v === this.state.vibration) return;
+    this.setState({ vibration: v });
+    for (const hand of ['left', 'right']) this._pulse(0.6, 60, hand);
   }
 
   setMusicVolume(v) {
@@ -3351,8 +3396,10 @@ export class Engine {
     return null;
   }
 
-  /** A haptic pulse on `hand`'s controller. */
+  /** A haptic pulse on `hand`'s controller, at Options → Accessibility → Vibration's strength (none at Off). */
   _pulse(intensity, ms, hand = 'right') {
+    intensity *= this.state.vibration;
+    if (intensity <= 0) return;
     const gp = this.hands[hand]?.source?.gamepad;
     const act = gp?.hapticActuators?.[0];
     try {
@@ -3463,15 +3510,22 @@ export class Engine {
     if (rgp) {
       this._touchStickTools(rgp);
       const playing = this.state.screen === 'playing' && !this.state.paused;
-      const a = !!rgp.buttons[4]?.pressed; // A: excrete
-      if (a && !this._rightAWas && playing) this.selectedExcrete();
-      this._rightAWas = a;
-      const b = !!rgp.buttons[5]?.pressed; // B: eat
-      if (b && !this._rightBWas && playing) this.selectedEat();
-      this._rightBWas = b;
       const stick = !!rgp.buttons[3]?.pressed; // thumbstick click: Observer ↔ Creature controls (like the gamepad's R3)
       if (stick && !this._rightStickWas && playing) this.toggleControlSchema();
       this._rightStickWas = stick;
+    }
+    // the left stick: aims a held A / B (Excrete / Eat), else, under Creature controls, steers
+    // the controlled creature (as the gamepad's does); not while it scrolls Options
+    const lgpStick = this.hands.left?.source?.gamepad;
+    const scrolling = this._menuPanelHover && this._uiHand === 'left';
+    const lx = (i) => {
+      const v = (lgpStick && !scrolling && (lgpStick.axes.length >= 4 ? lgpStick.axes[2 + i] : lgpStick.axes[i])) || 0;
+      return Math.abs(v) < 0.18 ? 0 : v;
+    };
+    const aiming = this._xrAim(rgp, lx);
+    if (!aiming && this.state.controlSchema === 'creature' && this.state.screen === 'playing' && !this.state.paused) {
+      if (lgpStick?.buttons[3]?.pressed) this._steerAway(); // left stick held in (like the gamepad's L3): straight away from the view
+      else this._steerControlled(lx(0), lx(1));
     }
     // The Quest Browser uses the left Menu (≡) button as "Back" (it leaves XR: _trapBackButton),
     // so the menu is opened with the Menu button on the left HUD; the Y button is a shortcut for it.

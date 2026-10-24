@@ -523,6 +523,17 @@ const DRAW = {
     line(ctx, P, [[0.5, 0.4], [0.5, 0.58]]); // body
     line(ctx, P, [[0.38, 0.78], [0.5, 0.58], [0.62, 0.78]]); // legs
   },
+  vibrationOn(ctx, P) {
+    // Vibration: a controller's handle, with buzz lines either side
+    line(ctx, P, [[0.38, 0.18], [0.62, 0.18], [0.62, 0.82], [0.38, 0.82], [0.38, 0.18]]);
+    line(ctx, P, [[0.24, 0.32], [0.18, 0.42], [0.24, 0.52], [0.18, 0.62]]);
+    line(ctx, P, [[0.76, 0.32], [0.82, 0.42], [0.76, 0.52], [0.82, 0.62]]);
+  },
+  vibrationOff(ctx, P) {
+    // the same handle, still, struck through
+    line(ctx, P, [[0.38, 0.18], [0.62, 0.18], [0.62, 0.82], [0.38, 0.82], [0.38, 0.18]]);
+    line(ctx, P, [[0.18, 0.84], [0.82, 0.16]]);
+  },
   textSize(ctx, P) {
     // a small and a large "A"
     line(ctx, P, [[0.12, 0.78], [0.26, 0.42], [0.4, 0.78]]);

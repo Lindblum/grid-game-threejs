@@ -5,6 +5,9 @@
 // brightens it: on a block it could take hold of, more on a creature (or carrying one).
 import * as THREE from 'three';
 
+/** The touch balls' blue (between their deep and bright tones): the selection glow shares it (engine.js). */
+export const ENERGY_BLUE = '#3fb4ff';
+
 /** The shared clock (s) for every touch ball's ripples: set it each frame. */
 export const touchBallTime = { value: 0 };
 

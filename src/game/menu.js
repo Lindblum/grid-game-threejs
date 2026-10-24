@@ -39,6 +39,8 @@ export const VOLUME = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
 
 /** Options → Accessibility → Camera Speed: a multiplier on how fast the camera turns (mouse and stick), 10% to 150%. */
 export const CAMERA_SPEED = Object.freeze({ min: 0.1, max: 1.5, step: 0.1, default: 1 });
+/** Options → Accessibility → Vibration: how strong the controllers' haptics are, 0 (off) to 1. */
+export const VIBRATION = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
 
 /** Options → Background, in the order its dropdown lists them (passthrough last). */
 export const BACKGROUNDS = ['solid', 'skybox', 'passthrough'];
@@ -279,6 +281,12 @@ function accessibilityItems(state) {
       label: `Camera Speed: ${Math.round(state.cameraSpeed * 100)}%`,
       icon: 'cameraNormal',
       slider: { min: CAMERA_SPEED.min, max: CAMERA_SPEED.max, step: CAMERA_SPEED.step, value: state.cameraSpeed },
+    },
+    {
+      id: 'vibration',
+      label: `Vibration: ${state.vibration > 0 ? `${Math.round(state.vibration * 100)}%` : 'Off'}`,
+      icon: state.vibration > 0 ? 'vibrationOn' : 'vibrationOff',
+      slider: { min: VIBRATION.min, max: VIBRATION.max, step: VIBRATION.step, value: state.vibration },
     },
     camera('observerCamera', 'Observer Camera', state.observerCameraInvert),
     camera('controlCamera', 'Control Camera', state.controlCameraInvert),
