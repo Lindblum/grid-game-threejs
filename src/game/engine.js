@@ -5,7 +5,7 @@ import { InventoryView } from './inventoryView.js';
 import { HeldBodies } from './heldBodies.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
+import { canStand, pathToward, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
@@ -121,7 +121,7 @@ const EDGE_ARC_SEGMENTS = 8;
 const TARGET_DOT_RADIUS_CM = 0.08;
 const TARGET_LINE_DOT_CM = 0.06;
 const TARGET_LINE_GAP_CM = 0.1;
-const TARGET_LINES_MAX = 16;
+const TARGET_LINES_MAX = 512; // (segments: each selected creature's path to the target, round edges in arcs)
 /** Creature controls: the stick picks the step line nearest its direction on screen, within this (cosine: ~70°). */
 /** The camera this close to a block's surface (cm), or inside it, draws it see-through: the near plane (0.25 cm, ~0.4 cm at its corners) would cut it. */
 const SEE_THROUGH_REACH_CM = 0.45;
@@ -604,8 +604,10 @@ export class Engine {
     // …and a dotted line to it from each selected creature's head
     const targetLineGeo = new THREE.BufferGeometry();
     targetLineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TARGET_LINES_MAX * 6), 3).setUsage(THREE.DynamicDrawUsage));
+    targetLineGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(TARGET_LINES_MAX * 6), 3).setUsage(THREE.DynamicDrawUsage));
     this.targetLine = new THREE.LineSegments(targetLineGeo, new THREE.LineDashedMaterial({
-      color: SELECT_GREEN, dashSize: TARGET_LINE_DOT_CM, gapSize: TARGET_LINE_GAP_CM, transparent: true, opacity: 0.85, depthWrite: false,
+      vertexColors: true, // (each creature's line in its colour, like the Direction Guides)
+      dashSize: TARGET_LINE_DOT_CM, gapSize: TARGET_LINE_GAP_CM, transparent: true, opacity: 0.85, depthWrite: false,
     }));
     this.targetLine.frustumCulled = false;
     this.targetLine.renderOrder = 3;
@@ -2186,7 +2188,7 @@ export class Engine {
 
   /** Starts a copy of the target dot that spreads out and fades away over one step animation (it follows the target dot: _showHighlight). */
   _pulseTarget() {
-    this._pulseDot(this.targetHL, SELECT_GREEN, { followsTarget: true });
+    this._pulseDot(this.targetHL, this.targetHL.material.color, { followsTarget: true });
   }
 
   /** Once a turn: each Direction Guides dot (a step's, an aimed Eat / Excrete's) pulses like the target dot. */
@@ -2255,22 +2257,51 @@ export class Engine {
     }
   }
 
-  /** Per frame, once the target is placed (_updateTarget): the dotted line from each selected creature's head (as drawn, sliding) to the target dot. */
+  /**
+   * Per frame, once the target is placed (_updateTarget): a dotted line in each selected
+   * creature's colour from its head (as drawn, sliding) to the target dot, along the way its
+   * Walk would go (sim.js pathToward; round an edge, its arc); none with no way there.
+   */
   _updateTargetLine(now) {
-    const heads = this.targetHL.visible ? this.selected.slice(0, TARGET_LINES_MAX) : [];
-    const pos = this.targetLine.geometry.getAttribute('position');
-    const head = new THREE.Vector3();
-    heads.forEach((c, i) => {
-      this.world.renderedPosition(c, now, head);
-      pos.setXYZ(i * 2, head.x, head.y, head.z);
-      pos.setXYZ(i * 2 + 1, this.targetHL.position.x, this.targetHL.position.y, this.targetHL.position.z);
-    });
-    this.targetLine.visible = heads.length > 0;
-    if (heads.length) {
-      pos.needsUpdate = true;
-      this.targetLine.geometry.setDrawRange(0, heads.length * 2);
-      this.targetLine.computeLineDistances(); // (the dots run from each head)
+    const heads = this.targetHL.visible && this._targetCell ? this.selected : [];
+    const g = this.targetLine.geometry, pos = g.getAttribute('position'), col = g.getAttribute('color');
+    const s = GRID.scale, color = new THREE.Color();
+    let n = 0;
+    for (const c of heads) {
+      color.set(BLOCK_COLORS[c.type]);
+      const path = this._targetPath(c);
+      if (!path) continue; // (no way there: no line, just the dot; a straight one would cut through blocks)
+      const pts = [this.world.renderedPosition(c, now, new THREE.Vector3())];
+      let prev = { x: c.x, y: c.y, z: c.z };
+      for (const cell of path) {
+        for (const p of this._movePath(prev, cell, this.world.edgeVia(prev, cell, c)).slice(1)) pts.push(new THREE.Vector3(p.x * s, p.y * s, p.z * s));
+        prev = cell;
+      }
+      for (let i = 1; i < pts.length && n < TARGET_LINES_MAX; i++, n++) {
+        pos.setXYZ(n * 2, pts[i - 1].x, pts[i - 1].y, pts[i - 1].z);
+        pos.setXYZ(n * 2 + 1, pts[i].x, pts[i].y, pts[i].z);
+        col.setXYZ(n * 2, color.r, color.g, color.b);
+        col.setXYZ(n * 2 + 1, color.r, color.g, color.b);
+      }
     }
+    this.targetLine.visible = n > 0;
+    if (n) {
+      pos.needsUpdate = col.needsUpdate = true;
+      g.setDrawRange(0, n * 2);
+      this.targetLine.computeLineDistances(); // (the dots run on from each head along its path)
+    }
+  }
+
+  /** Creature `c`'s path to the target cell (pathToward), searched again only when it, the target or the world changed. */
+  _targetPath(c) {
+    const t = this._targetCell;
+    const key = `${c.x},${c.y},${c.z}>${t.x},${t.y},${t.z}@${this.world.revision}`;
+    this._targetPaths ??= new WeakMap();
+    const hit = this._targetPaths.get(c);
+    if (hit?.key === key) return hit.path;
+    const path = pathToward(this.world, c, t);
+    this._targetPaths.set(c, { key, path });
+    return path;
   }
 
   /**
@@ -4146,7 +4177,9 @@ export class Engine {
         this._hoverCreature = creature; // a creature you could select: drawn in _updateSelectionVisuals
       } else if (this.selected.length && this._targeting && this._isSelectTarget(t)) {
         this.targetHL.position.set(...t.place).multiplyScalar(GRID.scale); // (lattice units -> cm)
+        this.targetHL.material.color.set(BLOCK_COLORS[this.selected[0].type]); // (the creature's colour, like its Direction Guides)
         this.targetHL.visible = true;
+        this._targetCell = { x: t.place[0], y: t.place[1], z: t.place[2] };
         // its shrinking pulses move with it (same frame), staying centred in it
         for (const p of this._pulses) if (p.obj.visible && p.followsTarget) p.obj.position.copy(this.targetHL.position);
       }

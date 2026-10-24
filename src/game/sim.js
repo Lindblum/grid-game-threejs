@@ -1035,6 +1035,39 @@ function stepOffsets(world, x, y, z, self) {
   ];
 }
 
+/**
+ * The whole shortest path a Walk to cell `t` would take (firstStepToward's search, with the
+ * rules the creature's turn uses: a chain's head squirmyCellOk, else isWalkable): its cells,
+ * first step .. `t`; null if there's none (within WALK_SEARCH_LIMIT).
+ */
+export function pathToward(world, creature, t) {
+  let ok = (x, y, z) => isWalkable(world, x, y, z, creature);
+  if (isChainCreature(creature.type)) {
+    const own = new Set(world.squirmyOf.get(creature)?.segments ?? [creature]);
+    ok = (x, y, z, steps) => squirmyCellOk(world, creature, own, x, y, z, steps === 1);
+  }
+  if (!ok(t.x, t.y, t.z, Infinity)) return null;
+  const goal = cellKey(t.x, t.y, t.z), start = cellKey(creature.x, creature.y, creature.z);
+  const parent = new Map([[start, null]]); // visited cell -> the cell it was reached from
+  const queue = [{ x: creature.x, y: creature.y, z: creature.z, steps: 0, k: start }];
+  for (let i = 0; i < queue.length && parent.size < WALK_SEARCH_LIMIT; i++) {
+    const p = queue[i];
+    for (const [dx, dy, dz] of stepOffsets(world, p.x, p.y, p.z, creature)) {
+      const q = { x: p.x + dx, y: p.y + dy, z: p.z + dz, steps: p.steps + 1 };
+      q.k = cellKey(q.x, q.y, q.z);
+      if (parent.has(q.k) || !ok(q.x, q.y, q.z, q.steps)) continue;
+      parent.set(q.k, p);
+      if (q.k === goal) {
+        const cells = [];
+        for (let n = q; n && n.k !== start; n = parent.get(n.k)) cells.push({ x: n.x, y: n.y, z: n.z });
+        return cells.reverse();
+      }
+      queue.push(q);
+    }
+  }
+  return null;
+}
+
 /** Most cells one Walk path search may visit (keeps a turn cheap in big builds). */
 const WALK_SEARCH_LIMIT = 5000;
 /** A walking creature that finds no path this many turns in a row gives up and Wanders. */
