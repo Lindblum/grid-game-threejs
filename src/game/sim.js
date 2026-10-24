@@ -344,7 +344,9 @@ export function stepSquirmies(world, skip = new Set()) {
       // after another creature: a step toward the cell beside it nearest this head
       const goal = pursuitGoal(world, head, (x, y, z) => ok(x, y, z, Infinity));
       if (goal === 'gone') endWalk(head);
-      else if (goal && goal !== 'there') to = firstStepToward(world, head, goal, ok);
+      else if (goal === 'there') {
+        if (head.hunt) huntBite(world, head);
+      } else if (goal) to = firstStepToward(world, head, goal, ok);
     } else if (behavior === BEHAVIOR.WALK) {
       const t = head.walkTarget;
       const stop = () => endWalk(head);
@@ -1046,11 +1048,7 @@ function stepOffsets(world, x, y, z, self) {
  * first step .. `t`; null if there's none (within WALK_SEARCH_LIMIT).
  */
 export function pathToward(world, creature, t) {
-  let ok = (x, y, z) => isWalkable(world, x, y, z, creature);
-  if (isChainCreature(creature.type)) {
-    const own = new Set(world.squirmyOf.get(creature)?.segments ?? [creature]);
-    ok = (x, y, z, steps) => squirmyCellOk(world, creature, own, x, y, z, steps === 1);
-  }
+  const ok = walkRules(world, creature);
   if (!ok(t.x, t.y, t.z, Infinity)) return null;
   const goal = cellKey(t.x, t.y, t.z), start = cellKey(creature.x, creature.y, creature.z);
   const parent = new Map([[start, null]]); // visited cell -> the cell it was reached from
@@ -1119,6 +1117,7 @@ function walk(world, creature) {
       endWalk(creature);
       return false;
     }
+    if (goal === 'there' && creature.hunt) huntBite(world, creature); // (beside it, hunting it: a bite)
     if (!goal || goal === 'there') return false; // (beside it already, or no room by it: waits for it to move)
     const next = firstStepToward(world, creature, goal);
     return !!next && world.move(creature, next, world.stepSeconds);
@@ -1145,14 +1144,43 @@ function walk(world, creature) {
   return moved;
 }
 
+/** The cells a Walk may step into, `ok(x, y, z, steps)` (its turn's rules: a chain's head squirmyCellOk, else isWalkable). */
+function walkRules(world, creature) {
+  if (!isChainCreature(creature.type)) return (x, y, z) => isWalkable(world, x, y, z, creature);
+  const own = new Set(world.squirmyOf.get(creature)?.segments ?? [creature]);
+  return (x, y, z, steps) => squirmyCellOk(world, creature, own, x, y, z, steps === 1);
+}
+
+/** The cell beside `quarry` that `creature` would head for to go after it (pursuitGoal), or null (beside it already, or no room). */
+export function pursuitCell(world, creature, quarry) {
+  const goal = pursuitGoal(world, creature, walkRules(world, creature), quarry);
+  return typeof goal === 'object' ? goal : null;
+}
+
+/**
+ * A hunting creature (`creature.hunt`: sent to eat its quarry, Consume with Select) beside its
+ * quarry: it turns to face it if it's right behind, and eats it (creatureEat: its diet). Eaten,
+ * the hunt is over. Returns whether it ate.
+ */
+function huntBite(world, creature) {
+  const q = creature.pursue;
+  if (isBehind(creature, q)) {
+    const d = [q.x - creature.x, q.y - creature.y, q.z - creature.z];
+    creature.front = NEIGHBOR_DIRS.find(([dx, dy, dz]) => dx === d[0] && dy === d[1] && dz === d[2]) ?? creature.front;
+    world.eyes.track(creature, world.stepSeconds * 0.5, world.time);
+  }
+  if (!creatureEat(world, creature, q)) return false;
+  endWalk(creature);
+  return true;
+}
+
 /**
  * Where a creature pursuing another (`creature.pursue`, sent after it with Select) heads this
  * turn: of the cells beside its quarry (a chain's head) that `ok` lets it stand in, the nearest
  * to it; 'there' when it's beside its quarry already; 'gone' when the quarry is no longer in the
- * world (the pursuit ends); null when there's no room beside it just now.
+ * world (the pursuit ends); null when there's no room beside it just now. `q`: another quarry.
  */
-function pursuitGoal(world, creature, ok) {
-  const q = creature.pursue;
+function pursuitGoal(world, creature, ok, q = creature.pursue) {
   if (!q || world.get(q.x, q.y, q.z) !== q) return 'gone';
   const d = [q.x - creature.x, q.y - creature.y, q.z - creature.z];
   if (NEIGHBOR_DIRS.some(([dx, dy, dz]) => dx === d[0] && dy === d[1] && dz === d[2])) return 'there';
@@ -1171,6 +1199,7 @@ function pursuitGoal(world, creature, ok) {
 function stopSteeredWalk(creature) {
   if (creature.behavior !== BEHAVIOR.WALK) return;
   delete creature.pursue;
+  delete creature.hunt;
   delete creature.walkTarget;
   delete creature.walkStuck;
   creature.behavior = BEHAVIOR.WAIT;
@@ -1200,6 +1229,7 @@ function tickWait(creature) {
  */
 function endWalk(creature) {
   delete creature.pursue;
+  delete creature.hunt;
   delete creature.walkTarget;
   delete creature.walkStuck;
   if (!creature.isSelected) creature.isAssignedBehavior = false; // the order is done: it may forage again

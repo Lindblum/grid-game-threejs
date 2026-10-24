@@ -38,9 +38,9 @@ const OBSERVER_CONTROLS = [
   },
   {
     action: 'Consume (selected creature)',
-    mk: { g: ['key:E'], t: 'E: the selected creature consumes the block in front of it. Hold E and press WASD / the arrows to choose which block (it consumes on letting go)' },
+    mk: { g: ['key:E'], t: 'E: the selected creature consumes the block in front of it. Hold E and press WASD / the arrows to choose which block (it consumes on letting go). Pointing at another creature: it hunts that one down and eats it (if it eats that kind)' },
     pad: { g: ['pad:Y', 'sep:+', 'stick:L:any'], t: 'Y: the selected creature consumes the block in front of it. Hold Y and push the left stick to choose which block (it consumes on letting go)' },
-    xr: { g: ['xr:B', 'sep:+', 'xr:stick:L:any'], t: 'B: the selected creature consumes the block in front of it. Hold B and push the left thumbstick to choose which block (it consumes on letting go)' },
+    xr: { g: ['xr:B', 'sep:+', 'xr:stick:L:any'], t: 'B: the selected creature consumes the block in front of it. Hold B and push the left thumbstick to choose which block (it consumes on letting go). Pointing at another creature: it hunts that one down and eats it (if it eats that kind)' },
   },
   {
     action: 'Excrete (selected creature)',

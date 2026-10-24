@@ -6,12 +6,12 @@ import { HeldBodies } from './heldBodies.js';
 import { ControllerGuide } from './controllerGuide.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, pathToward, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
+import { canStand, pathToward, pursuitCell, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
 import { debugSections } from './debugSections.js';
-import { BEHAVIOR, BUFF_TYPES, blockProps, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
+import { BEHAVIOR, BUFF_TYPES, blockProps, canEat, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
 import { GRID, NEIGHBOR_DIRS, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
 import { EDGE_SHADE, MATERIALS, cellFaces, createBlockGeometry } from './geometry.js';
@@ -136,6 +136,8 @@ const STEER_SCREEN_COS = 0.35;
  * tip up toward the eyes (as in xr-music-threejs).
  */
 const XR_PANEL_ORDER = ['options', 'debug', 'view', 'right'];
+/** Docked on one controller, the panels stand stacked, top to bottom in this order (the last nearest the controller). */
+const XR_DOCK_STACK = ['options', 'right', 'debug', 'view'];
 const PANEL_DOCK_ANCHOR = new THREE.Vector3(0, 0.05, 0.02);
 const PANEL_DOCK_TILT = -0.5; // radians about the controller's X: the top leans forward
 const PANEL_DOCK_GAP = 0.008; // m between panels docked side by side
@@ -697,14 +699,14 @@ export class Engine {
     this.debugTablet = new DebugTablet(); // Options → Debug, in XR
     this.viewPanel = new ViewPanel(); // back to the Normal view
     // the XR panels, like the windowed ones (each with its toggle button): where each docks at
-    // first (`home`), its size in the gaze dock and held / free (`*Scale`; docked: the panel's own dockScale), where it is
+    // first (`home`), its size in the gaze dock (`gazeScale`; docked, held and free: the panel's own dockScale), where it is
     // docked now (`dock`: 'left', 'right' or null: free in the room) and where it shows (`on`:
     // that controller, the other when that one's missing, 'gaze' without controllers, or null)
     this._panels = {
-      options: { panel: this.menuPanel, home: 'left', gazeScale: 1, freeScale: 1 },
-      debug: { panel: this.debugTablet, home: 'left', gazeScale: 1, freeScale: 1 },
-      view: { panel: this.viewPanel, home: 'left', gazeScale: 1, freeScale: 1.6 },
-      right: { panel: this.rightHud, home: 'right', gazeScale: 1, freeScale: 1.6 },
+      options: { panel: this.menuPanel, home: 'left', gazeScale: 1 },
+      debug: { panel: this.debugTablet, home: 'left', gazeScale: 1 },
+      view: { panel: this.viewPanel, home: 'left', gazeScale: 1 },
+      right: { panel: this.rightHud, home: 'right', gazeScale: 1 },
     };
     for (const e of Object.values(this._panels)) {
       Object.assign(e, { dock: e.home, on: null, fly: null });
@@ -1364,6 +1366,8 @@ export class Engine {
    */
   selectedEat() {
     if (!this.selected.length || !this.toolsReady()) return false;
+    const quarry = this._pointedQuarry();
+    if (quarry) return this._sendAfter(quarry, { hunt: true }); // (pointing at a creature to send them after: they hunt it)
     this._cancelWalks();
     let ate = false;
     for (const c of this.selected) {
@@ -1651,6 +1655,7 @@ export class Engine {
       if (c.behavior !== BEHAVIOR.WALK) continue;
       delete c.walkTarget;
       delete c.pursue;
+      delete c.hunt;
       delete c.walkStuck;
       c.behavior = BEHAVIOR.WAIT;
       c.heldBehavior = BEHAVIOR.WANDER;
@@ -2196,6 +2201,7 @@ export class Engine {
       c.heldBehavior = BEHAVIOR.WALK; // X (Wait) then deselect: carries on walking there
       c.walkTarget = { x, y, z };
       delete c.pursue;
+      delete c.hunt;
       delete c.walkStuck;
       delete c.waitTurns;
     }
@@ -2208,20 +2214,36 @@ export class Engine {
    * The Select tool's target is creature `quarry`: each selected creature (but it) goes after
    * it, every turn heading for the cell beside it wherever it's got to (sim.js pursuitGoal),
    * until given another order or the quarry is gone. It stays selected, to be sent on again.
+   * `hunt` (Consume pointing at it): only those that can eat it go, and eat it once beside it.
    */
-  _sendAfter(quarry) {
-    for (const c of this.selected) {
-      if (c === quarry) continue;
+  _sendAfter(quarry, { hunt = false } = {}) {
+    const sent = this.selected.filter((c) => c !== quarry && (!hunt || canEat(c, quarry.type)));
+    if (!sent.length) return void playSfx('ineffective', 0); // (none of them could eat it)
+    for (const c of sent) {
       c.behavior = BEHAVIOR.WALK;
       c.isAssignedBehavior = true; // (no foraging on the way)
       c.heldBehavior = BEHAVIOR.WALK;
       c.pursue = quarry;
+      if (hunt) c.hunt = true; // (beside it, it eats it: sim.js huntBite)
+      else delete c.hunt;
       delete c.walkTarget;
       delete c.walkStuck;
       delete c.waitTurns;
     }
     playAssign(this._soundAt(quarry));
     return true;
+  }
+
+  /** Whether creatures (or blocks) `a` and `b` are in neighbouring cells. */
+  _isBeside(a, b) {
+    return NEIGHBOR_DIRS.some(([dx, dy, dz]) => a.x + dx === b.x && a.y + dy === b.y && a.z + dz === b.z);
+  }
+
+  /** While Select picks where the selection goes: the creature pointed at, if it's one they could be sent after (not one of them); else null. */
+  _pointedQuarry() {
+    if (!this._targeting || !this.selected.length || this._activeTool().id !== TOOL.SELECT) return null;
+    const c = this._creatureOf(this.target?.block);
+    return c && !this.selected.includes(c) ? c : null;
   }
 
   /** Starts a copy of the target dot that spreads out and fades away over one step animation (it follows the target dot: _showHighlight). */
@@ -2301,7 +2323,8 @@ export class Engine {
    * Walk would go (sim.js pathToward; round an edge, its arc); none with no way there.
    */
   _updateTargetLine(now) {
-    const heads = this.targetHL.visible && this._targetCell ? this.selected : [];
+    const quarry = this._targetCreature;
+    const heads = (this.targetHL.visible && this._targetCell) || quarry ? this.selected : [];
     const g = this.targetLine.geometry, pos = g.getAttribute('position'), col = g.getAttribute('color');
     const s = GRID.scale, color = new THREE.Color();
     let n = 0;
@@ -2315,6 +2338,7 @@ export class Engine {
         for (const p of this._movePath(prev, cell, this.world.edgeVia(prev, cell, c)).slice(1)) pts.push(new THREE.Vector3(p.x * s, p.y * s, p.z * s));
         prev = cell;
       }
+      if (quarry) pts.push(this.world.renderedPosition(quarry, now, new THREE.Vector3())); // (on into the creature it would go after)
       for (let i = 1; i < pts.length && n < TARGET_LINES_MAX; i++, n++) {
         pos.setXYZ(n * 2, pts[i - 1].x, pts[i - 1].y, pts[i - 1].z);
         pos.setXYZ(n * 2 + 1, pts[i].x, pts[i].y, pts[i].z);
@@ -2332,7 +2356,11 @@ export class Engine {
 
   /** Creature `c`'s path to the target cell (pathToward), searched again only when it, the target or the world changed. */
   _targetPath(c) {
-    const t = this._targetCell;
+    const q = this._targetCreature;
+    if (q === c) return null;
+    // (sent after a creature: to the cell beside it it would head for; none when it's beside it already)
+    const t = q ? pursuitCell(this.world, c, q) : this._targetCell;
+    if (!t) return q && this._isBeside(c, q) ? [] : null;
     const key = `${c.x},${c.y},${c.z}>${t.x},${t.y},${t.z}@${this.world.revision}`;
     this._targetPaths ??= new WeakMap();
     const hit = this._targetPaths.get(c);
@@ -3114,7 +3142,8 @@ export class Engine {
       e.on = gaze ? 'gaze' : this.hands[e.dock] ? e.dock : this.hands[other] ? other : 'gaze';
       if (m.visible) rows[e.on].push(e);
     }
-    for (const hand of ['left', 'right']) if (rows[hand].length) this._layoutRow(rows[hand], this.hands[hand].ctrl, false);
+    const below = (e) => -XR_DOCK_STACK.indexOf(Object.keys(this._panels).find((k) => this._panels[k] === e)); // (bottom first)
+    for (const hand of ['left', 'right']) if (rows[hand].length) this._layoutRow(rows[hand].sort((a, b) => below(a) - below(b)), this.hands[hand].ctrl, false);
     if (rows.gaze.length) this._layoutRow(rows.gaze, this.gazeDock, true);
   }
 
@@ -3264,7 +3293,7 @@ export class Engine {
       offset: gripInverse.clone().multiply(m.matrixWorld),
       point: at.point.clone().applyMatrix4(gripInverse),
       size: 1,
-      grow: (e.freeScale * this.state.textSize) / m.scale.x,
+      grow: (e.panel.dockScale * this.state.textSize) / m.scale.x, // (taken off a dock or from the gaze dock: the size it has docked)
       zone: null,
     };
   }
@@ -4094,6 +4123,7 @@ export class Engine {
     this.placeHL.visible = false;
     this.deleteHL.visible = false;
     this._hoverCreature = null;
+    this._targetCreature = null; // (a creature pointed at to send the selection after: _showHighlight)
     this.targetHL.visible = false;
     this.world.setDithered(null);
     this.target = null;
@@ -4277,6 +4307,7 @@ export class Engine {
       const creature = this._creatureOf(t.block);
       if (creature && !this.selected.includes(creature)) {
         this._hoverCreature = creature; // a creature you could select: drawn in _updateSelectionVisuals
+        if (this.selected.length && this._targeting) this._targetCreature = creature; // (or send them after: the dotted path to it)
       } else if (this.selected.length && this._targeting && this._isSelectTarget(t)) {
         this.targetHL.position.set(...t.place).multiplyScalar(GRID.scale); // (lattice units -> cm)
         this.targetHL.material.color.set(BLOCK_COLORS[this.selected[0].type]); // (the creature's colour, like its Direction Guides)

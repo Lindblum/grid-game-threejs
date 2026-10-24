@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { TOOLS } from './tools.js';
 import { drawToolIcon, roundRect } from './icons.js';
 import { drawMenuItemIcon } from './menuIcons.js';
@@ -10,9 +9,8 @@ import { gridMode } from './lattice.js';
 const tableRows = (table) => (CONTROL_SCHEMAS[table] ?? CONTROL_SCHEMAS.observer).controls;
 import { drawCell, cellWidth } from './inputIcons.js';
 
-/** Every XR panel's thickness: a slab this deep (m, in the world) behind its face, its edges this round. */
+/** Every XR panel's thickness: a slab this deep (m, in the world) behind its face (its corners rounded like the face's frame). */
 const PANEL_DEPTH_M = 0.01;
-const PANEL_EDGE_RADIUS_M = 0.003;
 const SLAB_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.55, metalness: 0.15 });
 
 /** A flat plane textured with a 2D canvas, used for in-world UI panels in XR (with a slab behind it: updateSlab). */
@@ -26,8 +24,9 @@ class CanvasPanel {
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = 4;
     const heightM = (widthM * pxH) / pxW;
-    // (alphaTest: the clear rest of the canvas doesn't write depth, or it would hide or z-fight a panel beside it)
-    this.material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, alphaTest: 0.01, toneMapped: false, side: THREE.DoubleSide });
+    // (alphaTest: the clear rest of the canvas doesn't write depth, or it would hide or z-fight a
+    // panel beside it; front only: from behind, its slab's back shows: updateSlab)
+    this.material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, alphaTest: 0.01, toneMapped: false });
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(widthM, heightM), this.material);
     this.mesh.renderOrder = 10;
     this.pxPerM = pxW / widthM; // pixel density (at scale 1): resizing keeps it, so the contents keep their size
@@ -150,14 +149,16 @@ class CanvasPanel {
   }
 
   /**
-   * Call per frame (while shown): the panel's 3D body, a rounded slab PANEL_DEPTH_M deep in the
-   * world (whatever the panel's scale) behind the visible panel, its face flush with the canvas.
-   * Rebuilt only when its size changes.
+   * Call per frame (while shown): the panel's 3D body, a slab PANEL_DEPTH_M deep in the world
+   * (whatever the panel's scale) behind the visible panel, its outline the frame's (a rounded
+   * rectangle: rounded at the 4 corners, straight front and back edges). Rebuilt only when its
+   * size changes.
    */
   updateSlab() {
     const b = this.boxMetres(), s = this.mesh.scale.x || 1;
     const w = b.right - b.left, h = b.top - b.bottom, d = PANEL_DEPTH_M / s;
     if (w <= 0 || h <= 0) return;
+    const r = Math.min((FRAME_RADIUS_MM + FRAME_LINE_MM / 2) / 1000 / this.dockScale, w / 2, h / 2); // (the frame's outer corner, in the panel's metres)
     if (!this.slab) {
       this.slab = new THREE.Mesh(new THREE.BufferGeometry(), SLAB_MATERIAL);
       this.slab.raycast = () => {}; // (the face is what's pointed at)
@@ -168,9 +169,20 @@ class CanvasPanel {
     if (key !== this._slabKey) {
       this._slabKey = key;
       this.slab.geometry.dispose();
-      this.slab.geometry = new RoundedBoxGeometry(w, h, d, 2, Math.min(PANEL_EDGE_RADIUS_M / s, w / 2, h / 2, d / 2));
+      const shape = new THREE.Shape(), x0 = -w / 2, y0 = -h / 2, x1 = w / 2, y1 = h / 2;
+      shape.moveTo(x0 + r, y0);
+      shape.lineTo(x1 - r, y0);
+      shape.absarc(x1 - r, y0 + r, r, -Math.PI / 2, 0);
+      shape.lineTo(x1, y1 - r);
+      shape.absarc(x1 - r, y1 - r, r, 0, Math.PI / 2);
+      shape.lineTo(x0 + r, y1);
+      shape.absarc(x0 + r, y1 - r, r, Math.PI / 2, Math.PI);
+      shape.lineTo(x0, y0 + r);
+      shape.absarc(x0 + r, y0 + r, r, Math.PI, Math.PI * 1.5);
+      this.slab.geometry.dispose();
+      this.slab.geometry = new THREE.ExtrudeGeometry(shape, { depth: d, bevelEnabled: false, curveSegments: 6 });
     }
-    this.slab.position.set((b.left + b.right) / 2, (b.top + b.bottom) / 2, -d / 2 - 0.0003 / s); // (just behind the face: no z-fighting)
+    this.slab.position.set((b.left + b.right) / 2, (b.top + b.bottom) / 2, -d - 0.0003 / s); // (it runs from -d to just behind the face: no z-fighting)
   }
 
   /**
