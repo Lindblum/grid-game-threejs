@@ -48,7 +48,7 @@ as Truncated Octahedron. See `src/game/grids.js`.
 | Move / dock a panel | — | — | Grip a panel to take it; let go near the other controller to dock it. Double-tap a grip at a panel: dock it there; at nothing: undock |
 | Carry a creature | — | — | Grip a creature (touching or pointing at it) to pick it up; let go to put it back in the nearest cells it fits |
 
-With a creature selected, on the XR controllers: **B** consumes, **A** excretes (hold either and aim with the left thumbstick), **Y** wanders, **X** waits (gamepad: **Y** consumes, **B** excretes, **View** waits; hold Y or B and aim with the left stick; keyboard: **E** consumes, **Q** excretes, held with WASD / the arrows to aim). Controlling a creature, WASD, the arrows, the gamepad's left stick or the XR left thumbstick move it.
+With a creature selected, on the XR controllers: **B** consumes, **A** excretes (hold either and aim with the left thumbstick), **Y** wanders, **X** waits (gamepad: **Y** consumes, **B** excretes, **View** waits; hold Y or B and aim with the left stick; keyboard: **E** consumes, **Q** excretes, held with WASD / the arrows to aim). Controlling a creature, WASD, the arrows, the gamepad's left stick or the XR left thumbstick move it (relative to your view of it; held in: straight away from you). In XR, taking control zooms the build in 4× about the creature's head, and going back to Observer zooms it back out.
 The full table is under **Options → Controls** in the game.
 
 ## How it works

@@ -78,6 +78,7 @@ const ORBIT_RADIUS_CM = 300; // 3 m radius
 const ORBIT_PERIOD_S = 60; // one revolution per minute
 const GRAB_MIN_SCALE = 0.1; // two-hand zoom limits, relative to life size (1 lattice cm = 1 cm)
 const GRAB_MAX_SCALE = 20;
+const XR_POV_ZOOM = 4; // XR: taking a creature's view zooms the build in this much about its head (_xrPovZoom)
 const FLY_M_PER_WHEEL_PX = 0.00005; // zoomed all the way in, scrolling flies forward: ~0.5 cm per wheel notch
 const FLY_M_PER_PAD_S = 0.08; // …and the gamepad's RT flies up to 8 cm/s
 // The windowed camera settles, gently, so down (toward the origin: gravity) is down (see _settleCamera):
@@ -1497,7 +1498,11 @@ export class Engine {
     if (this.state.controlSchema === id) return false;
     if (id === 'observer') {
       if (!this._endCreatureView({ zoomOut: true })) this._orbitOrigin();
-    } else if (this.selected[0]) this._startCreatureView(this.selected[0]);
+      this._xrPovZoom(null);
+    } else if (this.selected[0]) {
+      this._startCreatureView(this.selected[0]);
+      this._xrPovZoom(this.selected[0]);
+    }
     this._setControlled(id === 'creature' ? this.selected : []);
     this.setState({ controlSchema: id });
     this._setTargeting(false); // Select: back to picking a creature, not where it walks
@@ -1588,11 +1593,10 @@ export class Engine {
     if (!sx && !sy) return;
     this._steerStick = [sx, sy]; // (for the step lines; cleared each gamepad poll)
     const toLattice = this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert();
-    const look = this.camera.getWorldDirection(new THREE.Vector3()).applyQuaternion(toLattice);
     const screenRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(toLattice);
     const screenUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(toLattice);
     for (const c of this._controlled ?? []) {
-      const fwd = look.clone(), right = screenRight.clone();
+      const fwd = this._viewDirTo(c, toLattice), right = screenRight.clone();
       if (!canFly(c)) {
         // (on a wall or under a ledge "up" is away from that, not from the world's centre)
         const up = c.floor ? new THREE.Vector3(...c.floor).negate() : new THREE.Vector3(c.x, c.y, c.z);
@@ -1617,8 +1621,8 @@ export class Engine {
    */
   _steerAway() {
     const toLattice = this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert();
-    const look = this.camera.getWorldDirection(new THREE.Vector3()).applyQuaternion(toLattice);
     for (const c of this._controlled ?? []) {
+      const look = this._viewDirTo(c, toLattice);
       let best = null, bestDot = 0; // (never toward the camera)
       for (const t of steppableCells(this.world, c)) {
         const d = new THREE.Vector3(t.x - c.x, t.y - c.y, t.z - c.z).normalize();
@@ -1630,6 +1634,18 @@ export class Engine {
       const dir = best ?? look;
       c.steer = [dir.x, dir.y, dir.z];
     }
+  }
+
+  /**
+   * The way from the camera (the headset, in XR) to creature `c`, in lattice space (`toLattice`:
+   * the build's world rotation, inverted), unit length: "away from me" as you see it, wherever
+   * you look. Right on top of it: where the camera looks.
+   */
+  _viewDirTo(c, toLattice) {
+    const s = GRID.scale;
+    const d = this.worldRoot.localToWorld(new THREE.Vector3(c.x * s, c.y * s, c.z * s)).sub(this.camera.getWorldPosition(new THREE.Vector3()));
+    if (d.lengthSq() < 1e-10) this.camera.getWorldDirection(d);
+    return d.applyQuaternion(toLattice).normalize();
   }
 
   /**
@@ -1710,12 +1726,14 @@ export class Engine {
     const from = toScreen(c.x, c.y, c.z);
     if (!from) return null;
     const stick = Math.hypot(sx, sy);
+    const P = this.camera.projectionMatrix.elements;
+    const aspect = P[5] / P[0]; // (from the projection itself: XR's isn't the window's)
     const out = [];
     for (const t of cells) {
       const p = aim ? aim(t) : t;
       const to = toScreen(p.x, p.y, p.z);
       if (!to) continue;
-      const vx = (to.x - from.x) * this.camera.aspect, vy = to.y - from.y; // NDC y is up
+      const vx = (to.x - from.x) * aspect, vy = to.y - from.y; // NDC y is up
       const len = Math.hypot(vx, vy);
       if (len < 1e-6) continue;
       out.push({ t, cos: (vx * sx - vy * sy) / (len * stick) });
@@ -2746,6 +2764,7 @@ export class Engine {
   }
 
   _leaveImmersive() {
+    this._xrPov = this._xrZoom = null;
     for (const [hand, h] of [...this.heldBodies.held]) this._putHeld(hand, h.at); // (carried creatures go back where they were last held)
     this.heldBodies.update(() => null);
     this._releaseBackButton();
@@ -3297,6 +3316,53 @@ export class Engine {
     r.position.copy(g.pos).sub(g.mid0).multiplyScalar(s).applyQuaternion(q).add(mid);
   }
 
+  /**
+   * XR: taking a creature's view (Creature controls) zooms the build in XR_POV_ZOOM× about its
+   * head, so it's big in front of you; back to Observer (`creature` null) zooms it back to the
+   * size it had before, about the head again. Both over ZOOM_OUT_S (_stepXrZoom). Outside XR
+   * the camera flies in instead (_startCreatureView).
+   */
+  _xrPovZoom(creature) {
+    if (!this._immersive) return void (this._xrPov = null);
+    const r = this.worldRoot;
+    if (creature) {
+      if (this._xrPov) return; // (already zoomed in)
+      this._xrPov = { creature, scale0: r.scale.x };
+      this._startXrZoom(creature, Math.min(r.scale.x * XR_POV_ZOOM, CM * GRAB_MAX_SCALE));
+    } else if (this._xrPov) {
+      const alive = (this._controlled ?? []).find((c) => this.world.get(c.x, c.y, c.z) === c);
+      this._startXrZoom(alive ?? this._xrPov.creature, this._xrPov.scale0);
+      this._xrPov = null;
+    }
+  }
+
+  /** Starts zooming the build to scale `to`, keeping `creature`'s head where it is now. */
+  _startXrZoom(creature, to) {
+    const r = this.worldRoot;
+    r.updateWorldMatrix(true, false);
+    this._xrZoom = { creature, from: r.scale.x, to, t: 0, pivot: r.localToWorld(this._headCm(creature)) };
+  }
+
+  /** Per frame (XR): the zoom _startXrZoom started, eased; a grip taking hold of the build ends it there. */
+  _stepXrZoom(dt) {
+    const z = this._xrZoom;
+    if (!z) return;
+    if (this._grab) return void (this._xrZoom = null); // (the hands have it now)
+    z.t = Math.min(1, z.t + dt / ZOOM_OUT_S);
+    const s = z.from * Math.pow(z.to / z.from, THREE.MathUtils.smootherstep(z.t, 0, 1)); // (evenly in ratio: steady to the eye)
+    const r = this.worldRoot;
+    r.scale.setScalar(s);
+    r.position.copy(z.pivot).sub(this._headCm(z.creature).multiplyScalar(s).applyQuaternion(r.quaternion)); // (the head stays put)
+    if (z.t >= 1) this._xrZoom = null;
+  }
+
+  /** `c`'s head as drawn (sliding), cm in lattice space; gone from the world: the cell it was last in. */
+  _headCm(c) {
+    const out = new THREE.Vector3();
+    if (this.world.get(c.x, c.y, c.z) === c) return this.world.renderedPosition(c, this.world.time, out);
+    return out.set(c.x, c.y, c.z).multiplyScalar(GRID.scale);
+  }
+
   _headPose() {
     const pos = this.camera.getWorldPosition(new THREE.Vector3());
     const dir = this.camera.getWorldDirection(new THREE.Vector3());
@@ -3312,6 +3378,7 @@ export class Engine {
   _resetPlayerView() {
     this.heldBodies.clear(); // (they were the old world's)
     this.heldBodies.update(() => null);
+    this._xrPov = this._xrZoom = null; // (life size again)
     if (this._immersive) {
       this._grab = null;
       this.worldRoot.quaternion.identity();
@@ -3500,6 +3567,7 @@ export class Engine {
   }
 
   _pollGamepads() {
+    this._steerStick = null; // set again below while the left stick steers a creature
     // pointing at Options (a menu taller than the panel): that hand's thumbstick up / down scrolls it
     const sgp = this._menuPanelHover && this.hands[this._uiHand]?.source?.gamepad;
     if (sgp) {
@@ -4165,6 +4233,7 @@ export class Engine {
       }
       this._pollGamepads();
       this._updateGrab();
+      this._stepXrZoom(dt);
       this._updateHeld();
       this._updateGazeDock(dt);
       const flat = this.screenUI(); // the page's UI is in front instead (XR: Phone AR)

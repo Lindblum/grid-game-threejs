@@ -123,7 +123,7 @@ export const ObserverControlSchema = {
       action: 'Control schema',
       mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click a creature: control it; the camera orbits it, up close' },
       pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): control the selected creature; the camera orbits it, up close' },
-      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: control the selected creature; or double-press the right trigger on a creature: control it' },
+      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: control the selected creature (the build grows 4× about its head); or double-press the right trigger on a creature: control it' },
     },
   ],
 };
@@ -157,7 +157,7 @@ export const CreatureControlSchema = {
       action: 'Control schema',
       mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click the creature: back to Observer controls (another creature: control that one instead)' },
       pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): back to Observer controls; the camera orbits the world again' },
-      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: back to Observer controls; or double-press the right trigger on the creature (another creature: control that one instead)' },
+      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: back to Observer controls (the build shrinks back); or double-press the right trigger on the creature (another creature: control that one instead)' },
     },
   ],
 };
