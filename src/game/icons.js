@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { cellFaces } from './geometry.js';
 import { gridMode } from './lattice.js';
 import { BLOCK, BLOCK_COLORS, TOOL } from './tools.js';
-import { renderedBlockIcon } from './iconRenderer.js';
+import { renderedBlockIcon, renderedTouchBallIcon } from './iconRenderer.js';
 import { drawMenuIcon } from './menuIcons.js';
 
 export { drawMenuIcon }; // (drawn with the menu icons, so the gear matches them)
@@ -139,21 +139,83 @@ export function drawDeleteIcon(ctx, cx, cy, size) {
   ctx.restore();
 }
 
-/** Select tool icon: a pointer arrow over a small green selection ring. */
+/**
+ * Select tool icon: the XR controllers' touch ball (a cell of see-through, wavy blue energy,
+ * like touchBall.js's shader: no edges, a glow, bright ripples crossing it) with a mouse
+ * pointer over it.
+ */
 export function drawSelectIcon(ctx, cx, cy, size) {
+  const bx = cx - size * 0.06, by = cy - size * 0.04, scale = (size * 0.92) / 3.1;
+  const ball = renderedTouchBallIcon(); // (the ball itself, rendered with its shader; else drawn like it, below)
+  if (ball) {
+    const d = size * 0.98;
+    ctx.drawImage(ball, bx - d / 2, by - d / 2, d, d);
+    return drawSelectPointer(ctx, cx, cy, size);
+  }
+  // the cell's outline as seen (its front faces together), to clip the energy to
+  const outline = () => {
+    ctx.beginPath();
+    for (const f of cellFaces()) {
+      if (f.normal.clone().applyMatrix4(ROT).z <= 1e-4) continue;
+      f.verts.forEach((v, i) => {
+        const p = v.clone().applyMatrix4(ROT);
+        const x = bx + p.x * scale, y = by - p.y * scale;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+    }
+  };
+  ctx.save();
+  // a soft halo round it
+  const halo = ctx.createRadialGradient(bx, by, scale * 0.6, bx, by, scale * 1.9);
+  halo.addColorStop(0, 'rgba(63,180,255,0.35)');
+  halo.addColorStop(1, 'rgba(63,180,255,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(bx - scale * 2, by - scale * 2, scale * 4, scale * 4);
+  outline();
+  ctx.clip('nonzero');
+  // deep, see-through blue, brightening toward its rim (the shader's fresnel)
+  const body = ctx.createRadialGradient(bx - scale * 0.2, by - scale * 0.2, scale * 0.2, bx, by, scale * 1.55);
+  body.addColorStop(0, 'rgba(13,64,230,0.25)');
+  body.addColorStop(0.7, 'rgba(40,140,255,0.45)');
+  body.addColorStop(1, 'rgba(140,230,255,0.9)');
+  ctx.fillStyle = body;
+  ctx.fillRect(bx - scale * 2, by - scale * 2, scale * 4, scale * 4);
+  // ripples: two crossing sets of wavy bands
+  ctx.lineCap = 'round';
+  ctx.globalCompositeOperation = 'lighter';
+  const wave = (angle, gap, amp, freq, width, alpha) => {
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(angle);
+    ctx.strokeStyle = `rgba(150,230,255,${alpha})`;
+    ctx.lineWidth = width;
+    for (let k = -3; k <= 3; k++) {
+      ctx.beginPath();
+      for (let i = 0; i <= 24; i++) {
+        const x = -scale * 2 + (i / 24) * scale * 4;
+        const y = k * gap + Math.sin(x / scale * freq + k * 1.3) * amp;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+  wave(-0.35, scale * 0.62, scale * 0.14, 2.6, Math.max(1, size * 0.035), 0.55);
+  wave(0.9, scale * 0.8, scale * 0.1, 3.4, Math.max(1, size * 0.025), 0.35);
+  ctx.restore();
+  drawSelectPointer(ctx, cx, cy, size);
+}
+
+/** The Select icon's mouse pointer, over its ball's lower right. */
+function drawSelectPointer(ctx, cx, cy, size) {
   ctx.save();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  // selection ring (the green of the selection wireframes)
-  ctx.strokeStyle = SELECT_GREEN;
-  ctx.lineWidth = size * 0.08;
-  ctx.setLineDash([size * 0.12, size * 0.09]);
-  ctx.beginPath();
-  ctx.arc(cx + size * 0.08, cy + size * 0.1, size * 0.3, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  // arrow, tip at the upper left
-  const s = size / 100, x0 = cx - size * 0.3, y0 = cy - size * 0.38;
+  // arrow, tip near the middle, over the cell's lower right
+  const s = (size / 100) * 0.62, x0 = cx + size * 0.02, y0 = cy - size * 0.02; // (all of it inside the icon)
   const pts = [[0, 0], [0, 62], [15, 48], [26, 72], [38, 67], [27, 43], [47, 43]];
   ctx.beginPath();
   pts.forEach(([x, y], i) => (i ? ctx.lineTo(x0 + x * s, y0 + y * s) : ctx.moveTo(x0 + x * s, y0 + y * s)));

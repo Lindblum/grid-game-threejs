@@ -259,11 +259,17 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 /* resizing: a grip in a HUD panel's inner top corner (resizes the panel), a bar along the
    Debug dock's right edge (sets its width); double-click resets */
 .resize-grip { position: absolute; z-index: 2; touch-action: none; }
-.resize-grip.grip-top-right, .resize-grip.grip-top-left { top: 3px; width: 14px; height: 14px; opacity: 0.45; }
-.resize-grip.grip-top-right { right: 3px; cursor: nesw-resize; border-top: 2px solid var(--muted); border-right: 2px solid var(--muted); border-top-right-radius: 6px; }
-.resize-grip.grip-top-left { left: 3px; cursor: nwse-resize; border-top: 2px solid var(--muted); border-left: 2px solid var(--muted); border-top-left-radius: 6px; }
-.resize-grip.grip-bottom-left { bottom: 3px; left: 3px; width: 14px; height: 14px; opacity: 0.45; cursor: nesw-resize; border-bottom: 2px solid var(--muted); border-left: 2px solid var(--muted); border-bottom-left-radius: 6px; }
-.resize-grip.grip-bottom-right { bottom: 3px; right: 3px; width: 14px; height: 14px; opacity: 0.45; cursor: nwse-resize; border-bottom: 2px solid var(--muted); border-right: 2px solid var(--muted); border-bottom-right-radius: 6px; }
+.resize-grip.grip-top-right, .resize-grip.grip-top-left, .resize-grip.grip-bottom-left, .resize-grip.grip-bottom-right {
+  width: 16px; height: 16px; opacity: 0.45;
+  /* three diagonal ridges across the corner (as on the XR panels), drawn for the bottom right and mirrored */
+  background: var(--muted);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg stroke='black' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M10 15L15 10M5.5 15L15 5.5M1 15L15 1'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg stroke='black' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M10 15L15 10M5.5 15L15 5.5M1 15L15 1'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat;
+}
+.resize-grip.grip-bottom-right { bottom: 3px; right: 3px; cursor: nwse-resize; }
+.resize-grip.grip-bottom-left { bottom: 3px; left: 3px; cursor: nesw-resize; transform: scaleX(-1); }
+.resize-grip.grip-top-right { top: 3px; right: 3px; cursor: nesw-resize; transform: scaleY(-1); }
+.resize-grip.grip-top-left { top: 3px; left: 3px; cursor: nwse-resize; transform: scale(-1, -1); }
 .resize-grip.grip-right-edge { top: 40px; bottom: 40px; right: -4px; width: 10px; cursor: ew-resize; }
 .resize-grip.grip-right-edge::after {
   content: ''; position: absolute; top: 50%; left: 4px; width: 3px; height: 44px; margin-top: -22px;

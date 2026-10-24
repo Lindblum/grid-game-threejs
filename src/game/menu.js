@@ -240,7 +240,7 @@ function videoItems(state) {
     {
       id: 'xrResolution',
       // (set when an XR session starts: a change shows from the next one)
-      label: `XR Resolution: ${Math.round(state.xrResolution * 100)}%${state.xrResolutionActive != null && state.xrResolution > state.xrResolutionActive ? ' (next XR)' : ''}`,
+      label: `XR Resolution: ${Math.round(state.xrResolution * 100)}%${state.xrResolutionActive != null && state.xrResolution !== state.xrResolutionActive ? ' (on release)' : ''}`,
       icon: 'xrResolution',
       slider: { min: XR_RESOLUTION.min, max: XR_RESOLUTION.max, step: XR_RESOLUTION.step, value: state.xrResolution },
     },
@@ -327,6 +327,7 @@ export function menuModel(state) {
         { id: 'controls', label: `Controls: ${schema.name}`, icon: 'controls', section: { open: state.section === 'controls', table: schema.id, items: [] } },
         { id: 'video', label: 'Video', icon: 'video', section: { open: state.section === 'video', items: videoItems(state) } },
         { id: 'accessibility', label: 'Accessibility', icon: 'accessibility', section: { open: state.section === 'accessibility', items: accessibilityItems(state) } },
+        { id: 'creative', label: `Creative: ${state.creative ? 'On' : 'Off'}`, icon: state.creative ? 'creativeOn' : 'creativeOff', toggle: true },
         { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff', toggle: true },
         { id: 'debug', label: `Debug: ${state.debugMode ? 'On' : 'Off'}`, icon: 'debug', toggle: true },
       ],

@@ -428,6 +428,21 @@ const DRAW = {
     ctx.fillStyle = INK;
     circle(ctx, P, 0.5, 0.64, 0.05, s, { fill: true });
   },
+  creativeOn(ctx, P) {
+    // Creative: a block (cube, in outline) with a plus beside it: blocks to place
+    line(ctx, P, [[0.14, 0.4], [0.5, 0.4], [0.5, 0.84], [0.14, 0.84], [0.14, 0.4]]);
+    line(ctx, P, [[0.14, 0.4], [0.3, 0.26], [0.64, 0.26], [0.5, 0.4]]);
+    line(ctx, P, [[0.64, 0.26], [0.64, 0.68], [0.5, 0.84]]);
+    line(ctx, P, [[0.8, 0.08], [0.8, 0.36]]);
+    line(ctx, P, [[0.66, 0.22], [0.94, 0.22]]);
+  },
+  creativeOff(ctx, P, s) {
+    // the same block, struck through
+    line(ctx, P, [[0.14, 0.4], [0.5, 0.4], [0.5, 0.84], [0.14, 0.84], [0.14, 0.4]]);
+    line(ctx, P, [[0.14, 0.4], [0.3, 0.26], [0.64, 0.26], [0.5, 0.4]]);
+    line(ctx, P, [[0.64, 0.26], [0.64, 0.68], [0.5, 0.84]]);
+    line(ctx, P, [[0.16, 0.9], [0.86, 0.14]]);
+  },
   rainOn(ctx, P, s) {
     cloud(ctx, P, s);
     for (const u of [0.34, 0.5, 0.66]) line(ctx, P, [[u, 0.64], [u - 0.05, 0.8]]); // falling drops

@@ -19,10 +19,16 @@ const OBSERVER_CONTROLS = [
     xr: { g: ['ray'], t: 'Point the right controller' },
   },
   {
+    action: 'Move selected creature',
+    mk: { g: ['key:W', 'key:A', 'key:S', 'key:D'], t: 'WASD (and the arrows, with Creative off): steer the selected creature, relative to the camera (on its turn); Shift: the way most nearly away. It stops any walk it was sent on' },
+    pad: { g: ['stick:L:any'], t: 'Left stick: steer the selected creature (L3 held: the way most nearly away from the camera). It stops any walk it was sent on' },
+    xr: { g: ['xr:stick:L:any'], t: 'Left thumbstick: steer the selected creature, relative to your view (held in: straight away from you). It stops any walk it was sent on' },
+  },
+  {
     action: 'Change tool',
-    mk: { g: ['key:←', 'key:→', 'sep:/', 'key:0–9'], t: 'Left / Right arrows, or 1–9 and 0' },
-    pad: { g: ['pad:LB', 'pad:RB'], t: 'Bumpers (LB / RB)' },
-    xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right, or open the Right HUD’s Tool dropdown and point at a tool (the left controller reaches it)' },
+    mk: { g: ['key:←', 'key:→', 'sep:/', 'key:0–9'], t: 'Left / Right arrows, or 1–9 and 0 (Options → Creative on)' },
+    pad: { g: ['pad:LB', 'pad:RB'], t: 'Bumpers (LB / RB) (Options → Creative on)' },
+    xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right, or open the Right HUD’s Tool dropdown and point at a tool (the left controller reaches it). Options → Creative on; off, the tool is Select. The right controller’s ball shows the tool: blue energy (Select), a red wireframe (Delete), or the block it places' },
   },
   {
     action: 'Deselect',
@@ -60,14 +66,14 @@ const OBSERVER_CONTROLS = [
     pad: { g: ['text:—'], t: 'The panels keep to the window’s corners' },
     xr: {
       g: ['xr:grip:L', 'sep:/', 'xr:grip:R'],
-      t: 'Grip a panel (touching or pointing at it) to take it; let go near the other controller to dock it there, anywhere else to leave it. Double-tap a grip at a panel to dock it on that controller, or at nothing to undock that controller’s panels',
+      t: 'Grip a panel (touching or pointing at it) to take it; let go near the other controller to dock it there, anywhere else to leave it. Double-tap a grip at a panel to dock it on that controller, or at nothing to undock that controller’s panels. Triple-tap a grip to bring every undocked panel to that controller. While gripping a panel, a creature or the build, that hand’s thumbstick up / down pushes it away / reels it in',
     },
   },
   {
     action: 'Carry a creature',
     mk: { g: ['text:—'], t: 'XR only' },
     pad: { g: ['text:—'], t: 'XR only' },
-    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Grip a creature (touching it with the cell in front of the controller, or pointing at it) to pick it up out of the grid; let go to put it back in, in the nearest cells it fits. It wriggles (shakes, and buzzes in your hand) while you carry it' },
+    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Grip a creature (touching it with the cell in front of the controller, or pointing at it) to pick it up out of the grid; let go to put it back in, in the nearest cells it fits, selected. It wriggles (shakes, and buzzes in your hand) while you carry it' },
   },
   {
     action: 'Rotate view',
@@ -135,11 +141,17 @@ export const ObserverControlSchema = {
  * turn); and no tools (using, aiming or switching them): those
  * belong to the Observer.
  */
-const TOOL_ACTIONS = new Set(['Use tool', 'Aim', 'Change tool']);
+const TOOL_ACTIONS = new Set(['Use tool', 'Aim', 'Change tool']); // (only Select, to send it somewhere: 'Send creature')
 export const CreatureControlSchema = {
   id: 'creature',
   name: 'Creature',
   controls: [
+    {
+      action: 'Send creature',
+      mk: { g: ['mouse:L'], t: 'Click a cell beside a surface it walks on: it walks there (the dotted line shows the way); steering it, or any other order, stops it' },
+      pad: { g: ['pad:A'], t: 'A at the crosshair: it walks there; steering it, or any other order, stops it' },
+      xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point at a cell beside a surface it walks on and pull the right trigger: it walks there (the dotted line shows the way); steering it, or any other order, stops it' },
+    },
     {
       action: 'Move creature',
       mk: { g: ['key:W', 'key:A', 'key:S', 'key:D', 'sep:/', 'key:↑', 'key:←', 'key:↓', 'key:→'], t: 'WASD or the arrow keys: move the controlled creature, relative to the camera (on its turn)' },
@@ -152,7 +164,7 @@ export const CreatureControlSchema = {
       pad: { g: ['stick:L:press'], t: 'L3 (hold the left stick in): the creature steps the way most nearly away from the camera' },
       xr: { g: ['xr:stick:L:any', 'text:click'], t: 'Hold the left thumbstick in: the creature steps the way most nearly away from you' },
     },
-    ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action)),
+    ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action) && row.action !== 'Move selected creature'),
     {
       action: 'Control schema',
       mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click the creature: back to Observer controls (another creature: control that one instead)' },

@@ -590,7 +590,7 @@ function RightPanel({ engine, s }) {
                   <button
                     key={t.id}
                     className={`slot${i === s.toolIndex ? ' selected' : ''}`}
-                    title={`${t.label} (${(i + 1) % 10})`}
+                    title={t.label}
                     onClick={blurThen(() => engine.selectTool(i))}
                   >
                     <img src={toolIconURL(t, 96, { materials: s.materials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />

@@ -299,17 +299,18 @@ export function stepSquirmies(world, skip = new Set()) {
     maybeExcrete(world, head);
     const own = new Set(sq.segments);
     const ok = (x, y, z, steps) => squirmyCellOk(world, head, own, x, y, z, steps === 1);
-    if (head.isControlled) {
-      // Creature controls: its head goes where the player steers it (else stays put; steered
-      // somewhere it can't go: 'creatureBlocked')
-      const steered = !!head.steer;
+    if (head.steer) {
+      // steered by the player (controlled, or selected): its head goes that way, and a walk it
+      // was on ends (steered somewhere it can't go: 'creatureBlocked')
+      stopSteeredWalk(head);
       const to = steerTo(world, head);
       if (to) {
         moveChain(world, sq.segments, to);
         moved++;
-      } else if (steered) world.emit('creatureBlocked', head);
+      } else world.emit('creatureBlocked', head);
       continue;
     }
+    if (head.isControlled && head.behavior !== BEHAVIOR.WALK) continue; // Creature controls: unsteered, it stays put (unless sent somewhere with Select)
     // now and then a wandering one burrows for a few turns (burrow)
     if ((head.behavior ?? blockProps(head.type).defaultBehavior) === BEHAVIOR.WANDER) maybeStartBurrow(head);
     if (head.behavior === BEHAVIOR.BURROW) {
@@ -1095,6 +1096,15 @@ function walk(world, creature) {
   return moved;
 }
 
+/** A creature the player steers stops any walk it was sent on (Select), and waits once the steering stops. */
+function stopSteeredWalk(creature) {
+  if (creature.behavior !== BEHAVIOR.WALK) return;
+  delete creature.walkTarget;
+  delete creature.walkStuck;
+  creature.behavior = BEHAVIOR.WAIT;
+  creature.heldBehavior = BEHAVIOR.WANDER;
+}
+
 /** Selecting a creature puts it in Wait for this many turns, then it resumes what it was doing. */
 export const SELECT_WAIT_TURNS = 4;
 
@@ -1326,13 +1336,18 @@ export function stepSoloCreatures(world, skip = new Set()) {
     tickWait(c);
     if (skip.has(c)) continue;
     maybeExcrete(world, c);
-    if (c.isControlled) {
-      // Creature controls: it goes where the player steers it (else stays put; steered
-      // somewhere it can't go: 'creatureBlocked'), nothing else
-      const steered = !!c.steer;
+    if (c.steer) {
+      // steered by the player (controlled, or selected): it goes that way, and a walk it was on
+      // ends (steered somewhere it can't go: 'creatureBlocked')
+      stopSteeredWalk(c);
       const to = steerTo(world, c);
       if (to && world.move(c, to, world.stepSeconds)) moved++;
-      else if (steered) world.emit('creatureBlocked', c);
+      else world.emit('creatureBlocked', c);
+      continue;
+    }
+    if (c.isControlled) {
+      // Creature controls: unsteered, it stays put, unless sent somewhere with Select
+      if (c.behavior === BEHAVIOR.WALK && walk(world, c)) moved++;
       continue;
     }
     // left to itself, a creature goes for the food it wants that it can see (and eats one next to it)

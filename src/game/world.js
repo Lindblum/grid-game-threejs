@@ -924,6 +924,7 @@ export class World {
       buffs: b.buffs?.map(({ type, turns, charges }) => ({ type, turns, charges })) ?? [],
       born: b.born,
       segment: !!b.segmentOf, // a Buzzy's body segment (of the head)
+      eyes: this.eyes.state.get(b)?.q.clone() ?? null, // how its eyes, legs, wings and fangs face (none: it has none)
       // how it's drawn (HeldBodies draws it in the hand the same; putBody keeps its pattern)
       look: {
         style: [0, 1, 2, 3].map((k) => this._style(b).getComponent(b.index, k)),

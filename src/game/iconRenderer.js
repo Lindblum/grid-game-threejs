@@ -7,6 +7,8 @@ import * as THREE from 'three';
 import { World } from './world.js';
 import { isCreature } from './blocks.js';
 import { GRID, gridMode } from './lattice.js';
+import { createBlockGeometry } from './geometry.js';
+import { createTouchBallMaterial, touchBallTime } from './touchBall.js';
 
 const SIZE = 160; // px, rendered square; icons are drawn scaled from this
 /** The icon's view direction (from the upper right front), and its field of view. */
@@ -74,6 +76,41 @@ class IconRenderer {
     w.updateAnimations(ICON_TIME_MS); // drop its Smooth body, eyes and legs for the next icon
     return out;
   }
+
+  /**
+   * The XR controllers' touch ball (touchBall.js: its own shader, at a fixed moment), seen as
+   * the blocks are. Its light is added onto what's behind it, so it's drawn on black and each
+   * pixel's brightness becomes its opacity: laid over anything, it glows the same.
+   */
+  renderTouchBall() {
+    const mesh = new THREE.Mesh(createBlockGeometry(), createTouchBallMaterial());
+    mesh.material.uniforms.uHot.value = 0.6;
+    this.scene.add(mesh);
+    const time = touchBallTime.value;
+    touchBallTime.value = 2.3;
+    const dist = blockRadius() / Math.sin(THREE.MathUtils.degToRad(FOV / 2));
+    this.camera.position.copy(VIEW_DIR).multiplyScalar(dist);
+    this.camera.lookAt(0, 0, 0);
+    this.renderer.setClearColor(0x000000, 1);
+    this.renderer.render(this.scene, this.camera);
+    this.renderer.setClearColor(0x000000, 0);
+    touchBallTime.value = time;
+    this.scene.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+    const out = document.createElement('canvas');
+    out.width = out.height = SIZE;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(this.renderer.domElement, 0, 0);
+    const img = ctx.getImageData(0, 0, SIZE, SIZE), d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const a = Math.max(d[i], d[i + 1], d[i + 2]);
+      if (a) for (let k = 0; k < 3; k++) d[i + k] = Math.round((d[i + k] * 255) / a);
+      d[i + 3] = a;
+    }
+    ctx.putImageData(img, 0, 0);
+    return out;
+  }
 }
 
 let instance = null;
@@ -84,6 +121,22 @@ const cache = new Map();
  * The engine-rendered icon of block type `type` in `style`, as a canvas (cached), or null
  * when WebGL isn't available (the caller falls back to a hand-drawn icon).
  */
+export function renderedTouchBallIcon() {
+  if (failed || typeof document === 'undefined') return null;
+  const key = `touchBall:${gridMode()}`;
+  if (cache.has(key)) return cache.get(key);
+  try {
+    instance ??= new IconRenderer();
+    const icon = instance.renderTouchBall();
+    cache.set(key, icon);
+    return icon;
+  } catch (e) {
+    console.warn('Tool icons: engine rendering failed, using drawn icons', e);
+    failed = true;
+    return null;
+  }
+}
+
 export function renderedBlockIcon(type, style = {}) {
   if (failed || typeof document === 'undefined') return null;
   const key = `${type}:${style.materials ?? 'solid'}:${style.smooth ? 'r' : 'b'}:${gridMode()}`; // (its World follows the grid mode)

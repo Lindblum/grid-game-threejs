@@ -46,6 +46,7 @@ const CARRY_HUM_EVERY = 0.05;
 /** XR: the two touch balls touching each other, [strength, ms]: a bump as they meet, then a buzz (every CARRY_HUM_EVERY s) while they touch; both controllers. */
 const BALL_TOUCH_PULSE = { meet: [0.8, 40], buzz: [0.35, 60] };
 const _ballQuat = new THREE.Quaternion();
+const SELECT_TOOL = TOOLS.find((t) => t.id === TOOL.SELECT); // (the tool in use when none can be picked: _activeTool)
 
 /**
  * Options → Video → XR Resolution turned down during an XR session (whose framebuffer size is
@@ -141,7 +142,12 @@ const PANEL_DOCK_REACH = 0.12; // m: a held panel let go this near the other con
 const PANEL_TOUCH_REACH = 0.03; // m: a grip this near a panel's face takes it
 const PANEL_GROW_RATE = 12; // per second: a panel in the hand eases to its free size
 const GRIP_TAP_S = 0.3; // a grip pressed no longer than this is a tap…
-const GRIP_DOUBLE_TAP_S = 0.35; // …and pressed again within this, a double tap
+const GRIP_DOUBLE_TAP_S = 0.35; // …and pressed again within this, a double tap (once more: a triple tap)
+const PANEL_FLY_S = 0.4;
+/** XR: a grip's thumbstick up / down pushes what it holds (panel, creature, the build) away along its ray / reels it in: per second at full tilt, this share of its distance from the hand… */
+const PUSH_RATE = 1.5;
+const PUSH_MIN_M = 0.25; // …but never slower than at this distance (m)
+const PANEL_REEL_MIN_M = 0.05; // a panel reels in no nearer the hand than this (m) // a triple tap's panels fly to their dock over this long
 const MENU_SCROLL_PX_S = 1400; // XR Options: canvas px a second it scrolls at the thumbstick's full tilt
 const PANEL_PULSE = { grab: [0.6, 50], detach: [0.4, 30], dock: [0.9, 80], zone: [0.25, 20] }; // haptics: [strength, ms]
 const _panelRay = new THREE.Raycaster();
@@ -264,6 +270,7 @@ export class Engine {
       ambientOcclusion: true, // Options → Ambient Occlusion: darker corners between blocks
       speed: SPEED.default, // Options → Speed: 0x–4x (0x: stopped), where 1x is 60 turns a minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
+      creative: true, // Options → Creative: the tools (blocks, Delete) can be picked; off, only Select (toolsAvailable)
       fog: true, // Options → Fog: Fog blocks are drawn (off: hidden, and the pointer passes through them)
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
       xrResolution: XR_RESOLUTION.default, // Options → Video → XR Resolution: the headset's framebuffer scale (setXRResolution)
@@ -388,7 +395,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'vibration', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'vibration', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -444,7 +451,7 @@ export class Engine {
     // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
     if (typeof saved.movementGuides === 'boolean' && !bool('directionGuides')) this.setState({ directionGuides: saved.movementGuides }); // (its old name)
-    for (const k of ['rain', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
+    for (const k of ['rain', 'creative', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (typeof saved.xrResolution === 'number') this.setXRResolution(saved.xrResolution);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
@@ -642,6 +649,11 @@ export class Engine {
         this._touchBallGeo.dispose();
         this._touchBallGeo = createBlockGeometry();
         for (const ball of this._touchBalls) ball.geometry = this._touchBallGeo;
+        if (this._ballWireGeo) {
+          this._ballWireGeo.dispose();
+          this._ballWireGeo = new THREE.EdgesGeometry(this._touchBallGeo);
+          for (const ball of this._touchBalls) if (ball.userData.wire) ball.userData.wire.geometry = this._ballWireGeo;
+        }
       }
       // (after every other listener: the tool icons' own World must have its new shape first)
       queueMicrotask(() => this.setState({ gridMode: gridMode() }));
@@ -687,12 +699,12 @@ export class Engine {
       right: { panel: this.rightHud, home: 'right', gazeScale: 1, freeScale: 1.6 },
     };
     for (const e of Object.values(this._panels)) {
-      Object.assign(e, { dock: e.home, on: null });
+      Object.assign(e, { dock: e.home, on: null, fly: null });
       e.panel.mesh.visible = false;
       this.scene.add(e.panel.mesh);
     }
     this._panelGrabs = { left: null, right: null }; // a panel held in that hand's grip (see _takePanel)
-    this._gripTaps = { left: null, right: null }; // each grip's last press and tap, for double taps
+    this._gripTaps = { left: null, right: null }; // each grip's last press and tap, for double and triple taps
     this._resizing = null; // the panel (key) whose resize handle a trigger is dragging
     this._resizeHover = null; // the panel whose resize handle the pointer is on
     this._uiHand = null; // whose pointer is on a panel: 'right', 'left' or 'gaze' (see _updateTarget)
@@ -779,9 +791,11 @@ export class Engine {
       ctrl.addEventListener('selectend', () => {
         const hand = this._handOf(slot);
         if (hand && this._uiPress === hand) {
+          const slider = this._sliderDrag;
           this._uiPress = null;
           this._sliderDrag = null;
           this._endResize();
+          if (slider === 'xrResolution') this._restartXR(); // (let go: the new resolution takes a new session)
         }
       });
       // Grips: a grip touching or pointing at a panel takes the panel, and a double tap docks
@@ -1088,9 +1102,24 @@ export class Engine {
     playResume();
   }
 
-  /** Tools belong to the Observer: under Creature controls there are none (no using, aiming or switching them). */
+  /**
+   * Whether the tools can be picked: with Options → Creative on, under Observer controls. Else
+   * the Select tool is the one in use (_activeTool), with no selector shown.
+   */
   toolsAvailable(s = this.state) {
-    return s.controlSchema !== 'creature';
+    return s.creative && s.controlSchema !== 'creature';
+  }
+
+  /** The tool in use: the picked one while tools can be picked (toolsAvailable), else Select. */
+  _activeTool(s = this.state) {
+    return this.toolsAvailable(s) ? TOOLS[s.toolIndex] : SELECT_TOOL;
+  }
+
+  /** Options → Creative: off, the tool selector goes and Select is the tool (the selection stays). */
+  setCreative(on) {
+    this.setState({ creative: on });
+    if (!on && TOOLS[this.state.toolIndex].id !== TOOL.SELECT) this.setState({ toolIndex: TOOLS.indexOf(SELECT_TOOL) });
+    this._hudMessage = null;
   }
 
   cycleTool(dir) {
@@ -1113,8 +1142,8 @@ export class Engine {
   }
 
   useTool() {
-    if (!this.toolsReady() || !this.toolsAvailable()) return false;
-    const tool = TOOLS[this.state.toolIndex];
+    if (!this.toolsReady()) return false;
+    const tool = this._activeTool();
     const t = this.target;
     if (tool.id === TOOL.SELECT) return this._useSelect(t);
     if (!t) return false;
@@ -1193,12 +1222,12 @@ export class Engine {
 
   /** HUD label for the current tool (the Select tool shows its phase). */
   toolLabel(s = this.state) {
-    if (!this.toolsAvailable(s)) {
-      // Creature controls: no tools, just who you're controlling
+    if (s.controlSchema === 'creature') {
+      // Creature controls: who you're controlling (Select still sends it somewhere)
       const c = this._controlled?.[0];
       return c ? `Controlling ${blockProps(c.type).name}` : 'Creature controls';
     }
-    const tool = TOOLS[s.toolIndex];
+    const tool = this._activeTool(s);
     if (tool.id !== TOOL.SELECT) return tool.label;
     return s.selectPhase === 'target' ? 'Select: pick a target' : 'Select';
   }
@@ -1319,6 +1348,7 @@ export class Engine {
    */
   selectedEat() {
     if (!this.selected.length || !this.toolsReady()) return false;
+    this._cancelWalks();
     let ate = false;
     for (const c of this.selected) {
       if (creatureEatNearby(this.world, c)) ate = true;
@@ -1514,17 +1544,18 @@ export class Engine {
    */
   setControlSchema(id) {
     if (this.state.controlSchema === id) return false;
+    const quiet = this._quietSchema; // (a controlled creature carried in XR: out and back in, unheard, the zoom kept)
     if (id === 'observer') {
       if (!this._endCreatureView({ zoomOut: true })) this._orbitOrigin();
-      this._xrPovZoom(null);
+      if (!quiet) this._xrPovZoom(null);
     } else if (this.selected[0]) {
       this._startCreatureView(this.selected[0]);
-      this._xrPovZoom(this.selected[0]);
+      if (!quiet) this._xrPovZoom(this.selected[0]);
     }
     this._setControlled(id === 'creature' ? this.selected : []);
     this.setState({ controlSchema: id });
-    this._setTargeting(false); // Select: back to picking a creature, not where it walks
-    playSfx(id === 'creature' ? 'controlCreature' : 'controlObserver', 0);
+    this._setTargeting(this.selected.length > 0); // Select: on to where the selection walks (in either controls)
+    if (!quiet) playSfx(id === 'creature' ? 'controlCreature' : 'controlObserver', 0);
     return true;
   }
 
@@ -1587,6 +1618,28 @@ export class Engine {
     this._applyLookBlend(0); // (this frame still looks where it did)
   }
 
+  /**
+   * The creatures the sticks / WASD steer: the controlled ones (Creature controls), else the
+   * selected ones (a selected creature can be steered too; it goes on as before when it isn't).
+   */
+  _steerTargets() {
+    return this.state.controlSchema === 'creature' ? this._controlled ?? [] : this.selected;
+  }
+
+  /**
+   * A new order for the selected creatures (Eat, Excrete): one on its way somewhere (Walk, sent
+   * with Select) stops there and waits instead.
+   */
+  _cancelWalks() {
+    for (const c of this.selected) {
+      if (c.behavior !== BEHAVIOR.WALK) continue;
+      delete c.walkTarget;
+      delete c.walkStuck;
+      c.behavior = BEHAVIOR.WAIT;
+      c.heldBehavior = BEHAVIOR.WANDER;
+    }
+  }
+
   /** The creatures the player controls (Creature controls): flagged for the sim (isControlled, steer). */
   _setControlled(list) {
     for (const c of this._controlled ?? []) {
@@ -1613,7 +1666,7 @@ export class Engine {
     const toLattice = this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert();
     const screenRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(toLattice);
     const screenUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(toLattice);
-    for (const c of this._controlled ?? []) {
+    for (const c of this._steerTargets()) {
       const fwd = this._viewDirTo(c, toLattice), right = screenRight.clone();
       if (!canFly(c)) {
         // (on a wall or under a ledge "up" is away from that, not from the world's centre)
@@ -1639,7 +1692,7 @@ export class Engine {
    */
   _steerAway() {
     const toLattice = this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert();
-    for (const c of this._controlled ?? []) {
+    for (const c of this._steerTargets()) {
       const look = this._viewDirTo(c, toLattice);
       let best = null, bestDot = 0; // (never toward the camera)
       for (const t of steppableCells(this.world, c)) {
@@ -1770,8 +1823,8 @@ export class Engine {
    * own colour; only with Accessibility → Direction Guides on.
    */
   _updateStepMarkers() {
-    const on = this.state.controlSchema === 'creature' && this.state.screen === 'playing' && this.state.directionGuides && !this._aim; // (aiming: its own guides)
-    const controlled = on ? (this._controlled ?? []).filter((c) => this.world.get(c.x, c.y, c.z) === c) : [];
+    const on = this.state.screen === 'playing' && this.state.directionGuides && !this._aim; // (aiming: its own guides)
+    const controlled = on ? this._steerTargets().filter((c) => this.world.get(c.x, c.y, c.z) === c) : []; // (or selected: _steerTargets)
     const markers = controlled.map((c) => ({ c, cell: nextSteppedCell(this.world, c) })).filter((m) => m.cell);
     const draw = (lines, segments) => this._drawGuideLines(lines, segments);
     const stick = this._steerStick;
@@ -1929,6 +1982,7 @@ export class Engine {
     this._aim = null;
     if (!a.stick) return void (a.kind === 'eat' ? this.selectedEat() : this.selectedExcrete());
     if (!this.selected.length || !this.toolsReady()) return void playSfx('ineffective', 0);
+    this._cancelWalks();
     let did = false;
     for (const { c, best } of this._aimChoices(a.kind, a.stick)) {
       if (!best) continue;
@@ -1950,12 +2004,12 @@ export class Engine {
       return true;
     }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
-      if (this.state.controlSchema !== 'creature') return false;
+      if (!this._steerTargets().length) return false;
       this._keysHeld.add(e.code);
       return true;
     }
     if (!KEY_STICK[e.code]) return false;
-    if (this.state.controlSchema !== 'creature' && !this._aim && e.code.startsWith('Arrow')) return false; // (Observer: ← / → change tools)
+    if (this.toolsAvailable() && !this._aim && e.code.startsWith('Arrow')) return false; // (tools to pick: ← / → change them)
     this._keysHeld.add(e.code);
     return true;
   }
@@ -1982,7 +2036,7 @@ export class Engine {
     const s = this.state;
     if (s.screen !== 'playing' || this.isMenuOpen(s)) return this._keysHeld.clear();
     const shift = this._keysHeld.has('ShiftLeft') || this._keysHeld.has('ShiftRight');
-    if (shift && !this._aim && s.controlSchema === 'creature') return this._steerAway(); // Shift: the way most nearly away from the camera
+    if (shift && !this._aim && this._steerTargets().length) return this._steerAway(); // Shift: the way most nearly away from the camera
     let sx = 0, sy = 0;
     for (const code of this._keysHeld) {
       if (!KEY_STICK[code]) continue;
@@ -1994,7 +2048,7 @@ export class Engine {
     sx /= len;
     sy /= len;
     if (this._aim?.source === 'key') this._aim.stick = [sx, sy];
-    else if (!this._aim && s.controlSchema === 'creature') this._steerControlled(sx, sy);
+    else if (!this._aim) this._steerControlled(sx, sy);
   }
 
   /** Per frame: the aimed Eat / Excrete's guide lines, and a dot on the chosen block / cell (both over the blocks); only with Direction Guides on. */
@@ -2060,6 +2114,7 @@ export class Engine {
    */
   selectedExcrete() {
     if (!this.selected.length || !this.toolsReady()) return false;
+    this._cancelWalks();
     let did = false;
     for (const c of this.selected) {
       if (this.world.excrete(this.world.clusterOf(c), 'excrete')) did = true;
@@ -2321,8 +2376,8 @@ export class Engine {
   /**
    * Options → Video → XR Resolution: the headset's framebuffer scale, snapped to the slider's
    * steps. The browser fixes the framebuffer when an XR session starts; turned down during one,
-   * it shows at once (each eye drawn into less of it: xrViewportScale), turned up past what the
-   * session started with, from the next one.
+   * it shows at once while dragging (each eye drawn into less of it: xrViewportScale), and on
+   * letting go the session restarts at the new size (_restartXR).
    */
   setXRResolution(scale) {
     const n = Number(scale);
@@ -2547,6 +2602,7 @@ export class Engine {
       return this.setState({ refraction: on });
     }
     if (id === 'rain') return this.setState({ rain: !s.rain });
+    if (id === 'creative') return this.setCreative(!s.creative);
     if (id === 'fog') return this.setFog(!s.fog);
     if (id === 'antialias') return this.setState({ antialias: !s.antialias });
     if (id === 'vsync') {
@@ -2724,6 +2780,35 @@ export class Engine {
     if (popEntry && history.state?.gridGameXR) history.back();
   }
 
+  /**
+   * XR Resolution let go at a value other than the session's: the session ends and a new one
+   * starts at once at the new framebuffer size (still from the trigger's release, which counts as
+   * a click). The build stays where it was, and Options opens again where it was; if the
+   * browser won't start the new session, the View panel's button goes back in.
+   */
+  async _restartXR() {
+    const s = this.state, session = this.renderer.xr.getSession();
+    if (!session || s.handheld || this._restartingXR || s.xrResolution === s.xrResolutionActive) return;
+    this._restartingXR = true;
+    const r = this.worldRoot;
+    const pose = { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x };
+    const menu = { menu: s.menu, page: s.page, dropdown: s.dropdown };
+    try {
+      const ended = new Promise((res) => session.addEventListener('end', res, { once: true }));
+      session.end();
+      await ended;
+      await this.enterXR();
+    } finally {
+      this._restartingXR = false;
+    }
+    if (!this.state.inXR) return this.toast('XR Resolution changed: press the View panel’s XR button to go back in');
+    this._needsXRPlacement = false;
+    r.position.copy(pose.pos);
+    r.quaternion.copy(pose.quat);
+    r.scale.setScalar(pose.scale);
+    this.setState({ paused: true, ...menu });
+  }
+
   /** Out of XR (the session's end, or leaving the handheld view, tidies up: _leaveImmersive). */
   exitXR() {
     if (this.state.handheld) return this._exitHandheld();
@@ -2781,7 +2866,7 @@ export class Engine {
     this._xrFrames = 0;
     this._needsXRPlacement = true;
     // each session, the panels start docked where they belong
-    for (const e of Object.values(this._panels)) Object.assign(e, { dock: e.home, on: null });
+    for (const e of Object.values(this._panels)) Object.assign(e, { dock: e.home, on: null, fly: null });
     this._panelGrabs = { left: null, right: null };
     this._gripTaps = { left: null, right: null };
     this._gazeDockAnchor = null;
@@ -2984,8 +3069,28 @@ export class Engine {
         m.position.applyQuaternion(_panelTilt).add(PANEL_DOCK_ANCHOR);
       }
       m.scale.setScalar(sc);
+      if (e.fly) this._flyPanel(e, parent);
       x += widths[i] + PANEL_DOCK_GAP;
     });
+  }
+
+  /**
+   * Panel `e` flying to its dock (a triple tap: e.fly, its world pose when it set off): drawn
+   * between there and its place in `parent` (just set), eased, until PANEL_FLY_S is up.
+   */
+  _flyPanel(e, parent) {
+    const f = e.fly, m = e.panel.mesh;
+    const t = Math.min(1, (performance.now() / 1000 - f.t0) / PANEL_FLY_S);
+    if (t >= 1) return void (e.fly = null);
+    const k = THREE.MathUtils.smootherstep(t, 0, 1);
+    parent.updateWorldMatrix(true, false);
+    m.updateMatrix();
+    const to = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), scale: new THREE.Vector3() };
+    new THREE.Matrix4().multiplyMatrices(parent.matrixWorld, m.matrix).decompose(to.pos, to.quat, to.scale);
+    const world = new THREE.Matrix4().compose(
+      f.pos.clone().lerp(to.pos, k), f.quat.clone().slerp(to.quat, k), f.scale.clone().lerp(to.scale, k),
+    );
+    new THREE.Matrix4().copy(parent.matrixWorld).invert().multiply(world).decompose(m.position, m.quaternion, m.scale);
   }
 
   /**
@@ -3017,7 +3122,8 @@ export class Engine {
   /**
    * A grip pressed (as in xr-music-threejs). Soon after a short tap of it, a double tap: it
    * docks the panel it touches or points at on this controller, or, at no panel, lets go of
-   * the panels docked on this controller, leaving them where they are; it takes nothing.
+   * the panels docked on this controller, leaving them where they are; it takes nothing. A
+   * third tap soon after: every undocked panel docks on this controller (_dockAllByTripleTap).
    * Otherwise, touching or pointing at a panel, it takes that (see _takePanel). Returns whether
    * the grip is the panels' (else it moves the build).
    */
@@ -3025,12 +3131,16 @@ export class Engine {
     const hand = this._handOf(slot);
     if (!hand) return false;
     const now = performance.now() / 1000;
-    const tap = (this._gripTaps[hand] ??= { pressedAt: -1, tappedAt: -Infinity, double: false });
-    tap.double = now - tap.tappedAt < GRIP_DOUBLE_TAP_S;
+    const tap = (this._gripTaps[hand] ??= { pressedAt: -1, tappedAt: -Infinity, count: 0 });
+    tap.count = now - tap.tappedAt < GRIP_DOUBLE_TAP_S ? tap.count + 1 : 1; // (this press: the count-th tap in a row)
     tap.tappedAt = -Infinity;
     tap.pressedAt = now;
+    if (tap.count >= 3) {
+      this._dockAllByTripleTap(hand);
+      return true;
+    }
     const at = this._panelAt(hand, slot);
-    if (tap.double) {
+    if (tap.count === 2) {
       this._dockByDoubleTap(hand, at?.key ?? null);
       return true;
     }
@@ -3044,7 +3154,7 @@ export class Engine {
     const hand = this._handOf(slot);
     if (!hand) return;
     const now = performance.now() / 1000, tap = this._gripTaps[hand];
-    if (tap) tap.tappedAt = !tap.double && now - tap.pressedAt <= GRIP_TAP_S ? now : -Infinity;
+    if (tap) tap.tappedAt = tap.count < 3 && now - tap.pressedAt <= GRIP_TAP_S ? now : -Infinity; // (a short press: a tap, unless it ended a triple)
     const g = this._panelGrabs[hand];
     if (!g) return;
     this._panelGrabs[hand] = null;
@@ -3068,6 +3178,7 @@ export class Engine {
     } else this._pulse(...PANEL_PULSE.grab, hand);
     e.dock = null;
     e.on = null;
+    e.fly = null; // (caught in flight)
     for (const h of ['left', 'right']) if (this._panelGrabs[h]?.key === at.key) this._panelGrabs[h] = null; // (the other hand lets go)
     this.scene.attach(m); // (keeping where it is)
     slot.grip.updateMatrixWorld();
@@ -3084,6 +3195,26 @@ export class Engine {
     };
   }
 
+  /**
+   * A triple tap of `hand`'s grip: every panel not docked (free in the room, or held) docks on
+   * this controller, flying there from where it is (_flyPanel).
+   */
+  _dockAllByTripleTap(hand) {
+    const free = Object.entries(this._panels).filter(([, e]) => !e.dock);
+    if (!free.length) return;
+    const now = performance.now() / 1000;
+    for (const [key, e] of free) {
+      for (const h of ['left', 'right']) if (this._panelGrabs[h]?.key === key) this._panelGrabs[h] = null;
+      const m = e.panel.mesh;
+      m.updateWorldMatrix(true, false);
+      const fly = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), scale: new THREE.Vector3(), t0: now };
+      m.matrixWorld.decompose(fly.pos, fly.quat, fly.scale);
+      Object.assign(e, { dock: hand, fly });
+    }
+    playSfx('attach');
+    this._pulse(...PANEL_PULSE.dock, hand);
+  }
+
   /** A double tap of `hand`'s grip: see _gripPanelStart. */
   _dockByDoubleTap(hand, key) {
     if (key) {
@@ -3096,7 +3227,7 @@ export class Engine {
     const mine = Object.values(this._panels).filter((e) => e.on === hand);
     if (!mine.length) return;
     for (const e of mine) {
-      Object.assign(e, { dock: null, on: null });
+      Object.assign(e, { dock: null, on: null, fly: null });
       this.scene.attach(e.panel.mesh);
     }
     playSfx('detach');
@@ -3115,6 +3246,37 @@ export class Engine {
     const local = m.worldToLocal(at.clone());
     local.set(THREE.MathUtils.clamp(local.x, b.left, b.right), THREE.MathUtils.clamp(local.y, b.bottom, b.top), 0);
     return m.localToWorld(local).distanceTo(at) < PANEL_DOCK_REACH ? other : null;
+  }
+
+  /**
+   * `hand`'s thumbstick (`y`: down positive) on what its grip holds: a panel, a carried creature,
+   * or the build (that grip alone): up pushes it away along the controller's ray, down reels it
+   * in, faster the further off it is (PUSH_RATE, PUSH_MIN_M). Returns whether the grip holds
+   * anything (its stick is then this, nothing else).
+   */
+  _pushHeld(hand, y, dt) {
+    const slot = this.hands[hand];
+    const panel = this._panelGrabs[hand], body = this.heldBodies.held.get(hand);
+    const build = this._grab?.hands.length === 1 && this._grab.hands[0] === slot ? this._grab : null;
+    if (!slot || (!panel && !body && !build)) return false;
+    if (!y || !dt) return true;
+    slot.ctrl.updateMatrixWorld();
+    const dir = new THREE.Vector3(0, 0, -1).transformDirection(slot.ctrl.matrixWorld); // (world, unit)
+    const step = (dist, nearest) => Math.max(-y * PUSH_RATE * Math.max(dist, PUSH_MIN_M) * dt, nearest - dist); // m along the ray
+    if (panel) {
+      // (in the grip's space: the panel's pose there, and the point it's held by, both shift)
+      const u = dir.multiplyScalar(step(panel.point.length(), PANEL_REEL_MIN_M)).applyQuaternion(slot.grip.getWorldQuaternion(new THREE.Quaternion()).invert());
+      panel.offset.premultiply(new THREE.Matrix4().makeTranslation(u.x, u.y, u.z));
+      panel.point.add(u);
+    } else if (body) {
+      // (in the build's cm: every block's place from the hand)
+      const scale = this.worldRoot.scale.x;
+      const u = dir.multiplyScalar(step(body.offsets[0].length() * scale, 0) / scale).applyQuaternion(this.worldRoot.getWorldQuaternion(new THREE.Quaternion()).invert());
+      for (const o of body.offsets) o.add(u);
+    } else {
+      build.pos.addScaledVector(dir, step(this._gripPos(slot).distanceTo(this.worldRoot.position), 0)); // (from its origin)
+    }
+    return true;
   }
 
   /** Held panels keep their pose in the hand, easing to their free size; a tick as one comes within reach of a dock. */
@@ -3223,10 +3385,15 @@ export class Engine {
     const offsets = body.map((b) => this.world.renderedPosition(b, now, new THREE.Vector3()).sub(at));
     const home = { x: body[0].x, y: body[0].y, z: body[0].z };
     const sound = this._soundAt(creature);
-    if (this.selected.some((c) => body.includes(c))) this._setSelected(this.selected.filter((c) => !body.includes(c))); // (back to what it was doing)
+    if (body.some((b) => b.vanishing)) return false; // (dying: World.takeBody won't)
+    const control = this.state.controlSchema === 'creature' && (this._controlled ?? []).some((c) => body.includes(c));
+    this._quietSchema = control; // (out of Creature controls while carried, back in when put down: no sounds, no zoom)
+    if (this.selected.some((c) => body.includes(c))) this._setSelected(this.selected.filter((c) => !body.includes(c)));
+    this._quietSchema = false;
     const records = this.world.takeBody(body);
     if (!records) return false;
     this.heldBodies.hold(hand, records, offsets, home, at);
+    this.heldBodies.held.get(hand).control = control;
     playWait(sound);
     this._pulse(...CARRY_PULSE.take, hand);
     return true;
@@ -3249,7 +3416,15 @@ export class Engine {
     const from = h.offsets.map((o) => o.clone().add(at).divideScalar(GRID.scale)); // each block, let go (lattice units)
     const cell = this._nearestFit(h.records, from[0], DROP_SEARCH) ?? this._nearestFit(h.records, new THREE.Vector3(h.home.x, h.home.y, h.home.z), DROP_SEARCH_HOME);
     const head = cell && this.world.putBody(h.records, cell.x, cell.y, cell.z);
-    if (!head) return void playSfx('ineffective', 0); // (nowhere at all: it's gone)
+    if (!head) {
+      if (h.control) this._xrPovZoom(null); // (it was controlled: the zoom it kept goes)
+      return void playSfx('ineffective', 0); // (nowhere at all: it's gone)
+    }
+    // put down, it's the selection (and, if it was, controlled again)
+    this._quietSchema = h.control;
+    this._setSelected([head]);
+    if (h.control) this.setControlSchema('creature');
+    this._quietSchema = false;
     if (!this.state.paused) {
       h.records.forEach((r, i) => this.world.slideIn(this.world.get(cell.x + r.dx, cell.y + r.dy, cell.z + r.dz), from[i], DROP_SLIDE_S));
     }
@@ -3280,6 +3455,7 @@ export class Engine {
     touchBallTime.value = performance.now() / 1000;
     this.worldRoot.getWorldQuaternion(_ballQuat);
     const touching = this._ballsTouching();
+    const toolBlocks = []; // (the right ball, with a block tool: drawn as that block by heldBodies)
     for (const hand of ['left', 'right']) {
       const slot = this.hands[hand];
       if (!slot) continue;
@@ -3292,6 +3468,15 @@ export class Engine {
       const block = !held && playing ? this._blockTouched(slot) : null;
       const hot = held || touching || (block && this._creatureOf(block)) ? 1 : block ? 0.45 : 0;
       ball.material.uniforms.uHot.value += (hot - ball.material.uniforms.uHot.value) * 0.3; // (eases)
+      // the right ball (the tools' hand) looks like its tool: Select's energy, Delete's red
+      // wireframe (Void's, white), a block tool's block
+      const tool = hand === 'right' ? this._activeTool() : SELECT_TOOL;
+      const look = tool.id === TOOL.SELECT ? 'energy' : tool.id === TOOL.DELETE ? 'delete' : tool.block === BLOCK.VOID ? 'void' : 'block';
+      ball.material.visible = look === 'energy';
+      const wire = (ball.userData.wire ??= this._ballWire(ball));
+      wire.visible = look === 'delete' || look === 'void';
+      wire.material.color.set(look === 'delete' ? '#ff3030' : '#e8eef8');
+      if (look === 'block' && ball.visible) toolBlocks.push({ type: tool.block, at: this._gripCm(slot) });
       // carrying: a steady, soft hum (the creature wriggling)
       const h = this.heldBodies.held.get(hand);
       if (h && (h.humAt ?? 0) <= performance.now() / 1000) {
@@ -3299,8 +3484,21 @@ export class Engine {
         this._pulse(...CARRY_PULSE.hum, hand);
       }
     }
-    if (!this.heldBodies.held.size) return this.heldBodies.update(() => null);
-    this.heldBodies.update((hand) => (this.hands[hand] ? this._gripCm(this.hands[hand]) : null));
+    if (!this.heldBodies.held.size) return this.heldBodies.update(() => null, toolBlocks);
+    this.heldBodies.update((hand) => (this.hands[hand] ? this._gripCm(this.hands[hand]) : null), toolBlocks);
+  }
+
+  /** Touch ball `ball`'s wireframe (its cell's edges; the Delete tool's look), as its child. */
+  _ballWire(ball) {
+    const wire = new THREE.LineSegments(
+      (this._ballWireGeo ??= new THREE.EdgesGeometry(this._touchBallGeo)),
+      new THREE.LineBasicMaterial({ color: '#ff3030', transparent: true, depthWrite: false, toneMapped: false }),
+    );
+    wire.raycast = () => {};
+    wire.renderOrder = 5;
+    wire.visible = false;
+    ball.add(wire);
+    return wire;
   }
 
   /**
@@ -3617,15 +3815,22 @@ export class Engine {
 
   _pollGamepads() {
     this._steerStick = null; // set again below while the left stick steers a creature
+    // a hand gripping something: its thumbstick up / down pushes that away or reels it in (_pushHeld), and does nothing else
+    const holding = {};
+    for (const hand of ['left', 'right']) {
+      const gp = this.hands[hand]?.source?.gamepad;
+      const y = (gp && (gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1])) || 0;
+      holding[hand] = this._pushHeld(hand, Math.abs(y) < 0.2 ? 0 : y, this._dt ?? 0);
+    }
     // pointing at Options (a menu taller than the panel): that hand's thumbstick up / down scrolls it
-    const sgp = this._menuPanelHover && this.hands[this._uiHand]?.source?.gamepad;
+    const sgp = this._menuPanelHover && !holding[this._uiHand] && this.hands[this._uiHand]?.source?.gamepad;
     if (sgp) {
       const y = (sgp.axes.length >= 4 ? sgp.axes[3] : sgp.axes[1]) || 0;
       if (Math.abs(y) > 0.2) this.menuPanel.scrollBy(y * MENU_SCROLL_PX_S * (this._dt ?? 0));
     }
     const rgp = this.hands.right?.source?.gamepad;
     if (rgp) {
-      this._touchStickTools(rgp);
+      if (!holding.right) this._touchStickTools(rgp);
       const playing = this.state.screen === 'playing' && !this.state.paused;
       const stick = !!rgp.buttons[3]?.pressed; // thumbstick click: Observer ↔ Creature controls (like the gamepad's R3)
       if (stick && !this._rightStickWas && playing) this.toggleControlSchema();
@@ -3634,13 +3839,13 @@ export class Engine {
     // the left stick: aims a held A / B (Excrete / Eat), else, under Creature controls, steers
     // the controlled creature (as the gamepad's does); not while it scrolls Options
     const lgpStick = this.hands.left?.source?.gamepad;
-    const scrolling = this._menuPanelHover && this._uiHand === 'left';
+    const scrolling = (this._menuPanelHover && this._uiHand === 'left') || holding.left;
     const lx = (i) => {
       const v = (lgpStick && !scrolling && (lgpStick.axes.length >= 4 ? lgpStick.axes[2 + i] : lgpStick.axes[i])) || 0;
       return Math.abs(v) < 0.18 ? 0 : v;
     };
     const aiming = this._xrAim(rgp, lx);
-    if (!aiming && this.state.controlSchema === 'creature' && this.state.screen === 'playing' && !this.state.paused) {
+    if (!aiming && this._steerTargets().length && this.state.screen === 'playing' && !this.state.paused) {
       if (lgpStick?.buttons[3]?.pressed) this._steerAway(); // left stick held in (like the gamepad's L3): straight away from the view
       else this._steerControlled(lx(0), lx(1));
     }
@@ -3818,7 +4023,7 @@ export class Engine {
     if (menuShown) this.menuPanel.draw(menuOpen ? menuModel(s) : null, this._hudHover === 'menu' ? 'toggle' : this._menuHover);
     const rightOnUi = uiHit && this._uiHand !== 'left'; // (the right controller still points into the world while the left is on a panel)
 
-    if (s.screen === 'playing' && !s.paused && !rightOnUi && this.toolsReady(s) && this.toolsAvailable(s)) {
+    if (s.screen === 'playing' && !s.paused && !rightOnUi && this.toolsReady(s)) {
       let ok = false;
       if (xr) {
         ok = gaze ? this._setRayFromHead() : this._setRayFromController();
@@ -3931,7 +4136,7 @@ export class Engine {
 
   _showHighlight() {
     const t = this.target;
-    const tool = TOOLS[this.state.toolIndex];
+    const tool = this._activeTool();
     // Delete target: see-through (dithered) so you can tell what's behind it
     this.world.setDithered(t && tool.id === TOOL.DELETE ? t.block : null);
     if (!t) return;
@@ -4114,7 +4319,7 @@ export class Engine {
     if (!s.gamepadAim) this.setState({ gamepadAim: true });
     if (edge(9)) return this.toggleMenu(); // Start
     if (edge(11)) this.toggleControlSchema(); // R3: Observer ↔ Creature controls (and its view)
-    const steering = this.state.controlSchema === 'creature'; // the left stick moves the creature, not the camera
+    const steering = this._steerTargets().length > 0; // the left stick moves the controlled (else selected) creature
     if (steering && !aiming && pressed[10]) this._steerAway(); // L3 held: straight away from the camera
     else if (steering && !aiming) this._steerControlled(ax(0), ax(1));
     if (edge(0)) {
