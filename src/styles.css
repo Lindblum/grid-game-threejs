@@ -151,6 +151,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .cg-dot { fill: #9cc8ff; }
 .cg-label { height: 100%; display: flex; align-items: center; font-size: 9px; line-height: 1.05; color: #e8ecf2; overflow: hidden; }
 .cg-label.left { justify-content: flex-end; text-align: right; }
+.cg-label.bottom { justify-content: center; align-items: flex-start; text-align: center; }
 .cg-keys { display: flex; flex-direction: column; gap: 4px; font-size: calc(12px * var(--text-scale)); }
 .cg-key-row { display: flex; align-items: center; gap: var(--ui-pad-x); }
 .cg-key-row .action-glyph { height: calc(var(--ui-icon) * 0.8); width: auto; flex: none; }

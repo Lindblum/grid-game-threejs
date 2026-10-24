@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { TOOLS } from './tools.js';
 import { drawToolIcon, roundRect } from './icons.js';
 import { drawMenuItemIcon } from './menuIcons.js';
@@ -9,7 +10,12 @@ import { gridMode } from './lattice.js';
 const tableRows = (table) => (CONTROL_SCHEMAS[table] ?? CONTROL_SCHEMAS.observer).controls;
 import { drawCell, cellWidth } from './inputIcons.js';
 
-/** A flat plane textured with a 2D canvas, used for in-world UI panels in XR. */
+/** Every XR panel's thickness: a slab this deep (m, in the world) behind its face, its edges this round. */
+const PANEL_DEPTH_M = 0.01;
+const PANEL_EDGE_RADIUS_M = 0.003;
+const SLAB_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.55, metalness: 0.15 });
+
+/** A flat plane textured with a 2D canvas, used for in-world UI panels in XR (with a slab behind it: updateSlab). */
 class CanvasPanel {
   constructor(pxW, pxH, widthM) {
     this.canvas = document.createElement('canvas');
@@ -144,6 +150,30 @@ class CanvasPanel {
   }
 
   /**
+   * Call per frame (while shown): the panel's 3D body, a rounded slab PANEL_DEPTH_M deep in the
+   * world (whatever the panel's scale) behind the visible panel, its face flush with the canvas.
+   * Rebuilt only when its size changes.
+   */
+  updateSlab() {
+    const b = this.boxMetres(), s = this.mesh.scale.x || 1;
+    const w = b.right - b.left, h = b.top - b.bottom, d = PANEL_DEPTH_M / s;
+    if (w <= 0 || h <= 0) return;
+    if (!this.slab) {
+      this.slab = new THREE.Mesh(new THREE.BufferGeometry(), SLAB_MATERIAL);
+      this.slab.raycast = () => {}; // (the face is what's pointed at)
+      this.slab.name = 'xr-panel-slab';
+      this.mesh.add(this.slab);
+    }
+    const key = `${w.toFixed(4)}|${h.toFixed(4)}|${d.toFixed(4)}`;
+    if (key !== this._slabKey) {
+      this._slabKey = key;
+      this.slab.geometry.dispose();
+      this.slab.geometry = new RoundedBoxGeometry(w, h, d, 2, Math.min(PANEL_EDGE_RADIUS_M / s, w / 2, h / 2, d / 2));
+    }
+    this.slab.position.set((b.left + b.right) / 2, (b.top + b.bottom) / 2, -d / 2 - 0.0003 / s); // (just behind the face: no z-fighting)
+  }
+
+  /**
    * The visible panel on the plane, in metres from its centre (at scale 1): { left, right, top,
    * bottom }, and `button`: the toggle button's centre (x).
    */
@@ -257,7 +287,8 @@ export class RightHudPanel extends CanvasPanel {
     ctx.clearRect(0, 0, W, H);
     this.rows = [];
     this.slotsY = null;
-    // laid out top to bottom: the rows there are, then the well (when open)
+    // laid out top to bottom: the Tool dropdown and its well (when open), then what the
+    // selected creature can do now (Consume, Excrete) at the bottom
     let y = RH_HEAD;
     const rowAt = (id) => {
       const r = { id, x: RH_PAD, y, w: W - 2 * RH_PAD, h: RH_ROW };
@@ -265,11 +296,11 @@ export class RightHudPanel extends CanvasPanel {
       this.rows.push(r);
       return r;
     };
-    const eatRow = open && actions.eat.length ? rowAt('eat') : null;
-    const excreteRow = open && actions.excrete ? rowAt('excrete') : null;
     const toolsRow = open && tools ? rowAt('tools') : null;
     const wellY = y;
     if (open && tools && toolsOpen) y += wellH + RH_GAP;
+    const eatRow = open && actions.eat.length ? rowAt('eat') : null;
+    const excreteRow = open && actions.excrete ? rowAt('excrete') : null;
     // the panel: just the button when hidden, else down to its last row (or the well)
     const panelW = open ? W : RH_BTN + 2 * RH_PAD;
     const panelH = !open ? RH_BTN + 2 * RH_PAD : this.rows.length ? y - RH_GAP + RH_PAD : RH_BTN + 2 * RH_PAD;

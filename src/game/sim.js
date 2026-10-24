@@ -340,6 +340,11 @@ export function stepSquirmies(world, skip = new Set()) {
         }
       }
       if (cells.length) to = cells[Math.floor(Math.random() * cells.length)];
+    } else if (behavior === BEHAVIOR.WALK && head.pursue) {
+      // after another creature: a step toward the cell beside it nearest this head
+      const goal = pursuitGoal(world, head, (x, y, z) => ok(x, y, z, Infinity));
+      if (goal === 'gone') endWalk(head);
+      else if (goal && goal !== 'there') to = firstStepToward(world, head, goal, ok);
     } else if (behavior === BEHAVIOR.WALK) {
       const t = head.walkTarget;
       const stop = () => endWalk(head);
@@ -1107,6 +1112,17 @@ function firstStepToward(world, creature, t, ok = (x, y, z) => isWalkable(world,
  * Returns whether it moved.
  */
 function walk(world, creature) {
+  if (creature.pursue) {
+    // after another creature (sent with Select): a step toward the cell beside it nearest this one, every turn
+    const goal = pursuitGoal(world, creature, (x, y, z) => isWalkable(world, x, y, z, creature));
+    if (goal === 'gone') {
+      endWalk(creature);
+      return false;
+    }
+    if (!goal || goal === 'there') return false; // (beside it already, or no room by it: waits for it to move)
+    const next = firstStepToward(world, creature, goal);
+    return !!next && world.move(creature, next, world.stepSeconds);
+  }
   const t = creature.walkTarget;
   const arrived = () => t && creature.x === t.x && creature.y === t.y && creature.z === t.z;
   const stop = () => endWalk(creature);
@@ -1129,20 +1145,40 @@ function walk(world, creature) {
   return moved;
 }
 
+/**
+ * Where a creature pursuing another (`creature.pursue`, sent after it with Select) heads this
+ * turn: of the cells beside its quarry (a chain's head) that `ok` lets it stand in, the nearest
+ * to it; 'there' when it's beside its quarry already; 'gone' when the quarry is no longer in the
+ * world (the pursuit ends); null when there's no room beside it just now.
+ */
+function pursuitGoal(world, creature, ok) {
+  const q = creature.pursue;
+  if (!q || world.get(q.x, q.y, q.z) !== q) return 'gone';
+  const d = [q.x - creature.x, q.y - creature.y, q.z - creature.z];
+  if (NEIGHBOR_DIRS.some(([dx, dy, dz]) => dx === d[0] && dy === d[1] && dz === d[2])) return 'there';
+  let best = null, bestD = Infinity;
+  for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+    const x = q.x + dx, y = q.y + dy, z = q.z + dz;
+    const dist = (x - creature.x) ** 2 + (y - creature.y) ** 2 + (z - creature.z) ** 2;
+    if (dist >= bestD || !ok(x, y, z)) continue;
+    best = { x, y, z };
+    bestD = dist;
+  }
+  return best;
+}
+
 /** A creature the player steers stops any walk it was sent on (Select), and waits once the steering stops. */
 function stopSteeredWalk(creature) {
   if (creature.behavior !== BEHAVIOR.WALK) return;
+  delete creature.pursue;
   delete creature.walkTarget;
   delete creature.walkStuck;
   creature.behavior = BEHAVIOR.WAIT;
   creature.heldBehavior = BEHAVIOR.WANDER;
 }
 
-/** Selecting a creature puts it in Wait for this many turns, then it resumes what it was doing. */
-export const SELECT_WAIT_TURNS = 4;
-
 /**
- * A timed Wait (`creature.waitTurns`, set when the Select tool selects it) counts down a turn; at 0
+ * A timed Wait (`creature.waitTurns`: from saves made when selecting set one) counts down a turn; at 0
  * the creature goes back to its `heldBehavior` (it stays selected). A timer left over after
  * its behavior changed some other way is dropped.
  */
@@ -1163,6 +1199,7 @@ function tickWait(creature) {
  * there, and wanders once deselected.
  */
 function endWalk(creature) {
+  delete creature.pursue;
   delete creature.walkTarget;
   delete creature.walkStuck;
   if (!creature.isSelected) creature.isAssignedBehavior = false; // the order is done: it may forage again

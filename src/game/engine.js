@@ -6,7 +6,7 @@ import { HeldBodies } from './heldBodies.js';
 import { ControllerGuide } from './controllerGuide.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, pathToward, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
+import { canStand, pathToward, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
 import { claudePrompt } from './claudePrompt.js';
@@ -1178,11 +1178,11 @@ export class Engine {
   // on again; clicking empty space or anything else deselects it).
   // Clicking anything else in 'target' (or empty space) just clears the selection.
 
-  /** The Control menu's (windowed and XR) title: Observer, or under Creature controls the controlled creature's type. */
+  /** The Control menu's (windowed and XR) title: the controlled creature's type, else the selected one's, else Observer. */
   rightHudTitle(s = this.state) {
-    if (s.controlSchema !== 'creature') return 'Observer';
-    const c = this._controlled?.[0];
-    return c ? blockProps(c.type).name : 'Creature';
+    const c = s.controlSchema === 'creature' ? this._controlled?.[0] : this.selected[0]; // (a selected creature names it in Observer controls too)
+    if (c) return blockProps(c.type).name;
+    return s.controlSchema === 'creature' ? 'Creature' : 'Observer';
   }
 
   /** The Control menu's (windowed and XR) eye button: shows it, or hides all but the button; remembered. */
@@ -1306,9 +1306,9 @@ export class Engine {
   }
 
   /**
-   * Sets the Select tool's selection. A newly selected creature waits (Wait behavior) for
-   * SELECT_WAIT_TURNS turns, or until it is deselected, then goes back to what it was doing
-   * (`heldBehavior`), unless its behavior changed meanwhile (sent somewhere → Walk, or Trapped).
+   * Sets the Select tool's selection. A newly selected creature waits (Wait behavior) until you
+   * give it an order (send it somewhere, Wander, steer it) or deselect it; deselected, it goes
+   * back to what it was doing (`heldBehavior`), unless its behavior changed meanwhile.
    * `targeting`: the Select tool goes on to pick where it walks (its 'target' phase; by default
    * whenever something is selected).
    */
@@ -1331,10 +1331,11 @@ export class Engine {
     for (const c of list) {
       if (this.selected.includes(c) || c.heldBehavior) continue;
       c.heldBehavior = c.behavior;
-      c.behavior = BEHAVIOR.WAIT;
-      c.waitTurns = SELECT_WAIT_TURNS; // then it resumes heldBehavior (sim: tickWait)
+      c.behavior = BEHAVIOR.WAIT; // (until an order, or it's deselected: then heldBehavior again)
     }
     this.selected = list;
+    const type = list[0]?.type ?? null; // (the Control menu's title names it: a re-render when it changes)
+    if (this.state.selectedType !== type) this.setState({ selectedType: type });
     // Creature controls follow the selection; with nothing selected, back to Observer
     if (this.state.controlSchema === 'creature') {
       if (list.length) {
@@ -1649,6 +1650,7 @@ export class Engine {
     for (const c of this.selected) {
       if (c.behavior !== BEHAVIOR.WALK) continue;
       delete c.walkTarget;
+      delete c.pursue;
       delete c.walkStuck;
       c.behavior = BEHAVIOR.WAIT;
       c.heldBehavior = BEHAVIOR.WANDER;
@@ -2110,7 +2112,7 @@ export class Engine {
       c.isAssignedBehavior = true;
       if (resume) {
         const next = c.heldBehavior && c.heldBehavior !== BEHAVIOR.WAIT ? c.heldBehavior : BEHAVIOR.WANDER;
-        c.behavior = next === BEHAVIOR.WALK && !c.walkTarget ? BEHAVIOR.WANDER : next;
+        c.behavior = next === BEHAVIOR.WALK && !c.walkTarget && !c.pursue ? BEHAVIOR.WANDER : next;
         c.heldBehavior = c.behavior; // what it carries on with once deselected
       } else if (c.behavior !== BEHAVIOR.WAIT) {
         c.heldBehavior = c.behavior;
@@ -2172,6 +2174,8 @@ export class Engine {
         playTick();
         return true;
       }
+      // picking where the selection goes: another creature is where, and they go after it
+      if (this._targeting && this.selected.length && !this.selected.includes(creature)) return this._sendAfter(creature);
       this._setSelected([creature]);
       playWait(this._soundAt(creature)); // selecting puts it in Wait
       return true;
@@ -2191,11 +2195,32 @@ export class Engine {
       c.isAssignedBehavior = true; // sent by the Select tool: it won't stop to forage on the way
       c.heldBehavior = BEHAVIOR.WALK; // X (Wait) then deselect: carries on walking there
       c.walkTarget = { x, y, z };
+      delete c.pursue;
       delete c.walkStuck;
       delete c.waitTurns;
     }
     // it stays selected, so it can be re-targeted straight away
     playAssign(this._soundAt({ x, y, z }));
+    return true;
+  }
+
+  /**
+   * The Select tool's target is creature `quarry`: each selected creature (but it) goes after
+   * it, every turn heading for the cell beside it wherever it's got to (sim.js pursuitGoal),
+   * until given another order or the quarry is gone. It stays selected, to be sent on again.
+   */
+  _sendAfter(quarry) {
+    for (const c of this.selected) {
+      if (c === quarry) continue;
+      c.behavior = BEHAVIOR.WALK;
+      c.isAssignedBehavior = true; // (no foraging on the way)
+      c.heldBehavior = BEHAVIOR.WALK;
+      c.pursue = quarry;
+      delete c.walkTarget;
+      delete c.walkStuck;
+      delete c.waitTurns;
+    }
+    playAssign(this._soundAt(quarry));
     return true;
   }
 
@@ -3103,11 +3128,14 @@ export class Engine {
     const text = this.state.textSize; // (Options → Accessibility → Text Size)
     const scales = entries.map((e) => text * (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.panel.dockScale));
     const widths = boxes.map((b, i) => (b.right - b.left) * scales[i]);
+    // in the gaze dock side by side, centred; on a controller stacked upward, left edges in line,
+    // the first one's toggle button over the controller
     let x = centred ? -(widths.reduce((a, w) => a + w, 0) + PANEL_DOCK_GAP * (entries.length - 1)) / 2 : -(boxes[0].button - boxes[0].left) * scales[0];
+    let y = 0;
     entries.forEach((e, i) => {
       const m = e.panel.mesh, b = boxes[i], sc = scales[i];
       if (m.parent !== parent) parent.add(m);
-      m.position.set(x - b.left * sc, -b.bottom * sc, i * 0.0005); // (each a hair in front of the last: no z-fighting where they meet)
+      m.position.set(x - b.left * sc, y - b.bottom * sc, i * 0.0005); // (each a hair in front of the last: no z-fighting where they meet)
       if (centred) m.quaternion.identity();
       else {
         m.quaternion.copy(_panelTilt);
@@ -3115,7 +3143,8 @@ export class Engine {
       }
       m.scale.setScalar(sc);
       if (e.fly) this._flyPanel(e, parent);
-      x += widths[i] + PANEL_DOCK_GAP;
+      if (centred) x += widths[i] + PANEL_DOCK_GAP;
+      else y += (b.top - b.bottom) * sc + PANEL_DOCK_GAP;
     });
   }
 
@@ -4637,6 +4666,7 @@ export class Engine {
       this.viewPanel.draw(this._hudHover === 'view');
       this._updatePanelGrabs(dt);
       this._layoutPanels();
+      for (const e of Object.values(this._panels)) if (e.panel.mesh.visible) e.panel.updateSlab(); // (each panel 1 cm thick)
     }
     this._dt = dt;
     this._updateTarget();

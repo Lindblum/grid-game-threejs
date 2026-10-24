@@ -148,9 +148,9 @@ export const CreatureControlSchema = {
   controls: [
     {
       action: 'Send creature',
-      mk: { g: ['mouse:L'], t: 'Click a cell beside a surface it walks on: it walks there (the dotted line shows the way); steering it, or any other order, stops it' },
+      mk: { g: ['mouse:L'], t: 'Click a cell beside a surface it walks on: it walks there (the dotted line shows the way); click another creature: it goes after it, wherever it goes. Steering it, or any other order, stops it' },
       pad: { g: ['pad:A'], t: 'A at the crosshair: it walks there; steering it, or any other order, stops it' },
-      xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point at a cell beside a surface it walks on and pull the right trigger: it walks there (the dotted line shows the way); steering it, or any other order, stops it' },
+      xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point at a cell beside a surface it walks on and pull the right trigger: it walks there (the dotted line shows the way); at another creature: it goes after it, wherever it goes. Steering it, or any other order, stops it' },
     },
     {
       action: 'Move creature',

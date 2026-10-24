@@ -24,6 +24,7 @@ const EYE_OFFSETS = [new THREE.Vector3(-0.32, 0, 0.92), new THREE.Vector3(0.32, 
 const WING_HINGES = [new THREE.Vector3(0.62, 0.5, -0.15), new THREE.Vector3(-0.62, 0.5, -0.15)];
 const WING_REST = 0.3; // rad the wings are raised by at rest
 const WING_FLAP = 0.95; // rad of extra lift at the top of a flap
+const WING_BEATS = 2; // flaps in each turn's flap (flapSeconds): twice as fast as one
 
 /** Wing geometry, hinge at the origin: an oval 1 cm long (out along +x), 0.45 cm wide, flat in x-z. */
 function createWingGeometry() {
@@ -312,10 +313,10 @@ export class CreatureEyes {
         }
       }
       if (blockProps(c.type).wings) {
-        // one flap per turn, each creature slightly out of step with the others
+        // WING_BEATS flaps a turn, each creature slightly out of step with the others
         const lag = ((c.index * 0.37) % 1) * 0.12 * flapSeconds * 1000;
         const t = Math.min(1, Math.max(0, (now - this._flapT0 - lag) / (flapSeconds * 1000)));
-        const lift = WING_REST + WING_FLAP * Math.sin(Math.PI * t);
+        const lift = WING_REST + WING_FLAP * Math.abs(Math.sin(Math.PI * t * WING_BEATS)); // (WING_BEATS up-and-downs, ending at rest)
         WING_HINGES.forEach((hinge, k) => {
           p.copy(hinge).multiplyScalar(size).applyQuaternion(s.q).add(pos);
           // turn with the body, then swing up about the front-back axis (mirrored for the left)

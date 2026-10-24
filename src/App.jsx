@@ -507,6 +507,9 @@ function ActionGlyph({ tokens }) {
   return <img className="action-glyph" src={glyph.url} style={{ aspectRatio: `${glyph.w} / ${glyph.h}` }} alt="" draggable={false} />;
 }
 
+/** An action's name as the Controls dropdown shows it: short (what it's for goes without saying). */
+const guideName = (action) => action.replace(/ \((selected creature|pauses)\)$/, '').replace(/^Move selected creature$/, 'Move');
+
 /**
  * What each mouse button / gamepad button does under control schema `schema` (controls.js), as
  * Map token -> action names, from the schema's `device` ('mk' | 'pad') bindings: a binding's
@@ -516,7 +519,7 @@ function buttonActions(schema, device) {
   const out = new Map();
   for (const row of schema.controls) {
     if (row.action.startsWith('Menu ')) continue; // (in the menus only: not what the button does in play)
-    const name = row.action.replace(/ \(selected creature\)$/, '');
+    const name = guideName(row.action);
     const g = row[device]?.g ?? [];
     let modifier = false;
     g.forEach((token, i) => {
@@ -535,30 +538,64 @@ function buttonActions(schema, device) {
 /**
  * A device drawn in the middle of a 300-wide SVG (`shape`), and labels in a column either
  * side, each with a leader line to its button: `anchors` [{ tokens, x, y, side }] (a button,
- * labelled with what its tokens do: `actions`); buttons that do nothing are left out.
+ * labelled with what its tokens do: `actions`, and its `press` token's after "click:");
+ * buttons that do nothing are left out. Each label sits level with its button where it can
+ * (its line runs straight across); labels that would overlap are moved apart as a group,
+ * centred on their buttons. `side: 'bottom'`: under the drawing (at `below`), its line straight
+ * down. The drawing grows to fit.
  */
-function LabelledDiagram({ shape, anchors, actions, height: minHeight }) {
-  const W = 300, COL = 92, ROW = 26;
-  const shown = anchors.map((a) => ({ ...a, text: [...new Set(a.tokens.flatMap((t) => actions.get(t) ?? []))].join(', ') })).filter((a) => a.text);
-  const most = Math.max(...['left', 'right'].map((side) => shown.filter((a) => a.side === side).length));
-  const height = Math.max(minHeight, most * ROW + 8); // (room for the longer column)
+function LabelledDiagram({ shape, anchors, actions, height: minHeight, below = minHeight, above = 4 }) {
+  const W = 300, COL = 92, LINE = 10, PAD = 2, GAP = 3;
+  const named = (tokens) => [...new Set(tokens.flatMap((t) => actions.get(t) ?? []))].join(', ');
+  const shown = anchors.map((a) => {
+    const click = a.press ? named([a.press]) : '';
+    return { ...a, text: [named(a.tokens), click && `click: ${click}`].filter(Boolean).join('; ') };
+  }).filter((a) => a.text);
   const place = (side) => {
-    const col = shown.filter((a) => a.side === side).sort((a, b) => a.y - b.y); // (top to bottom as the buttons sit: fewer crossings)
-    const top = Math.max(4, height / 2 - (col.length * ROW) / 2);
-    return col.map((a, i) => ({ ...a, ly: top + i * ROW }));
+    // top to bottom as the buttons sit; level ones: the one further from the column first (its line passes above)
+    const col = shown.filter((a) => a.side === side).sort((a, b) => a.y - b.y || (side === 'left' ? b.x - a.x : a.x - b.x));
+    const items = col.map((a) => ({ ...a, h: Math.min(3, Math.ceil(a.text.length / 17)) * LINE + PAD * 2 }));
+    // groups of labels that touch, each centred on the mean height of its buttons
+    let groups = [];
+    for (const a of items) {
+      groups.push({ items: [a], h: a.h, mid: a.y });
+      for (;;) {
+        const g = groups.at(-1), prev = groups.at(-2);
+        if (!prev || prev.mid + prev.h / 2 + GAP <= g.mid - g.h / 2) break;
+        const merged = [...prev.items, ...g.items];
+        const h = merged.reduce((t, b) => t + b.h, 0) + GAP * (merged.length - 1);
+        groups.splice(-2, 2, { items: merged, h, mid: merged.reduce((t, b) => t + b.y, 0) / merged.length });
+      }
+    }
+    return groups.flatMap((g) => {
+      let y = g.mid - g.h / 2;
+      return g.items.map((a) => {
+        const ly = y;
+        y += a.h + GAP;
+        return { ...a, ly };
+      });
+    });
   };
-  const labels = [...place('left'), ...place('right')];
+  const bottom0 = shown.filter((a) => a.side === 'bottom').map((a) => ({ ...a, h: Math.min(3, Math.ceil(a.text.length / 24)) * LINE + PAD * 2, ly: below }));
+  const top0 = shown.filter((a) => a.side === 'top').map((a) => ({ ...a, h: LINE + PAD * 2, ly: above }));
+  const labels = [...place('left'), ...place('right'), ...bottom0, ...top0];
+  const top = Math.min(0, ...labels.map((a) => a.ly - 4));
+  const bottom = Math.max(minHeight, ...labels.map((a) => a.ly + a.h + 4));
   return (
-    <svg className="cg-diagram" viewBox={`0 0 ${W} ${height}`} role="img">
+    <svg className="cg-diagram" viewBox={`0 ${top} ${W} ${bottom - top}`} role="img">
       {shape}
       {labels.map((a) => {
-        const lx = a.side === 'left' ? COL : W - COL;
+        const down = a.side === 'bottom', up = a.side === 'top', BW = 130;
+        const lx = down || up ? a.x : a.side === 'left' ? COL : W - COL;
+        // (a top label stands beside its line's end: left of it, right-aligned, or right of it)
+        const fx = up ? (a.align === 'right' ? a.x - 3 - COL : a.x + 3) : down ? Math.min(W - BW, Math.max(0, a.x - BW / 2)) : a.side === 'left' ? 0 : W - COL + 3;
+        const cls = up ? (a.align === 'right' ? 'left' : 'right') : a.side;
         return (
           <g key={a.tokens.join()}>
-            <line x1={a.x} y1={a.y} x2={lx} y2={a.ly + ROW / 2 - 1} className="cg-lead" />
+            <line x1={a.x} y1={a.y} x2={lx} y2={down ? a.ly : a.ly + a.h / 2} className="cg-lead" />
             <circle cx={a.x} cy={a.y} r={1.8} className="cg-dot" />
-            <foreignObject x={a.side === 'left' ? 0 : W - COL + 3} y={a.ly} width={COL - 3} height={ROW - 2}>
-              <div className={`cg-label ${a.side}`} title={a.text}>{a.text}</div>
+            <foreignObject x={fx} y={a.ly} width={down ? BW : COL - 3} height={a.h}>
+              <div className={`cg-label ${cls}`} title={a.text}>{a.text}</div>
             </foreignObject>
           </g>
         );
@@ -575,11 +612,11 @@ const MOUSE_SHAPE = (
   </g>
 );
 const MOUSE_ANCHORS = [
-  { tokens: ['mouse:L'], x: 134, y: 44, side: 'left' },
-  { tokens: ['mouse:move'], x: 134, y: 118, side: 'left' },
-  { tokens: ['mouse:R'], x: 166, y: 44, side: 'right' },
-  { tokens: ['mouse:wheel'], x: 150, y: 42, side: 'right' },
-  { tokens: ['mouse:M'], x: 150, y: 52, side: 'right' },
+  { tokens: ['mouse:L'], x: 132, y: 40, side: 'left' },
+  { tokens: ['mouse:M'], x: 147, y: 54, side: 'left' },
+  { tokens: ['mouse:move'], x: 140, y: 118, side: 'left' },
+  { tokens: ['mouse:wheel'], x: 153, y: 40, side: 'right' },
+  { tokens: ['mouse:R'], x: 168, y: 58, side: 'right' },
 ];
 
 const PAD_SHAPE = (
@@ -603,19 +640,17 @@ const PAD_SHAPE = (
 const PAD_ANCHORS = [
   { tokens: ['pad:LT'], x: 116, y: 40, side: 'left' },
   { tokens: ['pad:LB'], x: 112, y: 50, side: 'left' },
-  { tokens: ['pad:view'], x: 142, y: 72, side: 'left' },
-  { tokens: ['stick:L:any'], x: 122, y: 76, side: 'left' },
-  { tokens: ['stick:L:press'], x: 124, y: 78, side: 'left' },
+  { tokens: ['pad:view'], x: 142, y: 72, side: 'top', align: 'right' },
+  { tokens: ['stick:L:any'], press: 'stick:L:press', x: 122, y: 76, side: 'left' },
   { tokens: ['dpad:any', 'dpad:ud'], x: 134, y: 99, side: 'left' },
   { tokens: ['pad:RT'], x: 184, y: 40, side: 'right' },
   { tokens: ['pad:RB'], x: 188, y: 50, side: 'right' },
-  { tokens: ['pad:start'], x: 158, y: 72, side: 'right' },
+  { tokens: ['pad:start'], x: 158, y: 72, side: 'top', align: 'left' },
   { tokens: ['pad:Y'], x: 180, y: 68, side: 'right' },
   { tokens: ['pad:X'], x: 172, y: 76, side: 'right' },
   { tokens: ['pad:B'], x: 188, y: 76, side: 'right' },
   { tokens: ['pad:A'], x: 180, y: 84, side: 'right' },
-  { tokens: ['stick:R:any'], x: 166, y: 98, side: 'right' },
-  { tokens: ['stick:R:press'], x: 168, y: 100, side: 'right' },
+  { tokens: ['stick:R:any'], press: 'stick:R:press', x: 166, y: 98, side: 'bottom' },
 ];
 
 /**
@@ -625,9 +660,9 @@ const PAD_ANCHORS = [
  */
 function ControlsGuide({ s }) {
   const schema = CONTROL_SCHEMAS[s.controlSchema] ?? CONTROL_SCHEMAS.observer;
-  if (s.inputDevice === 'pad') return <LabelledDiagram shape={PAD_SHAPE} anchors={PAD_ANCHORS} actions={buttonActions(schema, 'pad')} height={200} />;
+  if (s.inputDevice === 'pad') return <LabelledDiagram shape={PAD_SHAPE} anchors={PAD_ANCHORS} actions={buttonActions(schema, 'pad')} height={180} below={146} />;
   const keys = schema.controls
-    .map((row) => ({ name: row.action.replace(/ \(selected creature\)$/, ''), g: (row.mk?.g ?? []).filter((t) => t.startsWith('key:') || t === 'sep:/') }))
+    .map((row) => ({ name: guideName(row.action), g: (row.mk?.g ?? []).filter((t) => t.startsWith('key:') || t === 'sep:/') }))
     .filter((k) => !k.name.startsWith('Menu '))
     .filter((k) => k.g.some((t) => t.startsWith('key:')))
     .map((k) => ({ ...k, g: k.g.filter((t, i, a) => t !== 'sep:/' || (i > 0 && i < a.length - 1 && a[i - 1] !== 'sep:/')) }));
@@ -708,8 +743,6 @@ function RightPanel({ engine, s }) {
       </header>
       {body && (
         <div className="side-body menu-items">
-          {eat.length > 0 && action('Consume', glyphs.eat, eat, () => engine.selectedEat())}
-          {excrete && action('Excrete', glyphs.excrete, [excrete], () => engine.selectedExcrete())}
           {tools && <>
           {/* the Tool dropdown: the use-the-tool button's glyph, "Tool", the current tool (its icon, its name) */}
           <button className="btn menu-btn action-btn" aria-expanded={!!s.toolsOpen} onClick={tickThen(() => engine.toggleToolsOpen())}>
@@ -755,6 +788,9 @@ function RightPanel({ engine, s }) {
             </div>
           )}
           </>}
+          {/* what the selected creature can do now: at the bottom */}
+          {eat.length > 0 && action('Consume', glyphs.eat, eat, () => engine.selectedEat())}
+          {excrete && action('Excrete', glyphs.excrete, [excrete], () => engine.selectedExcrete())}
         </div>
       )}
     </aside>
