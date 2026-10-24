@@ -43,7 +43,7 @@ as Truncated Octahedron. See `src/game/grids.js`.
 | Use tool | Left click | RT | Right trigger |
 | Change tool | ← / → or 1–9, 0 | LB / RB | Right stick left/right |
 | Options (pauses) | Esc / Enter, or the gear (top left) | Start | The gear (Options, on the left controller), or Y |
-| Orbit / zoom / pan | Left- or right-drag / wheel / middle-drag | Right stick / LT, RT / D-pad | Both grips: drag, rotate and scale |
+| Orbit / zoom / pan | Left- or right-drag / wheel / middle-drag | Right stick / LT, RT / D-pad | Grip blocks: one hand drags, both rotate and scale (a grip on nothing does nothing) |
 | Deselect | Right click (without dragging) | X | Select tool at empty space |
 | Move / dock a panel | — | — | Grip a panel to take it; let go near the other controller to dock it. Double-tap a grip at a panel: dock it there; at nothing: undock |
 | Carry a creature | — | — | Grip a creature (touching or pointing at it) to pick it up; let go to put it back in the nearest cells it fits |
