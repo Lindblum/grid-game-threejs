@@ -924,6 +924,13 @@ export class World {
       buffs: b.buffs?.map(({ type, turns, charges }) => ({ type, turns, charges })) ?? [],
       born: b.born,
       segment: !!b.segmentOf, // a Buzzy's body segment (of the head)
+      // how it's drawn (HeldBodies draws it in the hand the same; putBody keeps its pattern)
+      look: {
+        style: [0, 1, 2, 3].map((k) => this._style(b).getComponent(b.index, k)),
+        color: this.colorOf(b, new THREE.Color()).getHex(),
+        texOrigin: [...b.texOrigin],
+        smooth: b.batch.attr('blockSmooth').getX(b.index),
+      },
     }));
     for (const b of [...blocks].reverse()) this.remove(b.x, b.y, b.z); // tail first: no segment breaks off on its own
     return records;
@@ -954,6 +961,11 @@ export class World {
       for (const bf of r.buffs) this.addBuff(b, bf.type, bf.turns, bf.charges);
       if (r.born != null) b.born = r.born;
       if (r.segment) this._attachSegment(placed[0], b);
+      if (r.look) {
+        this._style(b).setY(b.index, r.look.style[1]); // (its pattern's seed and origin: it looks the same)
+        b.texOrigin = [...r.look.texOrigin];
+        this._writeTexOrigin(b);
+      }
     });
     if (chain != null) this.refreshSquirmies(); // (its head by the restored order)
     for (const b of placed) {

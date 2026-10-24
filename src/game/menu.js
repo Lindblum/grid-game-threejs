@@ -39,8 +39,8 @@ export const VOLUME = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
 
 /** Options → Accessibility → Camera Speed: a multiplier on how fast the camera turns (mouse and stick), 10% to 150%. */
 export const CAMERA_SPEED = Object.freeze({ min: 0.1, max: 1.5, step: 0.1, default: 1 });
-/** Options → Accessibility → Vibration: how strong the controllers' haptics are, 0 (off) to 1. */
-export const VIBRATION = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
+/** Options → Accessibility → Vibration: how strong the controllers' haptics are, 0 (off) to 2 (1: as made). */
+export const VIBRATION = Object.freeze({ min: 0, max: 2, step: 0.1, default: 1 }); // (above 100%: every buzz stronger, up to the controller's most)
 
 /** Options → Background, in the order its dropdown lists them (passthrough last). */
 export const BACKGROUNDS = ['solid', 'skybox', 'passthrough'];
@@ -240,7 +240,7 @@ function videoItems(state) {
     {
       id: 'xrResolution',
       // (set when an XR session starts: a change shows from the next one)
-      label: `XR Resolution: ${Math.round(state.xrResolution * 100)}%${state.xrResolutionActive != null && state.xrResolution !== state.xrResolutionActive ? ' (next XR)' : ''}`,
+      label: `XR Resolution: ${Math.round(state.xrResolution * 100)}%${state.xrResolutionActive != null && state.xrResolution > state.xrResolutionActive ? ' (next XR)' : ''}`,
       icon: 'xrResolution',
       slider: { min: XR_RESOLUTION.min, max: XR_RESOLUTION.max, step: XR_RESOLUTION.step, value: state.xrResolution },
     },

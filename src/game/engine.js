@@ -43,7 +43,25 @@ const TOUCH_BALL_GAP = 0.03;
 /** XR grab haptics, [strength, ms]: picking a creature up, letting it go, and the hum while carrying it (a pulse every CARRY_HUM_EVERY s, so they run together). */
 const CARRY_PULSE = { take: [0.6, 50], drop: [0.5, 40], hum: [0.12, 60] };
 const CARRY_HUM_EVERY = 0.05;
+/** XR: the two touch balls touching each other, [strength, ms]: a bump as they meet, then a buzz (every CARRY_HUM_EVERY s) while they touch; both controllers. */
+const BALL_TOUCH_PULSE = { meet: [0.8, 40], buzz: [0.35, 60] };
 const _ballQuat = new THREE.Quaternion();
+
+/**
+ * Options → Video → XR Resolution turned down during an XR session (whose framebuffer size is
+ * fixed when it starts): each eye is drawn into this share of its part of the framebuffer
+ * (XRView.requestViewportScale, asked on every view three.js gets from the frame), from the
+ * next frame on. 1: all of it.
+ */
+let xrViewportScale = 1;
+if (typeof XRFrame !== 'undefined' && XRFrame.prototype.getViewerPose) {
+  const getViewerPose = XRFrame.prototype.getViewerPose;
+  XRFrame.prototype.getViewerPose = function (space) {
+    const pose = getViewerPose.call(this, space);
+    if (pose && xrViewportScale < 1) for (const view of pose.views) view.requestViewportScale?.(xrViewportScale);
+    return pose;
+  };
+}
 const GAZE_RAY_LENGTH = 2.0; // hands-free XR: how far the gaze reaches (tools and UI)
 const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS and 3D: Interlaced, m
 // hands-free XR: the HUDs (and the menu above them) float this far ahead, this far below the eyes,
@@ -255,7 +273,7 @@ export class Engine {
       refraction: true, // Options → Refraction: Crystal and Water bend what's behind them, with Procedural materials (Off, or Simple / Solid: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       cameraSpeed: CAMERA_SPEED.default, // Options → Accessibility → Camera Speed: a multiplier on the camera's turning
-      vibration: VIBRATION.default, // Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 1 (_pulse)
+      vibration: VIBRATION.default, // Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 2 (_pulse; 1 as made)
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
       directionGuides: true, // Options → Accessibility → Direction Guides (or G): Creature controls' step lines and dots, and aimed Eat / Excrete's
       viewInternal: false, // Options → Accessibility → View Internal: the selected / controlled creatures see-through, their inventories inside
@@ -2270,7 +2288,7 @@ export class Engine {
     if (v !== this.state.cameraSpeed) this.setState({ cameraSpeed: v });
   }
 
-  /** Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 1, snapped to the slider's steps; a buzz at the new strength shows it. */
+  /** Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 2 (1 as made), snapped to the slider's steps; a buzz at the new strength shows it. */
   setVibration(v) {
     const n = Number(v);
     const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : VIBRATION.default, VIBRATION.min, VIBRATION.max);
@@ -2302,7 +2320,9 @@ export class Engine {
 
   /**
    * Options → Video → XR Resolution: the headset's framebuffer scale, snapped to the slider's
-   * steps. The browser fixes it when an XR session starts, so a change shows from the next one.
+   * steps. The browser fixes the framebuffer when an XR session starts; turned down during one,
+   * it shows at once (each eye drawn into less of it: xrViewportScale), turned up past what the
+   * session started with, from the next one.
    */
   setXRResolution(scale) {
     const n = Number(scale);
@@ -2310,6 +2330,13 @@ export class Engine {
     const v = Math.round(raw / XR_RESOLUTION.step) / Math.round(1 / XR_RESOLUTION.step); // (in twentieths, like _volume)
     if (!this.renderer.xr.isPresenting) this.renderer.xr.setFramebufferScaleFactor(v);
     if (v !== this.state.xrResolution) this.setState({ xrResolution: v });
+    this._applyXRViewportScale();
+  }
+
+  /** The share of the session's framebuffer XR Resolution asks for now (xrViewportScale); 1 outside XR. */
+  _applyXRViewportScale() {
+    const active = this.state.xrResolutionActive;
+    xrViewportScale = active ? Math.min(1, this.state.xrResolution / active) : 1;
   }
 
   /** -1 when the camera's orbiting is inverted (Options → Accessibility: Observer or Control Camera, by the control schema), else 1. */
@@ -2663,6 +2690,7 @@ export class Engine {
       this.renderer.xr.setFramebufferScaleFactor(this.state.xrResolution); // (Options → Video → XR Resolution)
       await this.renderer.xr.setSession(session);
       this.setState({ xrResolutionActive: this.state.xrResolution });
+      this._applyXRViewportScale();
       session.addEventListener('end', () => this._leaveImmersive());
       this._xrMode = mode;
       if (session.domOverlayState) this._setDomOverlay(true);
@@ -2772,6 +2800,7 @@ export class Engine {
     this.phoneStereo.disable();
     this._xrMode = null;
     this.setState({ xrResolutionActive: null });
+    this._applyXRViewportScale();
     this._panelGrabs = { left: null, right: null };
     this._endResize();
     this._uiPress = null;
@@ -3250,6 +3279,7 @@ export class Engine {
   _updateHeld() {
     touchBallTime.value = performance.now() / 1000;
     this.worldRoot.getWorldQuaternion(_ballQuat);
+    const touching = this._ballsTouching();
     for (const hand of ['left', 'right']) {
       const slot = this.hands[hand];
       if (!slot) continue;
@@ -3260,7 +3290,7 @@ export class Engine {
       const playing = this.state.screen === 'playing';
       const held = this.heldBodies.held.has(hand);
       const block = !held && playing ? this._blockTouched(slot) : null;
-      const hot = held || (block && this._creatureOf(block)) ? 1 : block ? 0.45 : 0;
+      const hot = held || touching || (block && this._creatureOf(block)) ? 1 : block ? 0.45 : 0;
       ball.material.uniforms.uHot.value += (hot - ball.material.uniforms.uHot.value) * 0.3; // (eases)
       // carrying: a steady, soft hum (the creature wriggling)
       const h = this.heldBodies.held.get(hand);
@@ -3271,6 +3301,25 @@ export class Engine {
     }
     if (!this.heldBodies.held.size) return this.heldBodies.update(() => null);
     this.heldBodies.update((hand) => (this.hands[hand] ? this._gripCm(this.hands[hand]) : null));
+  }
+
+  /**
+   * XR: whether the two touch balls touch each other (centres closer than a cell's inradius
+   * plus its circumradius, at the build's scale); both controllers buzz while they do, with a
+   * bump as they meet (BALL_TOUCH_PULSE).
+   */
+  _ballsTouching() {
+    const l = this.hands.left, r = this.hands.right;
+    const now = performance.now() / 1000;
+    const reach = (1 + (this._touchBallGeo?.boundingSphere?.radius ?? 1)) * this.worldRoot.scale.x;
+    const on = !!(l?.ball && r?.ball && this._touchBallPos(l).distanceTo(this._touchBallPos(r)) < reach);
+    if (!on) return void (this._ballsMet = null);
+    const first = !this._ballsMet;
+    if (first || this._ballsMet <= now) {
+      for (const hand of ['left', 'right']) this._pulse(...(first ? BALL_TOUCH_PULSE.meet : BALL_TOUCH_PULSE.buzz), hand);
+      this._ballsMet = now + CARRY_HUM_EVERY;
+    }
+    return true;
   }
 
   /** (Re)start a grab whenever a grip is pressed or released, from the build's current pose (the grips holding blocks: gripHeld). */
@@ -3465,7 +3514,7 @@ export class Engine {
 
   /** A haptic pulse on `hand`'s controller, at Options → Accessibility → Vibration's strength (none at Off). */
   _pulse(intensity, ms, hand = 'right') {
-    intensity *= this.state.vibration;
+    intensity = Math.min(1, intensity * this.state.vibration); // (1: the most a controller does)
     if (intensity <= 0) return;
     const gp = this.hands[hand]?.source?.gamepad;
     const act = gp?.hapticActuators?.[0];

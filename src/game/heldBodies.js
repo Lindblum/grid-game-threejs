@@ -6,11 +6,12 @@
 //
 // A carried creature shakes in the hand (SHAKE_CM, SHAKE_HZ): it wriggles to get free.
 //
-// Its blocks are drawn like lone blocks of their type (as InventoryView draws items):
-// smooth-shaded, so in Rendering: Smooth rounded; shadeFlat types stay flat.
+// It's drawn as it was in the grid (the look takeBody recorded: colour, pattern, shading): in
+// Rendering: Blocky its blocks as instances, side by side; in Smooth as one body, built as
+// ClusterBodies builds the world's (its cells welded, or a chain's tube), over stand-in blocks.
 import * as THREE from 'three';
 import { BlockBatch } from './blockBatch.js';
-import { BLOCK_COLORS, blockProps } from './blocks.js';
+import { ClusterBodies } from './clusterBody.js';
 
 const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
@@ -21,6 +22,9 @@ const _shake = new THREE.Vector3();
 const SHAKE_CM = 0.12;
 const SHAKE_HZ = [17, 23, 19];
 
+/** Stand-in blocks' instance indices (blockIndex: kept clear of the dithered block's, uDitherIndex). */
+const INDEX_BASE = -100;
+
 export class HeldBodies {
   /** `parent`: where they're drawn (the World's parent: lattice cm). */
   constructor(world, parent) {
@@ -28,7 +32,8 @@ export class HeldBodies {
     this.parent = parent;
     this.batches = new Map(); // the World's pass material -> this view's batch drawn with it
     this.geometry = null; // the block shape the batches were made with
-    this.held = new Map(); // hand -> { records (World.takeBody), offsets (each block from the hand, cm), seeds, home (its head's cell), at (the hand, cm) }
+    this.bodies = new ClusterBodies(parent, world.materials); // (only its builders: the bodies are ours)
+    this.held = new Map(); // hand -> { records (World.takeBody), offsets (each block from the hand, cm), home (its head's cell), at (the hand, cm), body (Smooth) }
   }
 
   _batchFor(type) {
@@ -43,19 +48,28 @@ export class HeldBodies {
 
   /** `hand` now holds a body: `records` from World.takeBody, `offsets` its blocks from the hand (cm), `home` the cell its head left, `at` the hand (cm). */
   hold(hand, records, offsets, home, at) {
-    this.held.set(hand, { records, offsets, seeds: records.map(() => Math.random() * 40), home, at: at.clone() });
+    this.release(hand);
+    this.held.set(hand, { records, offsets, home, at: at.clone(), body: null });
   }
 
   /** Lets go of what `hand` holds; returns it (null if nothing). */
   release(hand) {
     const h = this.held.get(hand) ?? null;
     this.held.delete(hand);
+    this._dropBody(h);
     return h;
   }
 
   /** Drops everything held, putting nothing back (the world was replaced: New / Load). */
   clear() {
+    for (const h of this.held.values()) this._dropBody(h);
     this.held.clear();
+  }
+
+  _dropBody(h) {
+    if (!h?.body) return;
+    this.bodies._dispose(h.body.body);
+    h.body = null;
   }
 
   /** Call every frame: `handAt(hand)` is the hand's place (cm, in the parent), or null to leave it where it was. */
@@ -64,15 +78,24 @@ export class HeldBodies {
     if (this.geometry !== world.geometry) {
       for (const batch of this.batches.values()) batch.setBaseGeometry(world.geometry);
       this.geometry = world.geometry;
+      for (const h of this.held.values()) this._dropBody(h); // (another grid: built again)
     }
     for (const batch of this.batches.values()) batch.clear();
+    const smooth = world.clusterBodies.enabled;
     const t = performance.now() / 1000;
     for (const [hand, h] of this.held) {
       const at = handAt(hand);
       if (at) h.at.copy(at);
       const phase = hand === 'left' ? 1.7 : 0; // (two carried at once don't shake in step)
       _shake.set(...SHAKE_HZ.map((hz, k) => Math.sin(2 * Math.PI * hz * t + phase + k * 2.1))).multiplyScalar(SHAKE_CM);
-      h.records.forEach((r, i) => this._draw(r.type, h.seeds[i], _p.copy(h.at).add(h.offsets[i]).add(_shake)));
+      if (!smooth) {
+        this._dropBody(h);
+        h.records.forEach((r, i) => this._draw(r, _p.copy(h.at).add(h.offsets[i]).add(_shake)));
+        continue;
+      }
+      h.body ??= this._buildBody(h.records);
+      h.body.positions.forEach((p, i) => p.copy(h.at).add(h.offsets[i]).add(_shake));
+      this.bodies._pose(h.body.view, h.body.body, 0);
     }
     for (const batch of this.batches.values()) {
       batch.mesh.visible = batch.count > 0;
@@ -80,15 +103,45 @@ export class HeldBodies {
     }
   }
 
-  _draw(type, seed, pos) {
-    const batch = this._batchFor(type);
+  /** One block of a held body (Rendering: Blocky), drawn at `pos` (cm) as it looked in the grid. */
+  _draw(r, pos) {
+    const batch = this._batchFor(r.type);
     const item = {};
     batch.add(item);
+    const look = r.look;
     batch.mesh.setMatrixAt(item.index, _m.makeTranslation(pos.x, pos.y, pos.z));
-    batch.mesh.setColorAt(item.index, _c.set(BLOCK_COLORS[type]));
-    batch.attr('blockStyle').setXYZW(item.index, blockProps(type).style, seed, 0, 0);
-    batch.attr('blockTexOrigin').setXYZ(item.index, seed * 7.31, seed * 3.17, seed * 5.53);
+    batch.mesh.setColorAt(item.index, _c.set(look.color));
+    batch.attr('blockStyle').setXYZW(item.index, look.style[0], look.style[1], look.style[2], 0); // (no dark corners: nothing beside it)
+    batch.attr('blockTexOrigin').setXYZ(item.index, ...look.texOrigin);
     batch.attr('blockMerged').setX(item.index, 0);
-    batch.attr('blockSmooth').setX(item.index, blockProps(type).shadeFlat ? 0 : 1);
+    batch.attr('blockSmooth').setX(item.index, look.smooth);
+  }
+
+  /**
+   * A held body's smooth mesh (Rendering: Smooth): stand-in blocks in the cells the records
+   * give (head at the origin), linked as a Buzzy's segments or a chain's, and a view of them
+   * standing in for the World where ClusterBodies reads one (their looks, where they're drawn).
+   */
+  _buildBody(records) {
+    const blocks = records.map((r, i) => ({ x: r.dx, y: r.dy, z: r.dz, type: r.type, index: INDEX_BASE - i, texOrigin: r.look.texOrigin, look: r.look }));
+    const head = blocks[0];
+    const segs = blocks.filter((b, i) => records[i].segment);
+    if (segs.length) {
+      head.segments = segs;
+      for (const b of segs) b.segmentOf = head;
+    }
+    const chain = { segments: blocks };
+    const positions = blocks.map(() => new THREE.Vector3());
+    const view = {
+      squirmyOf: new Map(blocks.map((b) => [b, chain])),
+      _style: (b) => ({ getX: () => b.look.style[0], getY: () => b.look.style[1], getZ: () => b.look.style[2], getW: () => 0 }),
+      colorOf: (b, out) => out.set(b.look.color),
+      renderedPosition: (b, now, out) => out.copy(positions[INDEX_BASE - b.index]),
+      edgeVia: () => null, // (no blocks round it to bend about)
+    };
+    this.bodies._world = view;
+    const body = this.bodies._create(blocks);
+    this.bodies._refreshLook(view, body);
+    return { body, view, positions };
   }
 }
