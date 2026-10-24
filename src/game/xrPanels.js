@@ -157,7 +157,7 @@ class CanvasPanel {
 }
 
 const RESIZE_GRIP_M = 0.022; // a panel's resize handle: a square this wide in its corner
-const PX_TO_M = 0.17 / 1000; // the Right HUD's pixel density (the others match it docked: see Engine's XR_PANELS)
+const PX_TO_M = 0.17 / 1000; // the Control menu's pixel density (the others match it docked: see Engine's XR_PANELS)
 
 const SLOT = 104, SLOT_GAP = 14;
 
@@ -197,7 +197,7 @@ function toggleButton(ctx, panel, icon, hot) {
   drawMenuItemIcon(ctx, icon, b.x + b.w / 2, b.y + b.h / 2, b.w * 0.66);
 }
 
-// the Right HUD's layout (px): its header (the eye button, the title), the actions (Eat, Excrete:
+// the Control menu's layout (px): its header (the eye button, the title), the actions (Eat, Excrete:
 // up to two rows), the Tools dropdown, then (open) the tools' well beneath it, indented
 // (sizes match Options': its rows are as tall as Options' buttons, its title and text as big, as seen docked)
 const RH_PAD = 24, RH_BTN = 60, RH_HEAD = RH_PAD + RH_BTN + 29, RH_ROW = 67, RH_GAP = 11, RH_INDENT = 40, RH_WELL_PAD = 18;
@@ -209,7 +209,7 @@ const RH_MIN_PER_ROW = 3, RH_START_PER_ROW = 5; // tools to a row: at least, and
 const RH_FONT = '500 32px system-ui, -apple-system, Segoe UI, sans-serif';
 
 /**
- * Right HUD (docked on the right controller at first), like the windowed Right panel: an eye button that
+ * Control menu (docked on the right controller at first), like the windowed Control menu: an eye button that
  * shows or hides the rest (hidden: only the button), the title (Observer, or the controlled
  * creature's type), the selected creature's actions when it has any (Eat: the button for it
  * and the blocks it could eat; Excrete: the button and the block that would come out; the

@@ -3,6 +3,7 @@ import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
 import { CameraCollider } from './cameraCollision.js';
 import { InventoryView } from './inventoryView.js';
 import { HeldBodies } from './heldBodies.js';
+import { ControllerGuide } from './controllerGuide.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
 import { canStand, pathToward, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells, SELECT_WAIT_TURNS } from './sim.js';
@@ -129,7 +130,7 @@ const SEE_THROUGH_REACH_CM = 0.45;
 const CLICK_MAX_MOVE_PX = 6;
 const STEER_SCREEN_COS = 0.35;
 /**
- * XR panels (Options, Debug, the Right HUD; see _layoutPanels): docked on a controller, they
+ * XR panels (Options, Debug, the Control menu; see _layoutPanels): docked on a controller, they
  * stand side by side in its pointing frame (-Z forward, +Y up), their bottoms on
  * PANEL_DOCK_ANCHOR, the first one's toggle button over the controller, tilted so their faces
  * tip up toward the eyes (as in xr-music-threejs).
@@ -147,7 +148,8 @@ const PANEL_FLY_S = 0.4;
 /** XR: a grip's thumbstick up / down pushes what it holds (panel, creature, the build) away along its ray / reels it in: per second at full tilt, this share of its distance from the hand… */
 const PUSH_RATE = 1.5;
 const PUSH_MIN_M = 0.25; // …but never slower than at this distance (m)
-const PANEL_REEL_MIN_M = 0.05; // a panel reels in no nearer the hand than this (m) // a triple tap's panels fly to their dock over this long
+const PANEL_REEL_MIN_M = 0.05; // a panel reels in no nearer the hand than this (m)
+const ROLL_RATE = Math.PI; // XR: a grip's thumbstick left / right turns the build about that controller's ray, at most this fast (rad/s) // a triple tap's panels fly to their dock over this long
 const MENU_SCROLL_PX_S = 1400; // XR Options: canvas px a second it scrolls at the thumbstick's full tilt
 const PANEL_PULSE = { grab: [0.6, 50], detach: [0.4, 30], dock: [0.9, 80], zone: [0.25, 20] }; // haptics: [strength, ms]
 const _panelRay = new THREE.Raycaster();
@@ -282,6 +284,7 @@ export class Engine {
       cameraSpeed: CAMERA_SPEED.default, // Options → Accessibility → Camera Speed: a multiplier on the camera's turning
       vibration: VIBRATION.default, // Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 2 (_pulse; 1 as made)
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
+      controllerGuide: false, // Options → Accessibility → Controller Guide: XR labels beside the controllers' buttons (_guideTexts)
       directionGuides: true, // Options → Accessibility → Direction Guides (or G): Creature controls' step lines and dots, and aimed Eat / Excrete's
       viewInternal: false, // Options → Accessibility → View Internal: the selected / controlled creatures see-through, their inventories inside
       observerCameraInvert: false, // Options → Accessibility → Observer Camera: Invert turns orbiting the other way
@@ -301,9 +304,10 @@ export class Engine {
       domOverlay: false, // the XR session shows the page's UI over the view (XR: Phone AR, see screenUI)
       xrVR: false, // browser supports immersive-vr, e.g. PC Chrome with a headset over Link
       blockCount: 0,
-      rightHudOpen: true, // the Right panel / HUD (its eye button): shown, or only the button
+      rightHudOpen: true, // the Control menu / HUD (its eye button): shown, or only the button
       toolsOpen: true, // its Tools dropdown: open (the tool selector shows) or closed
-      // what the selected creatures could do right now (the Right panel's actions; _updateActions):
+      controlsGuideOpen: false, // its Controls dropdown (windowed): open (the mouse / keys or gamepad, labelled) or closed
+      // what the selected creatures could do right now (the Control menu's actions; _updateActions):
       // eat (the distinct block types next to them they could eat), excrete (the block type that
       // would come out, with somewhere for it to go); input: which glyphs to show ('mk', 'pad', 'xr')
       actions: { eat: [], excrete: null },
@@ -395,7 +399,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'vibration', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'vibration', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'controlsGuideOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -451,7 +455,7 @@ export class Engine {
     // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
     if (typeof saved.movementGuides === 'boolean' && !bool('directionGuides')) this.setState({ directionGuides: saved.movementGuides }); // (its old name)
-    for (const k of ['rain', 'creative', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
+    for (const k of ['rain', 'creative', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'controlsGuideOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (typeof saved.xrResolution === 'number') this.setXRResolution(saved.xrResolution);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
@@ -643,6 +647,8 @@ export class Engine {
     this.inventoryView = new InventoryView(this.world, root);
     // XR grab: creatures held in the hands, out of the world (see _grabCreature)
     this.heldBodies = new HeldBodies(this.world, root);
+    // Options → Accessibility → Controller Guide: labels beside the XR controllers' buttons
+    this.controllerGuide = new ControllerGuide(this.scene);
     // a new grid mode (World.setGridMode): every wireframe takes the new block shape
     onGridChange(() => {
       for (const hl of [this.placeHL, this.deleteHL]) buildWireframe(hl);
@@ -743,7 +749,8 @@ export class Engine {
     for (let i = 0; i < 2; i++) {
       const ctrl = r.xr.getController(i);
       const grip = r.xr.getControllerGrip(i);
-      grip.add(factory.createControllerModel(grip));
+      const model = factory.createControllerModel(grip); // (its buttons' nodes: where the Controller Guide's labels point)
+      grip.add(model);
       // the touch ball: a grid cell in front of the controller; a grip with it on a creature
       // picks the creature up, on another block holds the build (_creatureAtHand, _blockAtHand).
       // Placed each frame (_updateHeld): at the build's scale, turned with it
@@ -754,7 +761,7 @@ export class Engine {
       ball.renderOrder = 5;
       this.scene.add(ball);
       (this._touchBalls ??= []).push(ball);
-      const slot = { ctrl, grip, ball, source: null, gripHeld: false };
+      const slot = { ctrl, grip, model, ball, source: null, gripHeld: false };
       ctrl.addEventListener('connected', (e) => {
         // articulated hands and screen taps aren't controllers: they leave the gaze in charge,
         // and their select (pinch, tap) clicks what it is on (see selectstart)
@@ -1171,14 +1178,14 @@ export class Engine {
   // on again; clicking empty space or anything else deselects it).
   // Clicking anything else in 'target' (or empty space) just clears the selection.
 
-  /** The Right panel's (and XR Right HUD's) title: Observer, or under Creature controls the controlled creature's type. */
+  /** The Control menu's (windowed and XR) title: Observer, or under Creature controls the controlled creature's type. */
   rightHudTitle(s = this.state) {
     if (s.controlSchema !== 'creature') return 'Observer';
     const c = this._controlled?.[0];
     return c ? blockProps(c.type).name : 'Creature';
   }
 
-  /** The Right panel's (and XR Right HUD's) eye button: shows it, or hides all but the button; remembered. */
+  /** The Control menu's (windowed and XR) eye button: shows it, or hides all but the button; remembered. */
   toggleRightHud() {
     this.setState({ rightHudOpen: !this.state.rightHudOpen });
     playTick();
@@ -1186,7 +1193,7 @@ export class Engine {
   }
 
   /**
-   * Per frame: what the selected creatures could do now (state.actions, for the Right panel /
+   * Per frame: what the selected creatures could do now (state.actions, for the Control menu /
    * HUD): Eat, with a free head slot and something edible next to it (the distinct types); Excrete,
    * with an item in its tail's slot and an empty cell next to the tail (what it would come out
    * as). And which input to show their buttons for (state.inputDevice). Only set when it changes.
@@ -1215,7 +1222,13 @@ export class Engine {
     xr: { eat: ['xr:B'], excrete: ['xr:A'], tool: ['xr:trigger:R'] },
   };
 
-  /** The Right panel's (and XR Right HUD's) Tools dropdown: opens or closes the tool selector; remembered. */
+  /** The Control menu's Controls dropdown (windowed): opens or closes it; remembered. */
+  toggleControlsGuideOpen() {
+    this.setState({ controlsGuideOpen: !this.state.controlsGuideOpen });
+    this._saveOptions();
+  }
+
+  /** The Control menu's (windowed and XR) Tools dropdown: opens or closes the tool selector; remembered. */
   toggleToolsOpen() {
     this.setState({ toolsOpen: !this.state.toolsOpen });
     playTick();
@@ -2619,6 +2632,7 @@ export class Engine {
     // File, Controls, Video and Accessibility open (or close) their sections, closing any other
     if (id === 'file' || id === 'controls' || id === 'video' || id === 'accessibility') return this.setState({ section: s.section === id ? null : id });
     if (id === 'directionGuides') return this.toggleDirectionGuides();
+    if (id === 'controllerGuide') return this.setState({ controllerGuide: !s.controllerGuide });
     if (id === 'viewInternal') return this.setState({ viewInternal: !s.viewInternal });
     if (id === 'observerCamera') return this.setState({ observerCameraInvert: !s.observerCameraInvert });
     if (id === 'controlCamera') return this.setState({ controlCameraInvert: !s.controlCameraInvert });
@@ -3045,7 +3059,7 @@ export class Engine {
 
   /**
    * Puts each XR panel where it belongs this frame: docked panels stand side by side on their
-   * controller (Options, Debug, the Right HUD, in that order), or on the other one when theirs
+   * controller (Options, Debug, the Control menu, in that order), or on the other one when theirs
    * is missing, or in the gaze dock without controllers; free ones stay where they are in the
    * room; a held one follows its hand (_updatePanelGrabs).
    */
@@ -3280,19 +3294,24 @@ export class Engine {
   }
 
   /**
-   * `hand`'s thumbstick (`y`: down positive) on what its grip holds: a panel, a carried creature,
-   * or the build (that grip alone): up pushes it away along the controller's ray, down reels it
-   * in, faster the further off it is (PUSH_RATE, PUSH_MIN_M). Returns whether the grip holds
+   * `hand`'s thumbstick (`x`: right, `y`: down positive) on what its grip holds: a panel, a
+   * carried creature, or the build (that grip alone, or both). Up pushes it away along the
+   * controller's ray, down reels it in, faster the further off it is (PUSH_RATE, PUSH_MIN_M);
+   * the build only when one grip holds it. Left / right turns the build (a carried creature with
+   * it) about the ray, as if the ray were an axle (_rollBuild). Returns whether the grip holds
    * anything (its stick is then this, nothing else).
    */
-  _pushHeld(hand, y, dt) {
+  _pushHeld(hand, x, y, dt) {
     const slot = this.hands[hand];
     const panel = this._panelGrabs[hand], body = this.heldBodies.held.get(hand);
-    const build = this._grab?.hands.length === 1 && this._grab.hands[0] === slot ? this._grab : null;
-    if (!slot || (!panel && !body && !build)) return false;
-    if (!y || !dt) return true;
+    const gripping = !!this._grab?.hands.includes(slot);
+    if (!slot || (!panel && !body && !gripping)) return false;
+    if (!dt) return true;
     slot.ctrl.updateMatrixWorld();
     const dir = new THREE.Vector3(0, 0, -1).transformDirection(slot.ctrl.matrixWorld); // (world, unit)
+    if (x) this._rollBuild(new THREE.Vector3().setFromMatrixPosition(slot.ctrl.matrixWorld), dir, x * ROLL_RATE * dt); // (right: clockwise, as you look along the ray)
+    const build = gripping && this._grab.hands.length === 1 ? this._grab : null; // (after the turn: it may have started the grab again)
+    if (!y || (!panel && !body && !build)) return true;
     const step = (dist, nearest) => Math.max(-y * PUSH_RATE * Math.max(dist, PUSH_MIN_M) * dt, nearest - dist); // m along the ray
     if (panel) {
       // (in the grip's space: the panel's pose there, and the point it's held by, both shift)
@@ -3308,6 +3327,18 @@ export class Engine {
       build.pos.addScaledVector(dir, step(this._gripPos(slot).distanceTo(this.worldRoot.position), 0)); // (from its origin)
     }
     return true;
+  }
+
+  /**
+   * Turns the build by `angle` (rad) about the line through `origin` along `axis` (world, unit).
+   * A grab in progress (_grab) starts again from the turned pose, so the hands keep holding it.
+   */
+  _rollBuild(origin, axis, angle) {
+    const q = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+    const r = this.worldRoot;
+    r.position.sub(origin).applyQuaternion(q).add(origin);
+    r.quaternion.premultiply(q);
+    if (this._grab) this._beginGrab(); // (the hands hold it again from here: _updateGrab carries on from this pose)
   }
 
   /** Held panels keep their pose in the hand, easing to their free size; a tick as one comes within reach of a dock. */
@@ -3517,6 +3548,44 @@ export class Engine {
     }
     if (!this.heldBodies.held.size) return this.heldBodies.update(() => null, toolBlocks);
     this.heldBodies.update((hand) => (this.hands[hand] ? this._gripCm(this.hands[hand]) : null), toolBlocks);
+  }
+
+  /**
+   * Options → Accessibility → Controller Guide: what each of `hand`'s buttons and sticks does
+   * right now, { componentId: text } (motion-controllers ids; ControllerGuide shows them).
+   * Nothing for a button that does nothing just now.
+   */
+  _guideTexts(hand) {
+    const s = this.state, playing = s.screen === 'playing' && !s.paused;
+    const slot = this.hands[hand];
+    const holding = this.heldBodies.held.has(hand) || !!this._panelGrabs[hand] || !!this._grab?.hands.includes(slot);
+    const sel = this.selected.length > 0, creature = s.controlSchema === 'creature';
+    const t = {};
+    t['xr-standard-squeeze'] = holding ? 'Let go to drop' : 'Grab\n×2 / ×3: dock panels';
+    if (holding) t['xr-standard-thumbstick'] = '↕ Push / pull\n↔ Turn the build';
+    else if (this._menuPanelHover && this._uiHand === hand) t['xr-standard-thumbstick'] = '↕ Scroll';
+    if (hand === 'right') {
+      const tool = this._activeTool();
+      t['xr-standard-trigger'] = !playing || this._uiHand !== 'left' && this._menuPanelHover ? 'Press'
+        : tool.id === TOOL.SELECT ? (sel && this._targeting ? 'Select / send here' : 'Select')
+        : tool.id === TOOL.DELETE ? 'Delete' : `Place ${tool.label}`;
+      if (!holding && !t['xr-standard-thumbstick']) {
+        const stick = [];
+        if (this.toolsAvailable()) stick.push('↔ Tool');
+        if (sel || creature) stick.push(creature ? 'Click: Observer' : 'Click: control it');
+        if (stick.length) t['xr-standard-thumbstick'] = stick.join('\n');
+      }
+      if (sel && playing) {
+        t['a-button'] = 'Excrete\n(hold + left stick: aim)';
+        t['b-button'] = 'Consume\n(hold + left stick: aim)';
+      }
+    } else {
+      t['xr-standard-trigger'] = 'Press panels';
+      if (!holding && !t['xr-standard-thumbstick'] && playing && this._steerTargets().length) t['xr-standard-thumbstick'] = 'Steer\nClick: away from you';
+      t['y-button'] = sel && playing ? 'Wander' : 'Options';
+      if (sel && playing) t['x-button'] = 'Wait';
+    }
+    return t;
   }
 
   /** Touch ball `ball`'s wireframe (its cell's edges; the Delete tool's look), as its child. */
@@ -3846,12 +3915,16 @@ export class Engine {
 
   _pollGamepads() {
     this._steerStick = null; // set again below while the left stick steers a creature
-    // a hand gripping something: its thumbstick up / down pushes that away or reels it in (_pushHeld), and does nothing else
+    // a hand gripping something: its thumbstick up / down pushes that away or reels it in, left /
+    // right turns the build about its ray (_pushHeld), and does nothing else
     const holding = {};
     for (const hand of ['left', 'right']) {
       const gp = this.hands[hand]?.source?.gamepad;
-      const y = (gp && (gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1])) || 0;
-      holding[hand] = this._pushHeld(hand, Math.abs(y) < 0.2 ? 0 : y, this._dt ?? 0);
+      const axis = (i) => {
+        const v = (gp && (gp.axes.length >= 4 ? gp.axes[2 + i] : gp.axes[i])) || 0;
+        return Math.abs(v) < 0.2 ? 0 : v;
+      };
+      holding[hand] = this._pushHeld(hand, axis(0), axis(1), this._dt ?? 0);
     }
     // pointing at Options (a menu taller than the panel): that hand's thumbstick up / down scrolls it
     const sgp = this._menuPanelHover && !holding[this._uiHand] && this.hands[this._uiHand]?.source?.gamepad;
@@ -4017,7 +4090,7 @@ export class Engine {
     this.rayDotLeft.visible = false;
     this.rayLineLeft.visible = false;
 
-    // UI first: the panels (Options, Debug, the Right HUD), under the right controller's ray (or
+    // UI first: the panels (Options, Debug, the Control menu), under the right controller's ray (or
     // the gaze); else under the left's (it presses them with its trigger: it can reach the panels
     // docked on the right hand). A hand holding its trigger on a panel keeps it.
     const pointers = !xr ? [] : gaze ? ['gaze'] : this._uiPress === 'left' ? ['left', 'right'] : ['right', 'left'];
@@ -4522,6 +4595,7 @@ export class Engine {
       this._updateGrab();
       this._stepXrZoom(dt);
       this._updateHeld();
+      this.controllerGuide.update(this.state.controllerGuide && !this._gazeMode() ? this.hands : null, (hand) => this._guideTexts(hand), this.camera);
       this._updateGazeDock(dt);
       const flat = this.screenUI(); // the page's UI is in front instead (XR: Phone AR)
       const dbg = this.state.debugMode && !flat;

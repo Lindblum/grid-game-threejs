@@ -28,7 +28,7 @@ const OBSERVER_CONTROLS = [
     action: 'Change tool',
     mk: { g: ['key:←', 'key:→', 'sep:/', 'key:0–9'], t: 'Left / Right arrows, or 1–9 and 0 (Options → Creative on)' },
     pad: { g: ['pad:LB', 'pad:RB'], t: 'Bumpers (LB / RB) (Options → Creative on)' },
-    xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right, or open the Right HUD’s Tool dropdown and point at a tool (the left controller reaches it). Options → Creative on; off, the tool is Select. The right controller’s ball shows the tool: blue energy (Select), a red wireframe (Delete), or the block it places' },
+    xr: { g: ['xr:stick:R:x'], t: 'Right thumbstick left / right, or open the Control menu’s Tool dropdown and point at a tool (the left controller reaches it). Options → Creative on; off, the tool is Select. The right controller’s ball shows the tool: blue energy (Select), a red wireframe (Delete), or the block it places' },
   },
   {
     action: 'Deselect',
@@ -66,7 +66,7 @@ const OBSERVER_CONTROLS = [
     pad: { g: ['text:—'], t: 'The panels keep to the window’s corners' },
     xr: {
       g: ['xr:grip:L', 'sep:/', 'xr:grip:R'],
-      t: 'Grip a panel (touching or pointing at it) to take it; let go near the other controller to dock it there, anywhere else to leave it. Double-tap a grip at a panel to dock it on that controller, or at nothing to undock that controller’s panels. Triple-tap a grip to bring every undocked panel to that controller. While gripping a panel, a creature or the build, that hand’s thumbstick up / down pushes it away / reels it in',
+      t: 'Grip a panel (touching or pointing at it) to take it; let go near the other controller to dock it there, anywhere else to leave it. Double-tap a grip at a panel to dock it on that controller, or at nothing to undock that controller’s panels. Triple-tap a grip to bring every undocked panel to that controller. While gripping a panel, a creature or the build, that hand’s thumbstick up / down pushes it away / reels it in, and left / right turns the build about that controller’s ray',
     },
   },
   {

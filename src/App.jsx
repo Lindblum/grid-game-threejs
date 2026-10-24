@@ -89,7 +89,7 @@ function OverlayView({ engine, s }) {
         </div>
       )}
       {s.screen === 'playing' && flat && (
-        // the right column: the Right panel (who you are: Observer or the creature; the tools)
+        // the right column: the Control menu (who you are: Observer or the creature; the tools)
         <div className="side-stack side-stack-right">
           <RightPanel engine={engine} s={s} />
         </div>
@@ -296,7 +296,7 @@ function Hud({ s }) {
 const PANEL_SIZE = { minWidth: 220, minHeight: 120, margin: 24 };
 
 /**
- * Resizing for a side panel (Options, Debug, the Right panel): returns [style, grip props].
+ * Resizing for a side panel (Options, Debug, the Control menu): returns [style, grip props].
  * Dragging the grip down makes it taller, outward (`outward` = +1 right, -1 left) wider;
  * double-click goes back to the automatic size. Remembered in this browser under `key`.
  */
@@ -508,7 +508,146 @@ function ActionGlyph({ tokens }) {
 }
 
 /**
- * The Right panel, in the top-right corner (the XR Right HUD's twin, on the right controller):
+ * What each mouse button / gamepad button does under control schema `schema` (controls.js), as
+ * Map token -> action names, from the schema's `device` ('mk' | 'pad') bindings: a binding's
+ * buttons count until a "+" (what follows only modifies it), "/" starts another.
+ */
+function buttonActions(schema, device) {
+  const out = new Map();
+  for (const row of schema.controls) {
+    if (row.action.startsWith('Menu ')) continue; // (in the menus only: not what the button does in play)
+    const name = row.action.replace(/ \(selected creature\)$/, '');
+    const g = row[device]?.g ?? [];
+    let modifier = false;
+    g.forEach((token, i) => {
+      if (token === 'sep:+') modifier = true;
+      else if (token === 'sep:/') modifier = false;
+      else if (!modifier && !token.startsWith('sep:') && !token.startsWith('text:')) {
+        const label = g[i + 1] === 'text:×2' ? `${name} (×2)` : name; // (a double-click)
+        if (!out.has(token)) out.set(token, []);
+        if (!out.get(token).includes(label)) out.get(token).push(label);
+      }
+    });
+  }
+  return out;
+}
+
+/**
+ * A device drawn in the middle of a 300-wide SVG (`shape`), and labels in a column either
+ * side, each with a leader line to its button: `anchors` [{ tokens, x, y, side }] (a button,
+ * labelled with what its tokens do: `actions`); buttons that do nothing are left out.
+ */
+function LabelledDiagram({ shape, anchors, actions, height: minHeight }) {
+  const W = 300, COL = 92, ROW = 26;
+  const shown = anchors.map((a) => ({ ...a, text: [...new Set(a.tokens.flatMap((t) => actions.get(t) ?? []))].join(', ') })).filter((a) => a.text);
+  const most = Math.max(...['left', 'right'].map((side) => shown.filter((a) => a.side === side).length));
+  const height = Math.max(minHeight, most * ROW + 8); // (room for the longer column)
+  const place = (side) => {
+    const col = shown.filter((a) => a.side === side).sort((a, b) => a.y - b.y); // (top to bottom as the buttons sit: fewer crossings)
+    const top = Math.max(4, height / 2 - (col.length * ROW) / 2);
+    return col.map((a, i) => ({ ...a, ly: top + i * ROW }));
+  };
+  const labels = [...place('left'), ...place('right')];
+  return (
+    <svg className="cg-diagram" viewBox={`0 0 ${W} ${height}`} role="img">
+      {shape}
+      {labels.map((a) => {
+        const lx = a.side === 'left' ? COL : W - COL;
+        return (
+          <g key={a.tokens.join()}>
+            <line x1={a.x} y1={a.y} x2={lx} y2={a.ly + ROW / 2 - 1} className="cg-lead" />
+            <circle cx={a.x} cy={a.y} r={1.8} className="cg-dot" />
+            <foreignObject x={a.side === 'left' ? 0 : W - COL + 3} y={a.ly} width={COL - 3} height={ROW - 2}>
+              <div className={`cg-label ${a.side}`} title={a.text}>{a.text}</div>
+            </foreignObject>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+const MOUSE_SHAPE = (
+  <g className="cg-shape">
+    <path d="M150 22 C128 22 122 40 122 62 L122 112 C122 136 134 150 150 150 C166 150 178 136 178 112 L178 62 C178 40 172 22 150 22 Z" />
+    <path d="M122 70 L178 70 M150 22 L150 70" />
+    <rect x="146" y="38" width="8" height="18" rx="4" className="cg-key" />
+  </g>
+);
+const MOUSE_ANCHORS = [
+  { tokens: ['mouse:L'], x: 134, y: 44, side: 'left' },
+  { tokens: ['mouse:move'], x: 134, y: 118, side: 'left' },
+  { tokens: ['mouse:R'], x: 166, y: 44, side: 'right' },
+  { tokens: ['mouse:wheel'], x: 150, y: 42, side: 'right' },
+  { tokens: ['mouse:M'], x: 150, y: 52, side: 'right' },
+];
+
+const PAD_SHAPE = (
+  <g className="cg-shape">
+    <rect x="108" y="36" width="24" height="9" rx="3" />
+    <rect x="168" y="36" width="24" height="9" rx="3" />
+    <rect x="104" y="47" width="32" height="7" rx="3" />
+    <rect x="164" y="47" width="32" height="7" rx="3" />
+    <path d="M118 56 L182 56 C200 56 206 70 210 96 C214 122 208 138 196 138 C186 138 180 126 174 116 L126 116 C120 126 114 138 104 138 C92 138 86 122 90 96 C94 70 100 56 118 56 Z" />
+    <circle cx="122" cy="76" r="9" className="cg-key" />
+    <circle cx="166" cy="98" r="9" className="cg-key" />
+    <path d="M131 92 h6 v4 h4 v6 h-4 v4 h-6 v-4 h-4 v-6 h4 z" className="cg-key" />
+    <circle cx="180" cy="68" r="4" className="cg-key" />
+    <circle cx="172" cy="76" r="4" className="cg-key" />
+    <circle cx="188" cy="76" r="4" className="cg-key" />
+    <circle cx="180" cy="84" r="4" className="cg-key" />
+    <circle cx="142" cy="72" r="2.6" className="cg-key" />
+    <circle cx="158" cy="72" r="2.6" className="cg-key" />
+  </g>
+);
+const PAD_ANCHORS = [
+  { tokens: ['pad:LT'], x: 116, y: 40, side: 'left' },
+  { tokens: ['pad:LB'], x: 112, y: 50, side: 'left' },
+  { tokens: ['pad:view'], x: 142, y: 72, side: 'left' },
+  { tokens: ['stick:L:any'], x: 122, y: 76, side: 'left' },
+  { tokens: ['stick:L:press'], x: 124, y: 78, side: 'left' },
+  { tokens: ['dpad:any', 'dpad:ud'], x: 134, y: 99, side: 'left' },
+  { tokens: ['pad:RT'], x: 184, y: 40, side: 'right' },
+  { tokens: ['pad:RB'], x: 188, y: 50, side: 'right' },
+  { tokens: ['pad:start'], x: 158, y: 72, side: 'right' },
+  { tokens: ['pad:Y'], x: 180, y: 68, side: 'right' },
+  { tokens: ['pad:X'], x: 172, y: 76, side: 'right' },
+  { tokens: ['pad:B'], x: 188, y: 76, side: 'right' },
+  { tokens: ['pad:A'], x: 180, y: 84, side: 'right' },
+  { tokens: ['stick:R:any'], x: 166, y: 98, side: 'right' },
+  { tokens: ['stick:R:press'], x: 168, y: 100, side: 'right' },
+];
+
+/**
+ * The Control menu's Controls dropdown (windowed): what the input in use does now, under the
+ * current control schema. Mouse and keyboard: the mouse with its buttons labelled, then each
+ * key and its action; a gamepad: the gamepad with its buttons labelled.
+ */
+function ControlsGuide({ s }) {
+  const schema = CONTROL_SCHEMAS[s.controlSchema] ?? CONTROL_SCHEMAS.observer;
+  if (s.inputDevice === 'pad') return <LabelledDiagram shape={PAD_SHAPE} anchors={PAD_ANCHORS} actions={buttonActions(schema, 'pad')} height={200} />;
+  const keys = schema.controls
+    .map((row) => ({ name: row.action.replace(/ \(selected creature\)$/, ''), g: (row.mk?.g ?? []).filter((t) => t.startsWith('key:') || t === 'sep:/') }))
+    .filter((k) => !k.name.startsWith('Menu '))
+    .filter((k) => k.g.some((t) => t.startsWith('key:')))
+    .map((k) => ({ ...k, g: k.g.filter((t, i, a) => t !== 'sep:/' || (i > 0 && i < a.length - 1 && a[i - 1] !== 'sep:/')) }));
+  return (
+    <>
+      <LabelledDiagram shape={MOUSE_SHAPE} anchors={MOUSE_ANCHORS} actions={buttonActions(schema, 'mk')} height={170} />
+      <div className="cg-keys">
+        {keys.map((k) => (
+          <div key={k.name} className="cg-key-row">
+            <ActionGlyph tokens={k.g} />
+            <span>{k.name}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/**
+ * The Control menu, in the top-right corner (its XR twin, on the right controller):
  * its eye button shows it or hides all but the button (remembered); its title says who you are,
  * Observer or, under Creature controls, the controlled creature's type; the selected creature's
  * actions, when it has any (Eat: the button for it on the input in use, and the blocks it could
@@ -558,7 +697,8 @@ function RightPanel({ engine, s }) {
       </button>
     );
   };
-  const body = tools || eat.length > 0 || excrete;
+  const guide = !s.inXR; // (windowed: its Controls dropdown; in XR, Options → Accessibility → Controller Guide)
+  const body = tools || eat.length > 0 || excrete || guide;
   return (
     <aside className="side-panel right-panel" ref={panelRef} style={size}>
       <ResizeGrip place="grip-bottom-left" title="Drag to resize (double-click: reset)" {...grip} />
@@ -596,6 +736,21 @@ function RightPanel({ engine, s }) {
                     <img src={toolIconURL(t, 96, { materials: s.materials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+          </>}
+          {guide && <>
+          {/* the Controls dropdown: what the mouse and keys, or the gamepad, do now */}
+          <button className="btn menu-btn action-btn" aria-expanded={!!s.controlsGuideOpen} onClick={tickThen(() => engine.toggleControlsGuideOpen())}>
+            <img className="menu-icon" src={menuItemIconURL('controls')} alt="" draggable={false} />
+            <span className="label"><span className="name">Controls</span></span>
+            <img className="menu-icon menu-arrow" src={menuItemIconURL(s.controlsGuideOpen ? 'dropdownOpen' : 'dropdown')} alt="" draggable={false} />
+          </button>
+          {s.controlsGuideOpen && (
+            <div className="menu-section">
+              <div className="debug-box controls-guide">
+                <ControlsGuide s={s} />
               </div>
             </div>
           )}

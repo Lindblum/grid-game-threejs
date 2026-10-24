@@ -46,11 +46,11 @@ as Truncated Octahedron. See `src/game/grids.js`.
 | Options (pauses) | Esc / Enter, or the gear (top left) | Start | The gear (Options, on the left controller), or Y |
 | Orbit / zoom / pan | Left- or right-drag / wheel / middle-drag | Right stick / LT, RT / D-pad | Grip blocks: one hand drags, both rotate and scale (a grip on nothing does nothing) |
 | Deselect | Right click (without dragging) | X | Select tool at empty space |
-| Move / dock a panel | — | — | Grip a panel to take it; let go near the other controller to dock it. Double-tap a grip at a panel: dock it there; at nothing: undock. Triple-tap: dock every undocked panel on that controller. While gripping a panel, a creature or the build, that hand's thumbstick up / down pushes it away / reels it in |
+| Move / dock a panel | — | — | Grip a panel to take it; let go near the other controller to dock it. Double-tap a grip at a panel: dock it there; at nothing: undock. Triple-tap: dock every undocked panel on that controller. While gripping a panel, a creature or the build, that hand's thumbstick up / down pushes it away / reels it in, and left / right turns the build about that controller's ray |
 | Carry a creature | — | — | Grip a creature (touching or pointing at it) to pick it up; let go to put it back in the nearest cells it fits, selected |
 
 With a creature selected, on the XR controllers: **B** consumes, **A** excretes (hold either and aim with the left thumbstick), **Y** wanders, **X** waits (gamepad: **Y** consumes, **B** excretes, **View** waits; hold Y or B and aim with the left stick; keyboard: **E** consumes, **Q** excretes, held with WASD / the arrows to aim). Controlling a creature, WASD, the arrows, the gamepad's left stick or the XR left thumbstick move it (relative to your view of it; held in: straight away from you). In XR, taking control zooms the build in 4× about the creature's head, and going back to Observer zooms it back out. Controlling it, the Select tool still sends it somewhere (click / trigger a cell); steering it, or Consume / Excrete, stops the walk.
-The full table is under **Options → Controls** in the game.
+The full table is under **Options → Controls** in the game. In a window, the **Control menu** (top right) has a **Controls** dropdown: the mouse (or gamepad) with each button labelled with what it does now, and the keys. In XR, **Options → Accessibility → Controller Guide** labels the controllers' buttons and sticks the same way.
 
 ## How it works
 

@@ -131,7 +131,7 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   user-select: none;
 }
 .side-panel.collapsed { width: auto; }
-/* the right column: the Right panel, in the top-right corner (resized from its bottom-left) */
+/* the right column: the Control menu, in the top-right corner (resized from its bottom-left) */
 .side-stack.side-stack-right { left: auto; right: max(12px, env(safe-area-inset-right)); align-items: flex-end; }
 .right-panel { width: min(300px, calc(100vw - 24px)); }
 .side-header.alone { margin-bottom: 0; } /* (Creature controls: just the title) */
@@ -142,6 +142,18 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .action-btn .label .tool-value { display: flex; align-items: center; gap: var(--ui-pad-x); } /* (the current tool: its icon left of its name) */
 /* its Tools dropdown opens the tools in a dark well, the icons in rows */
 .tool-slots { display: flex; flex-wrap: wrap; gap: var(--ui-gap); }
+/* the Control menu's Controls dropdown: a labelled mouse / gamepad, and the keys */
+.controls-guide { display: flex; flex-direction: column; gap: var(--ui-gap); }
+.cg-diagram { width: 100%; height: auto; display: block; }
+.cg-shape > * { fill: rgba(255, 255, 255, 0.06); stroke: var(--muted); stroke-width: 1.4; }
+.cg-shape > .cg-key { fill: rgba(255, 255, 255, 0.14); }
+.cg-lead { stroke: var(--muted); stroke-width: 0.8; opacity: 0.7; }
+.cg-dot { fill: #9cc8ff; }
+.cg-label { height: 100%; display: flex; align-items: center; font-size: 9px; line-height: 1.05; color: #e8ecf2; overflow: hidden; }
+.cg-label.left { justify-content: flex-end; text-align: right; }
+.cg-keys { display: flex; flex-direction: column; gap: 4px; font-size: calc(12px * var(--text-scale)); }
+.cg-key-row { display: flex; align-items: center; gap: var(--ui-pad-x); }
+.cg-key-row .action-glyph { height: calc(var(--ui-icon) * 0.8); width: auto; flex: none; }
 .tool-slots > .slot { width: 44px; flex: none; }
 .side-header { display: flex; align-items: center; gap: var(--ui-pad-x); margin-bottom: var(--ui-gap); flex: none; }
 .side-panel.collapsed .side-header { margin-bottom: 0; }

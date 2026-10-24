@@ -290,6 +290,7 @@ function accessibilityItems(state) {
     },
     camera('observerCamera', 'Observer Camera', state.observerCameraInvert),
     camera('controlCamera', 'Control Camera', state.controlCameraInvert),
+    { id: 'controllerGuide', label: `Controller Guide: ${state.controllerGuide ? 'On' : 'Off'}`, icon: state.controllerGuide ? 'controllerGuideOn' : 'controllerGuideOff', toggle: true },
     { id: 'directionGuides', label: `Direction Guides: ${state.directionGuides ? 'On' : 'Off'}`, icon: state.directionGuides ? 'guidesOn' : 'guidesOff', toggle: true },
     { id: 'viewInternal', label: `View Internal: ${state.viewInternal ? 'On' : 'Off'}`, icon: state.viewInternal ? 'internalOn' : 'internalOff', toggle: true },
   ];

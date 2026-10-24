@@ -563,7 +563,7 @@ const DRAW = {
     orbitArrow(ctx, P, -1);
   },
   eye(ctx, P, s) {
-    // the Right panel's show / hide button: an eye (almond outline, round iris and pupil)
+    // the Control menu's show / hide button: an eye (almond outline, round iris and pupil)
     ctx.beginPath();
     ctx.moveTo(...P(0.08, 0.5));
     ctx.quadraticCurveTo(...P(0.5, 0.06), ...P(0.92, 0.5));
@@ -572,6 +572,18 @@ const DRAW = {
     ctx.stroke();
     circle(ctx, P, 0.5, 0.5, 0.17, s);
     circle(ctx, P, 0.5, 0.5, 0.07, s, { fill: true });
+  },
+  controllerGuideOn(ctx, P, s) {
+    // Controller Guide: a controller's handle with a button, and a label tag pointing at it
+    poly(ctx, P, [[0.14, 0.3], [0.42, 0.3], [0.42, 0.88], [0.14, 0.88]]);
+    circle(ctx, P, 0.28, 0.44, 0.06, s, { fill: true });
+    line(ctx, P, [[0.34, 0.44], [0.56, 0.3]]);
+    poly(ctx, P, [[0.56, 0.18], [0.9, 0.18], [0.9, 0.42], [0.56, 0.42]]);
+  },
+  controllerGuideOff(ctx, P, s) {
+    poly(ctx, P, [[0.14, 0.3], [0.42, 0.3], [0.42, 0.88], [0.14, 0.88]]);
+    circle(ctx, P, 0.28, 0.44, 0.06, s, { fill: true });
+    line(ctx, P, [[0.5, 0.86], [0.9, 0.14]]); // struck through
   },
   guidesOn(ctx, P, s) {
     // Direction Guides: a creature (a block), a line out from it, and the dot it's heading for
