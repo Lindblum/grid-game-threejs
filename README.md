@@ -58,7 +58,7 @@ The world advances one **turn** per second (speed is adjustable in Options). Eac
 detached chunks fall toward the origin, Water flows, Fog settles, Nimbus clouds drift and
 rain, trees drink Water to grow Wood and Berries, Dirt soaks up Water to become Moss, and
 creatures move, eat and fill their inventories. A creature that eats a Berry becomes
-**Fertile** (pink ripples) until it mates: selected beside another of its kind, **Mate** (X, gamepad A,
+**Fertile** (pink ripples) until it mates. Left to itself, it goes after the first of its kind it sees and mates with it; selected beside another of its kind, **Mate** (X, gamepad A,
 XR X; hold it and aim to pick which one) has them clamber over each other for 5 turns, and then it
 carries an **Egg**. Excreted (or placed), the Egg, spotted in its parent's colour, hatches 5 turns
 later into a young one of that kind (`MATE_TURNS`, `GESTATION_TURNS` in `src/game/blocks.js`).

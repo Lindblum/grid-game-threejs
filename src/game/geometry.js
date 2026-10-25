@@ -967,8 +967,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           // Egg: a smooth, faintly mottled white shell with blotchy spots (and fine freckles) in
           // the colour of the creature inside (its tint flag: EGG_SPOTS), else speckled brown
           vec3 p = vNoisePos;
-          float blot = perlin3(p * 1.9 + vSeed) * 0.7 + perlin3(p * 4.3 + vSeed * 1.7) * 0.3;
-          float spot = smoothstep(0.26, 0.34, blot);
+          float blot = perlin3(p * 1.5 + vSeed) * 0.75 + perlin3(p * 3.4 + vSeed * 1.7) * 0.25; // (broad: a few big spots to each face)
+          float spot = smoothstep(0.1, 0.17, blot);
           float freckle = FINE(smoothstep(0.55, 0.68, perlin3(p * 9.0 + 2.3)));
           int si = int(vTint + 0.5);
           vec3 spotCol = si > 0 && si <= ${EGG_SPOT_TYPES.length} ? EGG_SPOTS[si - 1] : vec3(0.42, 0.32, 0.22);

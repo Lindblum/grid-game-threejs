@@ -324,7 +324,13 @@ export function stepSquirmies(world, skip = new Set()) {
       if (burrow(world, sq.segments)) moved++;
       continue;
     }
-    // left to itself, a Squirmy goes for Berries it can see (and eats one next to it)
+    // left to itself, a Fertile Squirmy goes after one of its kind to mate…
+    const courted = seekMate(world, head, (goal) => firstStepToward(world, head, goal, ok), (to) => moveChain(world, sq.segments, to), (x, y, z) => ok(x, y, z, Infinity));
+    if (courted) {
+      if (courted === 'moved') moved++;
+      continue;
+    }
+    // …else it goes for Berries it can see (and eats one next to it)
     const foraged = forage(world, head, (goal) => firstStepToward(world, head, goal, ok), (to) => moveChain(world, sq.segments, to));
     if (foraged) {
       if (foraged === 'moved') moved++;
@@ -520,6 +526,49 @@ function forage(world, creature, stepToward, moveTo) {
     }
   }
   return false;
+}
+
+/**
+ * A Fertile creature left to itself (no orders: Wander, `isAssignedBehavior` false), with room
+ * for an Egg, courts: beside one of its kind, it starts mating (startMate); else it goes after
+ * the first of its kind it saw (`creature.courting`, kept while that one's still around and free),
+ * or the nearest it can see now (within its sightRadius): a step toward the cell beside it nearest
+ * this one (pursuitGoal with `ok`, the cells it may stand in; `stepToward`, `moveTo` as forage's).
+ * Returns 'mated', 'moved', or false (nothing to do: it does its normal behavior).
+ */
+function seekMate(world, creature, stepToward, moveTo, ok) {
+  const behavior = creature.behavior ?? blockProps(creature.type).defaultBehavior;
+  if (creature.isAssignedBehavior || behavior !== BEHAVIOR.WANDER || !creature.buffs?.some((x) => x.type === 'fertile') || !world.freeSlotFor(creature)) {
+    delete creature.courting;
+    return false;
+  }
+  const beside = mateChoices(world, creature);
+  if (beside.length) {
+    const pick = beside.find((x) => x.partner === creature.courting) ?? beside[0];
+    delete creature.courting;
+    return startMate(world, creature, pick.partner) ? 'mated' : false;
+  }
+  const free = (p) => p && world.blocks.get(cellKey(p.x, p.y, p.z)) === p && !p.vanishing && !p.mate && p.type === creature.type;
+  if (!free(creature.courting)) {
+    // the first of its kind it sees: the nearest one within sight
+    delete creature.courting;
+    const own = new Set(world.clusterOf(creature));
+    const d2 = (b) => (b.x - creature.x) ** 2 + (b.y - creature.y) ** 2 + (b.z - creature.z) ** 2;
+    const seen = offsetsWithin(creature.sightRadius ?? blockProps(creature.type).sightRadius ?? 0)
+      .map(([dx, dy, dz]) => world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz)))
+      .filter((b) => b && b.type === creature.type && !own.has(b))
+      .sort((a, b) => d2(a) - d2(b))
+      .map((b) => creatureOfBlock(world, b))
+      .find(free);
+    if (!seen) return false;
+    creature.courting = seen;
+  }
+  const goal = pursuitGoal(world, creature, ok, creature.courting);
+  if (!goal || typeof goal !== 'object') return false;
+  const step = stepToward(goal);
+  if (!step) return false;
+  moveTo(step);
+  return 'moved';
 }
 
 /** Sound a creature makes consuming a block: sip for Water, eat for anything else. */
@@ -1563,7 +1612,13 @@ export function stepSoloCreatures(world, skip = new Set()) {
       if (c.behavior === BEHAVIOR.WALK && walk(world, c)) moved++;
       continue;
     }
-    // left to itself, a creature goes for the food it wants that it can see (and eats one next to it)
+    // left to itself, a Fertile creature goes after one of its kind to mate…
+    const courted = seekMate(world, c, (goal) => firstStepToward(world, c, goal), (to) => world.move(c, to, world.stepSeconds), (x, y, z) => isWalkable(world, x, y, z, c));
+    if (courted) {
+      if (courted === 'moved') moved++;
+      continue;
+    }
+    // …else it goes for the food it wants that it can see (and eats one next to it)
     const foraged = forage(world, c, (goal) => firstStepToward(world, c, goal), (to) => world.move(c, to, world.stepSeconds));
     if (foraged) {
       if (foraged === 'moved') moved++;

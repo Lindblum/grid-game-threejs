@@ -1,12 +1,12 @@
 // Options → Accessibility → Controller Guide (XR): a label beside each of a controller's
-// buttons and sticks saying what it does right now. Each label points, with a thin leader line,
-// at its button on the controller's own model (the motion-controllers profile's node for that
-// component); the labels stand in a column out to the side of the controller as you see it
+// buttons, sticks, triggers, grips and menu button saying what it does right now. Each label points,
+// with a thin leader line, at the middle of that part on the controller's own model (the
+// motion-controllers profile's nodes for it); the labels stand in a column out to the side of the controller as you see it
 // (top to bottom as the buttons sit). Labels with no text are hidden.
 import * as THREE from 'three';
 
 /** The components labelled, in the column's order (top to bottom). */
-const COMPONENTS = ['y-button', 'b-button', 'x-button', 'a-button', 'xr-standard-thumbstick', 'xr-standard-trigger', 'xr-standard-squeeze'];
+const COMPONENTS = ['menu', 'y-button', 'b-button', 'x-button', 'a-button', 'xr-standard-thumbstick', 'xr-standard-trigger', 'xr-standard-squeeze'];
 const FONT_PX = 40;
 const LINE_PX = 50; // a text line's height on the canvas
 const PAD_PX = 12;
@@ -19,6 +19,26 @@ const _p = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _at = new THREE.Vector3();
+const _box = new THREE.Box3();
+
+/**
+ * Where a component sits on controller model `model`: the centre of its parts' shapes (its root
+ * node and its visual responses' nodes, the moving parts), not a node's origin (a part's pivot
+ * is often elsewhere); into `out`. Null when the model has none of them.
+ */
+function componentCentre(model, component, out) {
+  if (!component.guideNodes) {
+    const names = [component.rootNodeName, ...Object.values(component.visualResponses ?? {}).flatMap((v) => [v.valueNodeName, v.minNodeName, v.maxNodeName])];
+    component.guideNodes = [...new Set(names.filter(Boolean).map((n) => model.getObjectByName(n)).filter(Boolean))];
+  }
+  _box.makeEmpty();
+  for (const node of component.guideNodes) _box.expandByObject(node);
+  if (_box.isEmpty()) {
+    if (!component.guideNodes.length) return null;
+    return component.guideNodes[0].getWorldPosition(out); // (no shape: its origin)
+  }
+  return _box.getCenter(out);
+}
 
 class Label {
   constructor(parent) {
@@ -120,9 +140,8 @@ export class ControllerGuide {
         y -= heights[i] / 2;
         l.sprite.position.copy(_at).addScaledVector(_right, side * OUT_M).addScaledVector(_up, y);
         y -= heights[i] / 2 + ROW_GAP_M;
-        component.guideNode ??= slot.model.getObjectByName(component.rootNodeName);
-        if (!component.guideNode) return l.hide();
-        component.guideNode.getWorldPosition(_p);
+        slot.model.updateWorldMatrix(true, true);
+        if (!componentCentre(slot.model, component, _p)) return l.hide();
         const pos = l.line.geometry.getAttribute('position');
         pos.setXYZ(0, _p.x, _p.y, _p.z);
         pos.setXYZ(1, l.sprite.position.x, l.sprite.position.y, l.sprite.position.z);

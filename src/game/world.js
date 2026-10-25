@@ -74,7 +74,8 @@ export const NEW_SCENE_TEMPLATE = [
   { type: BLOCK.WATER, count: 100, clusters: 5, shells: null, sizeDistribution: 'random', growth: "random", addTo: "world" },
   { type: BLOCK.CRAWLY, count: 10, clusters: 5, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world", addTo: "world" },
   { type: BLOCK.BUZZY, count: 5, clusters: 5, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world" },
-  { type: BLOCK.SQUIRMY, count: 10, clusters: 3, shells: null, sizeDistribution: 'random', growth: "random", addTo: "world" },
+  { type: BLOCK.SQUIRMY, count: 10, clusters: 3, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world" },
+  { type: BLOCK.SLITHER, count: 3, clusters: 1, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world" },
   { type: BLOCK.VOID, deleteAll: true },
   //Fog and clouds
   { type: BLOCK.FOG, clusters: null, count: null, shells: 2, sizeDistribution: 'uniform', growth: "uniform", addTo: "world" },
@@ -1331,6 +1332,7 @@ export class World {
   vanish(block, other, { durationS = this.stepSeconds, distanceCm = 1, toward = false } = {}) {
     if (block.vanishing || this.blocks.get(cellKey(block.x, block.y, block.z)) !== block) return false;
     block.vanishing = true;
+    this.setSmooth(block, true); // (shrinking away as a lone block: rounded like its body with Rendering: Smooth, flat with Blocky)
     this._logChange(block.x, block.y, block.z);
     const dir = new THREE.Vector3(block.x - other.x, block.y - other.y, block.z - other.z);
     if (dir.lengthSq() < 1e-9) dir.set(0, 1, 0);
@@ -1395,6 +1397,7 @@ export class World {
    * full size. The reverse of vanish.
    */
   appear(block, from, { durationS = this.stepSeconds } = {}) {
+    this.setSmooth(block, true); // (growing in as a lone block: rounded with Rendering: Smooth, flat with Blocky)
     this.anims.delete(cellKey(block.x, block.y, block.z));
     this._logChange(block.x, block.y, block.z);
     this._changed(); // grows in on the instanced mesh, joins its cluster body once there

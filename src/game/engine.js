@@ -3715,7 +3715,9 @@ export class Engine {
       t['xr-standard-trigger'] = 'Press panels';
       if (!holding && !t['xr-standard-thumbstick'] && playing && this._steerTargets().length) t['xr-standard-thumbstick'] = 'Steer\nClick: away from you';
       t['y-button'] = sel && playing ? 'Wander' : 'Options';
-      if (sel && playing) t['x-button'] = 'Wait';
+      if (sel && playing) t['x-button'] = this._canMate() ? 'Mate\n(hold + right stick: with which)' : 'Wait';
+      t.menu = 'Leave XR';
+      if (!t['xr-standard-thumbstick'] && playing) t['xr-standard-thumbstick'] = 'Steer a selected creature';
     }
     return t;
   }
