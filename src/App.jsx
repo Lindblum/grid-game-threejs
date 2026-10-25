@@ -477,7 +477,7 @@ function ActionGlyph({ tokens }) {
 }
 
 /** An action's name as the Controls dropdown shows it: short (what it's for goes without saying). */
-const guideName = (action) => action.replace(/ \((selected creature|pauses)\)$/, '').replace(/^Move selected creature$/, 'Move');
+const guideName = (action) => action.replace(/ \((selected critter|pauses)\)$/, '').replace(/^Move selected critter$/, 'Move');
 
 /**
  * What each mouse button / gamepad button does under control schema `schema` (controls.js), as

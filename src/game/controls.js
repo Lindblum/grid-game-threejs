@@ -19,10 +19,10 @@ const OBSERVER_CONTROLS = [
     xr: { g: ['ray'], t: 'Point the right controller' },
   },
   {
-    action: 'Move selected creature',
-    mk: { g: ['key:W', 'key:A', 'key:S', 'key:D'], t: 'WASD (and the arrows, with Creative off): steer the selected creature, relative to the camera (on its turn); Shift: the way most nearly away. It stops any walk it was sent on' },
-    pad: { g: ['stick:L:any'], t: 'Left stick: steer the selected creature (L3 held: the way most nearly away from the camera). It stops any walk it was sent on' },
-    xr: { g: ['xr:stick:L:any'], t: 'Left thumbstick: steer the selected creature, relative to your view (held in: straight away from you). It stops any walk it was sent on' },
+    action: 'Move selected critter',
+    mk: { g: ['key:W', 'key:A', 'key:S', 'key:D'], t: 'WASD (and the arrows, with Creative off): steer the selected critter, relative to the camera (on its turn); Shift: the way most nearly away. It stops any walk it was sent on' },
+    pad: { g: ['stick:L:any'], t: 'Left stick: steer the selected critter (L3 held: the way most nearly away from the camera). It stops any walk it was sent on' },
+    xr: { g: ['xr:stick:L:any'], t: 'Left thumbstick: steer the selected critter, relative to your view (held in: straight away from you). It stops any walk it was sent on' },
   },
   {
     action: 'Change tool',
@@ -32,30 +32,30 @@ const OBSERVER_CONTROLS = [
   },
   {
     action: 'Deselect',
-    mk: { g: ['mouse:R'], t: 'Right click (without dragging): no creature selected any more (cancels the Select tool’s target)' },
-    pad: { g: ['pad:X'], t: 'X: no creature selected any more (cancels the Select tool’s target)' },
+    mk: { g: ['mouse:R'], t: 'Right click (without dragging): no critter selected any more (cancels the Select tool’s target)' },
+    pad: { g: ['pad:X'], t: 'X: no critter selected any more (cancels the Select tool’s target)' },
     xr: { g: ['text:—'], t: 'Point the Select tool at empty space and pull the trigger' },
   },
   {
-    action: 'Consume (selected creature)',
-    mk: { g: ['key:E'], t: 'E: the selected creature consumes the block in front of it. Hold E and press WASD / the arrows to choose which block (it consumes on letting go). Pointing at another creature: it hunts that one down and eats it (if it eats that kind)' },
-    pad: { g: ['pad:Y', 'sep:+', 'stick:L:any'], t: 'Y: the selected creature consumes the block in front of it. Hold Y and push the left stick to choose which block (it consumes on letting go)' },
-    xr: { g: ['xr:B', 'sep:+', 'xr:stick:L:any'], t: 'B: the selected creature consumes the block in front of it. Hold B and push the left thumbstick to choose which block (it consumes on letting go). Pointing at another creature: it hunts that one down and eats it (if it eats that kind)' },
+    action: 'Consume (selected critter)',
+    mk: { g: ['key:E'], t: 'E: the selected critter consumes the block in front of it. Hold E and press WASD / the arrows to choose which block (it consumes on letting go). Pointing at another critter: it hunts that one down and eats it (if it eats that kind)' },
+    pad: { g: ['pad:Y', 'sep:+', 'stick:L:any'], t: 'Y: the selected critter consumes the block in front of it. Hold Y and push the left stick to choose which block (it consumes on letting go)' },
+    xr: { g: ['xr:B', 'sep:+', 'xr:stick:L:any'], t: 'B: the selected critter consumes the block in front of it. Hold B and push the left thumbstick to choose which block (it consumes on letting go). Pointing at another critter: it hunts that one down and eats it (if it eats that kind)' },
   },
   {
-    action: 'Excrete (selected creature)',
-    mk: { g: ['key:Q'], t: 'Q: the selected creature excretes the item in its tail slot. Hold Q and press WASD / the arrows to choose where (it excretes on letting go)' },
-    pad: { g: ['pad:B', 'sep:+', 'stick:L:any'], t: 'B: the selected creature excretes the item in its tail slot. Hold B and push the left stick to choose where (it excretes on letting go)' },
-    xr: { g: ['xr:A', 'sep:+', 'xr:stick:L:any'], t: 'A: the selected creature excretes the item in its tail slot. Hold A and push the left thumbstick to choose where (it excretes on letting go)' },
+    action: 'Excrete (selected critter)',
+    mk: { g: ['key:Q'], t: 'Q: the selected critter excretes the item in its tail slot. Hold Q and press WASD / the arrows to choose where (it excretes on letting go)' },
+    pad: { g: ['pad:B', 'sep:+', 'stick:L:any'], t: 'B: the selected critter excretes the item in its tail slot. Hold B and push the left stick to choose where (it excretes on letting go)' },
+    xr: { g: ['xr:A', 'sep:+', 'xr:stick:L:any'], t: 'A: the selected critter excretes the item in its tail slot. Hold A and push the left thumbstick to choose where (it excretes on letting go)' },
   },
   {
-    action: 'Mate (selected creature)',
-    mk: { g: ['key:X', 'sep:+', 'key:W'], t: 'X, when the selected creature is Fertile (it ate a Berry) beside another of its kind: they mate, and it then carries an Egg. Hold X and press WASD / the arrows to choose which one (on letting go)' },
-    pad: { g: ['pad:A', 'sep:+', 'stick:L:any'], t: 'A (instead of using the tool), when the selected creature is Fertile beside another of its kind: they mate. Hold A and push the left stick to choose which one' },
-    xr: { g: ['xr:X', 'sep:+', 'xr:stick:R:any'], t: 'X (instead of Wait), when the selected creature is Fertile beside another of its kind: they mate. Hold X and push the right thumbstick to choose which one' },
+    action: 'Mate (selected critter)',
+    mk: { g: ['key:X', 'sep:+', 'key:W'], t: 'X, when the selected critter is Fertile (it ate a Berry) beside another of its kind: they mate, and it then carries an Egg. Hold X and press WASD / the arrows to choose which one (on letting go)' },
+    pad: { g: ['pad:A', 'sep:+', 'stick:L:any'], t: 'A (instead of using the tool), when the selected critter is Fertile beside another of its kind: they mate. Hold A and push the left stick to choose which one' },
+    xr: { g: ['xr:X', 'sep:+', 'xr:stick:R:any'], t: 'X (instead of Wait), when the selected critter is Fertile beside another of its kind: they mate. Hold X and push the right thumbstick to choose which one' },
   },
   {
-    action: 'Wander / Wait (selected creature)',
+    action: 'Wander / Wait (selected critter)',
     mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
     pad: { g: ['pad:view'], t: 'View (Back): Wait, or resume what it was doing (toggle)' },
     xr: { g: ['xr:Y', 'sep:/', 'xr:X'], t: 'Left Y: Wander (opens the menu when nothing is selected), left X: Wait (Mate instead, when it could)' },
@@ -72,14 +72,14 @@ const OBSERVER_CONTROLS = [
     pad: { g: ['text:—'], t: 'The panels keep to the window’s corners' },
     xr: {
       g: ['xr:grip:L', 'sep:/', 'xr:grip:R'],
-      t: 'Grip a panel (touching or pointing at it) to take it; let go near the other controller to dock it there, anywhere else to leave it. Double-tap a grip at a panel to dock it on that controller, or at nothing to undock that controller’s panels. Triple-tap a grip to bring every undocked panel to that controller. While gripping a panel, a creature or the build, that hand’s thumbstick up / down pushes it away / reels it in, and left / right turns the build about that controller’s ray',
+      t: 'Grip a panel (touching or pointing at it) to take it; let go near the other controller to dock it there, anywhere else to leave it. Double-tap a grip at a panel to dock it on that controller, or at nothing to undock that controller’s panels. Triple-tap a grip to bring every undocked panel to that controller. While gripping a panel, a critter or the build, that hand’s thumbstick up / down pushes it away / reels it in, and left / right turns the build about that controller’s ray',
     },
   },
   {
-    action: 'Carry a creature',
+    action: 'Carry a critter',
     mk: { g: ['text:—'], t: 'XR only' },
     pad: { g: ['text:—'], t: 'XR only' },
-    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Grip a creature (touching it with the cell in front of the controller, or pointing at it) to pick it up out of the grid; let go to put it back in, in the nearest cells it fits, selected. It wriggles (shakes, and buzzes in your hand) while you carry it' },
+    xr: { g: ['xr:grip:L', 'sep:/', 'xr:grip:R'], t: 'Grip a critter (touching it with the cell in front of the controller, or pointing at it) to pick it up out of the grid; let go to put it back in, in the nearest cells it fits, selected. It wriggles (shakes, and buzzes in your hand) while you carry it' },
   },
   {
     action: 'Rotate view',
@@ -113,7 +113,7 @@ const OBSERVER_CONTROLS = [
   },
   {
     action: 'Direction guides',
-    mk: { g: ['key:G'], t: 'G: Direction Guides on / off (the lines and dots showing where a creature can step, eat or excrete)' },
+    mk: { g: ['key:G'], t: 'G: Direction Guides on / off (the lines and dots showing where a critter can step, eat or excrete)' },
     pad: { g: ['text:—'], t: 'Options → Accessibility → Direction Guides' },
     xr: { g: ['text:—'], t: 'Options → Accessibility → Direction Guides' },
   },
@@ -133,9 +133,9 @@ export const ObserverControlSchema = {
     ...OBSERVER_CONTROLS,
     {
       action: 'Control schema',
-      mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click a creature: control it; the camera orbits it, up close' },
-      pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): control the selected creature; the camera orbits it, up close' },
-      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: control the selected creature (the build grows 4× about its head); or double-press the right trigger on a creature: control it' },
+      mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click a critter: control it; the camera orbits it, up close' },
+      pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): control the selected critter; the camera orbits it, up close' },
+      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: control the selected critter (the build grows 4× about its head); or double-press the right trigger on a critter: control it' },
     },
   ],
 };
@@ -147,35 +147,35 @@ export const ObserverControlSchema = {
  * turn); and no tools (using, aiming or switching them): those
  * belong to the Observer.
  */
-const TOOL_ACTIONS = new Set(['Use tool', 'Aim', 'Change tool']); // (only Select, to send it somewhere: 'Send creature')
+const TOOL_ACTIONS = new Set(['Use tool', 'Aim', 'Change tool']); // (only Select, to send it somewhere: 'Send critter')
 export const CreatureControlSchema = {
   id: 'creature',
-  name: 'Creature',
+  name: 'Critter',
   controls: [
     {
-      action: 'Send creature',
-      mk: { g: ['mouse:L'], t: 'Click a cell beside a surface it walks on: it walks there (the dotted line shows the way); click another creature: it goes after it, wherever it goes. Steering it, or any other order, stops it' },
+      action: 'Send critter',
+      mk: { g: ['mouse:L'], t: 'Click a cell beside a surface it walks on: it walks there (the dotted line shows the way); click another critter: it goes after it, wherever it goes, until it’s beside it (then it wanders). Steering it, or any other order, stops it' },
       pad: { g: ['pad:A'], t: 'A at the crosshair: it walks there; steering it, or any other order, stops it' },
-      xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point at a cell beside a surface it walks on and pull the right trigger: it walks there (the dotted line shows the way); at another creature: it goes after it, wherever it goes. Steering it, or any other order, stops it' },
+      xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point at a cell beside a surface it walks on and pull the right trigger: it walks there (the dotted line shows the way); at another critter: it goes after it, wherever it goes, until it’s beside it (then it wanders). Steering it, or any other order, stops it' },
     },
     {
-      action: 'Move creature',
-      mk: { g: ['key:W', 'key:A', 'key:S', 'key:D', 'sep:/', 'key:↑', 'key:←', 'key:↓', 'key:→'], t: 'WASD or the arrow keys: move the controlled creature, relative to the camera (on its turn)' },
-      pad: { g: ['stick:L:any'], t: 'Left stick: moves the selected creature, relative to the camera (on its turn)' },
-      xr: { g: ['xr:stick:L:any'], t: 'Left thumbstick: moves the controlled creature, relative to your view (on its turn)' },
+      action: 'Move critter',
+      mk: { g: ['key:W', 'key:A', 'key:S', 'key:D', 'sep:/', 'key:↑', 'key:←', 'key:↓', 'key:→'], t: 'WASD or the arrow keys: move the controlled critter, relative to the camera (on its turn)' },
+      pad: { g: ['stick:L:any'], t: 'Left stick: moves the selected critter, relative to the camera (on its turn)' },
+      xr: { g: ['xr:stick:L:any'], t: 'Left thumbstick: moves the controlled critter, relative to your view (on its turn)' },
     },
     {
       action: 'Move away from camera',
-      mk: { g: ['key:Shift'], t: 'Shift (held): the creature steps the way most nearly away from the camera' },
-      pad: { g: ['stick:L:press'], t: 'L3 (hold the left stick in): the creature steps the way most nearly away from the camera' },
-      xr: { g: ['xr:stick:L:any', 'text:click'], t: 'Hold the left thumbstick in: the creature steps the way most nearly away from you' },
+      mk: { g: ['key:Shift'], t: 'Shift (held): the critter steps the way most nearly away from the camera' },
+      pad: { g: ['stick:L:press'], t: 'L3 (hold the left stick in): the critter steps the way most nearly away from the camera' },
+      xr: { g: ['xr:stick:L:any', 'text:click'], t: 'Hold the left thumbstick in: the critter steps the way most nearly away from you' },
     },
-    ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action) && row.action !== 'Move selected creature'),
+    ...OBSERVER_CONTROLS.filter((row) => !TOOL_ACTIONS.has(row.action) && row.action !== 'Move selected critter'),
     {
       action: 'Control schema',
-      mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click the creature: back to Observer controls (another creature: control that one instead)' },
+      mk: { g: ['mouse:L', 'text:×2'], t: 'Double-click the critter: back to Observer controls (another critter: control that one instead)' },
       pad: { g: ['stick:R:press'], t: 'R3 (press the right stick): back to Observer controls; the camera orbits the world again' },
-      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: back to Observer controls (the build shrinks back); or double-press the right trigger on the creature (another creature: control that one instead)' },
+      xr: { g: ['xr:stick:R:any', 'text:click', 'sep:/', 'xr:trigger:R', 'text:×2'], t: 'Click the right thumbstick: back to Observer controls (the build shrinks back); or double-press the right trigger on the critter (another critter: control that one instead)' },
     },
   ],
 };

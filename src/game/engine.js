@@ -1192,7 +1192,7 @@ export class Engine {
   rightHudTitle(s = this.state) {
     const c = s.controlSchema === 'creature' ? this._controlled?.[0] : this.selected[0]; // (a selected creature names it in Observer controls too)
     if (c) return blockProps(c.type).name;
-    return s.controlSchema === 'creature' ? 'Creature' : 'Observer';
+    return s.controlSchema === 'creature' ? 'Critter' : 'Observer';
   }
 
   /** The Control menu's (windowed and XR) eye button: shows it, or hides all but the button; remembered. */
@@ -1273,7 +1273,7 @@ export class Engine {
     if (s.controlSchema === 'creature') {
       // Creature controls: who you're controlling (Select still sends it somewhere)
       const c = this._controlled?.[0];
-      return c ? `Controlling ${blockProps(c.type).name}` : 'Creature controls';
+      return c ? `Controlling ${blockProps(c.type).name}` : 'Critter controls';
     }
     const tool = this._activeTool(s);
     if (tool.id !== TOOL.SELECT) return tool.label;
@@ -1294,7 +1294,7 @@ export class Engine {
       ['Type', `${name} ('${b.type}')`],
       ['Cell', fmt([b.x, b.y, b.z])],
       ['Index', b.index],
-      ['Creature', isCreature(b.type) ? 'yes' : 'no'],
+      ['Critter', isCreature(b.type) ? 'yes' : 'no'],
     ];
     const cluster = this.world.clusterOf(b); // its cluster, right now
     rows.push(['Cluster size', `${cluster.length} block${cluster.length === 1 ? '' : 's'}`]);
@@ -3709,7 +3709,7 @@ export class Engine {
       t['y-button'] = sel && playing ? 'Wander' : 'Options';
       if (sel && playing) t['x-button'] = this._canMate() ? 'Mate\n(hold + right stick: with which)' : 'Wait';
       t.menu = 'Leave XR';
-      if (!t['xr-standard-thumbstick'] && playing) t['xr-standard-thumbstick'] = 'Steer a selected creature';
+      if (!t['xr-standard-thumbstick'] && playing) t['xr-standard-thumbstick'] = 'Steer a selected critter';
     }
     return t;
   }
@@ -3970,12 +3970,15 @@ export class Engine {
    * centre in front of the face, within reach, over the panel), nearest first; null if none.
    * { origin, dir }: a ray straight into the face from in front of the probe (what it's over),
    * `depth`: how far its centre is in front of the face, `r`: the probe's size (both m).
+   * The build zoomed in (a creature's view: XR_POV_ZOOM), the ball is bigger, but it presses
+   * panels as at life size (else it would be on the panels docked on its own controller).
    */
   _pokeAt(hand) {
     const slot = this.hands[hand];
     if (!slot?.ball?.visible) return null;
-    const p = this._touchBallPos(slot);
-    const r = (this._touchBallGeo?.boundingSphere?.radius ?? 1) * this.worldRoot.scale.x;
+    const r = (this._touchBallGeo?.boundingSphere?.radius ?? 1) * Math.min(this.worldRoot.scale.x, CM);
+    slot.ctrl.updateMatrixWorld();
+    const p = new THREE.Vector3(0, 0, -(TOUCH_BALL_GAP + r)).applyMatrix4(slot.ctrl.matrixWorld);
     let best = null;
     for (const { panel } of Object.values(this._panels)) {
       const m = panel.mesh;

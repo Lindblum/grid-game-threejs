@@ -359,6 +359,7 @@ export function stepSquirmies(world, skip = new Set()) {
       if (goal === 'gone') endWalk(head);
       else if (goal === 'there') {
         if (head.hunt) huntBite(world, head);
+        else arriveBeside(world, head);
       } else if (goal) to = firstStepToward(world, head, goal, ok);
     } else if (behavior === BEHAVIOR.WALK) {
       const t = head.walkTarget;
@@ -1179,8 +1180,12 @@ function walk(world, creature) {
       endWalk(creature);
       return false;
     }
-    if (goal === 'there' && creature.hunt) huntBite(world, creature); // (beside it, hunting it: a bite)
-    if (!goal || goal === 'there') return false; // (beside it already, or no room by it: waits for it to move)
+    if (goal === 'there') {
+      if (creature.hunt) huntBite(world, creature); // (beside it, hunting it: a bite)
+      else arriveBeside(world, creature); // (beside it: there, it can't go into it)
+      return false;
+    }
+    if (!goal) return false; // (no room by it: waits for it to move)
     const next = firstStepToward(world, creature, goal);
     return !!next && world.move(creature, next, world.stepSeconds);
   }
@@ -1236,16 +1241,28 @@ function huntBite(world, creature) {
   return true;
 }
 
+/** A creature pursuing another (not to eat it) has got beside it: the pursuit is over, it goes back to wandering (selected or not). */
+function arriveBeside(world, creature) {
+  endWalk(creature);
+  creature.behavior = BEHAVIOR.WANDER;
+  world.emit('creatureArrived', creature);
+}
+
+/** Whether cell `b` is beside `creature`'s head (one of NEIGHBOR_DIRS from it). */
+const besideHead = (creature, b) =>
+  NEIGHBOR_DIRS.some(([dx, dy, dz]) => b.x - creature.x === dx && b.y - creature.y === dy && b.z - creature.z === dz);
+
 /**
  * Where a creature pursuing another (`creature.pursue`, sent after it with Select) heads this
  * turn: of the cells beside its quarry (a chain's head) that `ok` lets it stand in, the nearest
- * to it; 'there' when it's beside its quarry already; 'gone' when the quarry is no longer in the
- * world (the pursuit ends); null when there's no room beside it just now. `q`: another quarry.
+ * to it; 'there' when it's beside its quarry already (hunting, beside its head, to bite it;
+ * else beside any of its blocks); 'gone' when the quarry is no longer in the world (the pursuit
+ * ends); null when there's no room beside it just now. `q`: another quarry.
  */
 function pursuitGoal(world, creature, ok, q = creature.pursue) {
   if (!q || world.get(q.x, q.y, q.z) !== q) return 'gone';
-  const d = [q.x - creature.x, q.y - creature.y, q.z - creature.z];
-  if (NEIGHBOR_DIRS.some(([dx, dy, dz]) => dx === d[0] && dy === d[1] && dz === d[2])) return 'there';
+  if (besideHead(creature, q)) return 'there';
+  if (!creature.hunt && world.clusterOf(q).some((b) => besideHead(creature, b))) return 'there';
   let best = null, bestD = Infinity;
   for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
     const x = q.x + dx, y = q.y + dy, z = q.z + dz;
