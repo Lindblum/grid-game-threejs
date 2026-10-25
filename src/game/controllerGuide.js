@@ -14,6 +14,10 @@ const CANVAS_W = 512;
 const TEXT_M = 0.009; // a text line's height in the world (m)
 const OUT_M = 0.07; // the column's distance out from the controller, to its side (m)
 const ROW_GAP_M = 0.004; // between the column's labels (m)
+const INNER_M = 0.045; // the inner column's distance from the controller (m): closer, leaving room between the hands
+const FRONT_M = 0.07; // the trigger's label: this far in front of it (m), where the controller points
+/** Where each component's label goes: 'inner' (the controller's side toward the other hand), 'outer', or 'front' (ahead of it). */
+const PLACE = { 'a-button': 'inner', 'b-button': 'inner', 'x-button': 'inner', 'y-button': 'inner', 'xr-standard-squeeze': 'inner', 'xr-standard-trigger': 'front', 'xr-standard-thumbstick': 'outer', menu: 'outer' };
 
 const _p = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -61,7 +65,7 @@ class Label {
     this.text = null;
   }
 
-  /** Shows `text` (lines split by \n), redrawing only when it changed; anchored at its `side` edge ('left': the label's left edge is at its position). */
+  /** Shows `text` (lines split by \n), redrawing only when it changed; anchored at its `side` edge ('left': the label's left edge is at its position; 'center': its middle). */
   setText(text, side) {
     if (text === this.text && side === this.side) return;
     this.text = text;
@@ -79,7 +83,7 @@ class Label {
     ctx.clearRect(0, 0, CANVAS_W, h);
     ctx.font = `600 ${FONT_PX}px system-ui, sans-serif`;
     const w = Math.min(CANVAS_W, Math.max(...lines.map((l) => ctx.measureText(l).width)) + PAD_PX * 2);
-    const x0 = side === 'left' ? 0 : CANVAS_W - w; // (the box hugs the edge nearest the controller)
+    const x0 = side === 'left' ? 0 : side === 'center' ? (CANVAS_W - w) / 2 : CANVAS_W - w; // (the box hugs the edge nearest the controller)
     ctx.fillStyle = 'rgba(12, 16, 24, 0.78)';
     ctx.beginPath();
     ctx.roundRect(x0, 0, w, h, 14);
@@ -90,7 +94,7 @@ class Label {
     this.texture.needsUpdate = true;
     const k = TEXT_M / LINE_PX; // m per canvas px
     this.sprite.scale.set(CANVAS_W * k, h * k, 1);
-    this.sprite.center.set(side === 'left' ? 0 : 1, 0.5);
+    this.sprite.center.set(side === 'left' ? 0 : side === 'center' ? 0.5 : 1, 0.5);
   }
 
   hide() {
@@ -113,9 +117,18 @@ export class ControllerGuide {
   /**
    * Per frame. `hands`: { left, right } controller slots (with `model`, the controller's model),
    * or null to hide every label; `textsOf(hand)`: { componentId: text } for what to show;
-   * `camera`: the viewer (labels stand to the controller's side as seen from it).
+   * `camera`: the viewer (labels lie in its view: its right and up).
+   *
+   * Where each label goes (PLACE): A / B / X / Y and the grip in a column on the controller's
+   * inner side (toward the other hand), the stick and the menu button in one on its outer side,
+   * the trigger out in front (along where the controller points). In a column each label sits
+   * level with its part where it can (its line runs straight across); labels that would overlap
+   * are moved apart as a group, centred on their parts.
    */
   update(hands, textsOf, camera) {
+    camera.updateMatrixWorld();
+    _right.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+    _up.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
     for (const hand of ['left', 'right']) {
       const slot = hands?.[hand];
       const components = slot?.source && slot.model?.motionController?.components;
@@ -124,30 +137,63 @@ export class ControllerGuide {
         continue;
       }
       const texts = textsOf(hand);
-      camera.updateMatrixWorld();
-      _right.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
-      _up.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
-      const side = hand === 'left' ? -1 : 1;
+      const outward = hand === 'left' ? -1 : 1; // (the outer side, as you see it)
       slot.grip.getWorldPosition(_at);
-      const rows = COMPONENTS.filter((id) => texts[id] && components[id]);
-      for (const id of COMPONENTS) if (!rows.includes(id)) this.labels[hand].get(id)?.hide();
-      // the column: rows stacked by their heights, centred on the controller's height
-      for (const id of rows) this._label(hand, id).setText(texts[id], hand === 'left' ? 'right' : 'left');
-      const heights = rows.map((id) => this._label(hand, id).sprite.scale.y);
-      let y = (heights.reduce((a, h) => a + h, 0) + ROW_GAP_M * (rows.length - 1)) / 2;
-      rows.forEach((id, i) => {
-        const l = this._label(hand, id), component = components[id];
-        y -= heights[i] / 2;
-        l.sprite.position.copy(_at).addScaledVector(_right, side * OUT_M).addScaledVector(_up, y);
-        y -= heights[i] / 2 + ROW_GAP_M;
-        slot.model.updateWorldMatrix(true, true);
-        if (!componentCentre(slot.model, component, _p)) return l.hide();
+      slot.model.updateWorldMatrix(true, true);
+      const shown = [];
+      for (const id of COMPONENTS) {
+        const l = this.labels[hand].get(id);
+        const p = texts[id] && components[id] && componentCentre(slot.model, components[id], new THREE.Vector3());
+        if (!p) {
+          l?.hide();
+          continue;
+        }
+        shown.push({ id, p, place: PLACE[id] ?? 'outer', l: this._label(hand, id) });
+      }
+      for (const place of ['inner', 'outer']) {
+        const side = place === 'outer' ? outward : -outward;
+        const col = shown.filter((x) => x.place === place);
+        for (const x of col) {
+          x.l.setText(texts[x.id], side > 0 ? 'left' : 'right'); // (the box's edge nearest the controller)
+          x.h = x.l.sprite.scale.y;
+          x.y = _p.copy(x.p).sub(_at).dot(_up); // (its part's height, as you see it)
+        }
+        col.sort((a, b) => b.y - a.y);
+        // groups of labels that would touch, each centred on the mean height of its parts
+        const groups = [];
+        for (const x of col) {
+          groups.push({ items: [x], h: x.h, mid: x.y });
+          for (;;) {
+            const g = groups.at(-1), prev = groups.at(-2);
+            if (!prev || prev.mid - prev.h / 2 - ROW_GAP_M >= g.mid + g.h / 2) break;
+            const items = [...prev.items, ...g.items];
+            const h = items.reduce((t, it) => t + it.h, 0) + ROW_GAP_M * (items.length - 1);
+            groups.splice(-2, 2, { items, h, mid: items.reduce((t, it) => t + it.y, 0) / items.length });
+          }
+        }
+        for (const g of groups) {
+          let y = g.mid + g.h / 2;
+          for (const x of g.items) {
+            y -= x.h / 2;
+            x.l.sprite.position.copy(_at).addScaledVector(_right, side * (place === 'inner' ? INNER_M : OUT_M)).addScaledVector(_up, y);
+            y -= x.h / 2 + ROW_GAP_M;
+          }
+        }
+      }
+      // the trigger's label: out in front of it, where the controller points
+      slot.ctrl.updateMatrixWorld();
+      const fwd = new THREE.Vector3(0, 0, -1).transformDirection(slot.ctrl.matrixWorld);
+      for (const x of shown.filter((it) => it.place === 'front')) {
+        x.l.setText(texts[x.id], 'center');
+        x.l.sprite.position.copy(x.p).addScaledVector(fwd, FRONT_M);
+      }
+      for (const { l, p } of shown) {
         const pos = l.line.geometry.getAttribute('position');
-        pos.setXYZ(0, _p.x, _p.y, _p.z);
+        pos.setXYZ(0, p.x, p.y, p.z);
         pos.setXYZ(1, l.sprite.position.x, l.sprite.position.y, l.sprite.position.z);
         pos.needsUpdate = true;
         l.sprite.visible = l.line.visible = true;
-      });
+      }
     }
   }
 }

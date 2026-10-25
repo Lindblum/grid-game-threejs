@@ -3693,7 +3693,7 @@ export class Engine {
     const holding = this.heldBodies.held.has(hand) || !!this._panelGrabs[hand] || !!this._grab?.hands.includes(slot);
     const sel = this.selected.length > 0, creature = s.controlSchema === 'creature';
     const t = {};
-    t['xr-standard-squeeze'] = holding ? 'Let go to drop' : 'Grab\n×2 / ×3: dock panels';
+    t['xr-standard-squeeze'] = holding ? 'Let go to drop' : 'Grab\n×2: Dock / undock panels\n×3: Summon panels';
     if (holding) t['xr-standard-thumbstick'] = '↕ Push / pull\n↔ Turn the build';
     else if (this._menuPanelHover && this._uiHand === hand) t['xr-standard-thumbstick'] = '↕ Scroll';
     if (hand === 'right') {
