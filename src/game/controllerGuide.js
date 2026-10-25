@@ -31,7 +31,8 @@ const _box = new THREE.Box3();
  * is often elsewhere); into `out`. Null when the model has none of them.
  */
 function componentCentre(model, component, out) {
-  if (!component.guideNodes) {
+  if (!component.guideNodes?.length) {
+    // (looked for again until found: the components come before the model's shape has loaded)
     const names = [component.rootNodeName, ...Object.values(component.visualResponses ?? {}).flatMap((v) => [v.valueNodeName, v.minNodeName, v.maxNodeName])];
     component.guideNodes = [...new Set(names.filter(Boolean).map((n) => model.getObjectByName(n)).filter(Boolean))];
   }
