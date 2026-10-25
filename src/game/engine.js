@@ -8,7 +8,6 @@ import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFa
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
 import { canStand, pathToward, pursuitCell, mateChoices, startMate, stepEggs, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
-import { getLogs, getLogVersion } from './debugLog.js';
 import { debugSections } from './debugSections.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canEat, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
@@ -20,7 +19,8 @@ import {
   playReady, playGo, playBerryGrow, playSfx, playWait, playAssign, playCreatureDone, playCreatureTrapped, playCreatureDeath,
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
-import { RightHudPanel, MenuPanel, DebugTablet, ViewPanel } from './xrPanels.js';
+import { RightHudPanel, MenuPanel, DebugPanel, ViewPanel } from './xrPanels.js';
+import { debugModel } from './debugModel.js';
 import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, VIBRATION, STEREO_DEPTH, STEREO_CONVERGENCE, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
@@ -710,7 +710,7 @@ export class Engine {
 
     this.rightHud = new RightHudPanel();
     this.menuPanel = new MenuPanel();
-    this.debugTablet = new DebugTablet(); // Options → Debug, in XR
+    this.debugTablet = new DebugPanel(); // Options → Debug, in XR
     this.viewPanel = new ViewPanel(); // back to the Normal view
     // the XR panels, like the windowed ones (each with its toggle button): where each docks at
     // first (`home`), its size in the gaze dock (`gazeScale`; docked, held and free: the panel's own dockScale), where it is
@@ -1284,19 +1284,6 @@ export class Engine {
    * Debug panel content: properties of the selected creature, or else of the block under the
    * pointer. Returns { title, rows: [[key, value]] }.
    */
-  /** Debug → Performance as [label, text] rows (the XR debug tablet). */
-  performanceRows() {
-    const ms = (v, digits) => (v == null ? '—' : `${v.toFixed(digits)} ms`);
-    return [
-      ['FPS', this.fps.toFixed(0)],
-      ['Turn', ms(this.turnMs, 1)],
-      ['Anim', ms(this.animMs, 2)],
-      ['Render', ms(this.renderMs, 2)],
-      ['Draws', this.drawCalls == null ? '—' : String(this.drawCalls)],
-      ['Triangles', this.triangles == null ? '—' : this.triangles.toLocaleString()],
-    ];
-  }
-
   debugInfo() {
     const sel = this.selected[0];
     const b = sel ?? this.target?.block ?? null;
@@ -3141,6 +3128,11 @@ export class Engine {
 
   // ---------------------------------------------------------------- XR debug tablet
 
+  /** The menu panel pointed at that a thumbstick scrolls (Options, Debug), else null. */
+  get _scrollPanel() {
+    return this._menuPanelHover ? this.menuPanel : this._tabletHover && this.debugTablet.isOpen ? this.debugTablet : null;
+  }
+
   /** The trigger on a debug tablet control (see DebugTablet.hitTest). */
   _tabletAction(id) {
     playTick();
@@ -3695,7 +3687,7 @@ export class Engine {
     const t = {};
     t['xr-standard-squeeze'] = holding ? 'Let go to drop' : 'Grab\n×2: Dock / undock panels\n×3: Summon panels';
     if (holding) t['xr-standard-thumbstick'] = '↕ Push / pull\n↔ Turn the build';
-    else if (this._menuPanelHover && this._uiHand === hand) t['xr-standard-thumbstick'] = '↕ Scroll';
+    else if (this._scrollPanel && this._uiHand === hand) t['xr-standard-thumbstick'] = '↕ Scroll';
     if (hand === 'right') {
       const tool = this._activeTool();
       t['xr-standard-trigger'] = !playing || this._uiHand !== 'left' && this._menuPanelHover ? 'Press'
@@ -4100,10 +4092,10 @@ export class Engine {
       holding[hand] = this._pushHeld(hand, axis(0), axis(1), this._dt ?? 0);
     }
     // pointing at Options (a menu taller than the panel): that hand's thumbstick up / down scrolls it
-    const sgp = this._menuPanelHover && !holding[this._uiHand] && this.hands[this._uiHand]?.source?.gamepad;
+    const sgp = this._scrollPanel && !holding[this._uiHand] && this.hands[this._uiHand]?.source?.gamepad;
     if (sgp) {
       const y = (sgp.axes.length >= 4 ? sgp.axes[3] : sgp.axes[1]) || 0;
-      if (Math.abs(y) > 0.2) this.menuPanel.scrollBy(y * MENU_SCROLL_PX_S * (this._dt ?? 0));
+      if (Math.abs(y) > 0.2) this._scrollPanel.scrollBy(y * MENU_SCROLL_PX_S * (this._dt ?? 0));
     }
     const rgp = this.hands.right?.source?.gamepad;
     if (rgp) {
@@ -4116,7 +4108,7 @@ export class Engine {
     // the left stick: aims a held A / B (Excrete / Eat), else, under Creature controls, steers
     // the controlled creature (as the gamepad's does); not while it scrolls Options
     const lgpStick = this.hands.left?.source?.gamepad;
-    const scrolling = (this._menuPanelHover && this._uiHand === 'left') || holding.left;
+    const scrolling = (this._scrollPanel && this._uiHand === 'left') || holding.left;
     const lx = (i) => {
       const v = (lgpStick && !scrolling && (lgpStick.axes.length >= 4 ? lgpStick.axes[2 + i] : lgpStick.axes[i])) || 0;
       return Math.abs(v) < 0.18 ? 0 : v;
@@ -4805,16 +4797,8 @@ export class Engine {
       this._updateResize();
       if (dbg) {
         const grabbed = this._panelGrabs.left?.key === 'debug' || this._panelGrabs.right?.key === 'debug';
-        this.debugTablet.draw({
-          info: this.debugInfo(),
-          perf: this.performanceRows(),
-          logs: getLogs(120),
-          logVersion: getLogVersion(),
-          highlight: grabbed || this._tabletHover,
-          collapsed: debugSections.getSnapshot(),
-          hover: this._hudHover === 'debug' ? 'toggle' : this._tabletHoverId,
-          open: !debugSections.getSnapshot().panel,
-        });
+        const open = !debugSections.getSnapshot().panel;
+        this.debugTablet.draw(open ? debugModel(this) : null, this._hudHover === 'debug' ? 'toggle' : this._tabletHoverId, grabbed || this._tabletHover);
       }
       let msg = null;
       if (this._hudMessage && performance.now() < this._hudMessage.until) msg = this._hudMessage.text;

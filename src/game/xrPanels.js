@@ -448,6 +448,26 @@ function trailingIcon(it) {
 // the menu's buttons: height and gap; the Controls table's header and rows
 const BUTTON_H = 70, BUTTON_GAP = 12, TABLE_HEAD = 44, TABLE_ROW = 66;
 const tableHeight = (table) => TABLE_HEAD + tableRows(table).length * TABLE_ROW + BUTTON_GAP;
+// a section's readouts (Debug: `rows`, `log`): a dark framed box (like the windowed .debug-box), its
+// padding, a key / value row's height, a log line's; the log shows at least LOG_MIN_LINES, and
+// grows into the room the panel has
+const WELL_PAD = 18, KV_ROW = 42, LOG_LINE = 36, LOG_MIN_LINES = 6;
+const KV_FONT = '600 28px system-ui, -apple-system, Segoe UI, sans-serif', MONO_FONT = '400 27px ui-monospace, Consolas, monospace';
+const LOG_COLORS = { log: '#e8ecf2', info: '#9cc8ff', warn: '#ffd166', error: '#ff8a80' };
+/** A section's readouts' height: its key / value box, its log box (`logLines` lines). */
+const wellHeight = (section, logLines) =>
+  (section.rows ? 2 * WELL_PAD + section.rows.length * KV_ROW + BUTTON_GAP : 0) +
+  (section.log ? 2 * WELL_PAD + logLines * LOG_LINE + BUTTON_GAP : 0);
+
+/** A section's dark framed box (x, y, w, h). */
+function well(ctx, x, y, w, h) {
+  roundRect(ctx, x, y, w, h, 18);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
 
 const MENU_PAD = 26, MENU_BTN = 64; // the gear button: inset from the panel's corner, and its size
 const MENU_LIMITS = { minWidth: 0.22, maxWidth: 0.6, minHeight: 0.15, maxHeight: 0.85 }; // the visible panel (m, at scale 1)
@@ -457,11 +477,13 @@ const MENU_LIMITS = { minWidth: 0.22, maxWidth: 0.6, minHeight: 0.15, maxHeight:
  * (pausing) or closes it, the menu's title beside it, then the menu. Closed, only the button
  * shows. Docked on the left controller at first (see Engine's XR panels). Resizing sets its
  * width and how tall it may get; a menu taller than that scrolls (scrollBy).
+ * The template for the other menus drawn from a model (Debug: DebugPanel): `icon`, its button's.
  */
 export class MenuPanel extends CanvasPanel {
-  constructor() {
+  constructor(icon = 'gear', name = 'xr-menu') {
     super(954, 1760, MENU_WIDTH_M); // same pixel density as before (800 px per 0.26 m); tall enough for Options with Controls open
-    this.mesh.name = 'xr-menu';
+    this.mesh.name = name;
+    this.icon = icon;
     this.material.depthTest = false;
     this.mesh.renderOrder = 20;
     this.button = { x: 6 + MENU_PAD, y: 6 + MENU_PAD, w: MENU_BTN, h: MENU_BTN };
@@ -479,9 +501,13 @@ export class MenuPanel extends CanvasPanel {
     this.scroll = THREE.MathUtils.clamp(this.scroll + px, 0, this.maxScroll ?? 0);
   }
 
-  /** `model`: the menu (menuModel) when open, else null; `hoverId`: the item pointed at, or 'toggle'. */
-  draw(model, hoverId) {
-    const sig = JSON.stringify([model, hoverId, Math.round(this.scroll), this.canvas.width, this.canvas.height, this.corner, this.handleHot]);
+  /**
+   * `model`: the menu (menuModel, debugModel) when open, else null; `hoverId`: the item pointed
+   * at, or 'toggle'; `highlight`: a bright rim (held or pointed at).
+   */
+  draw(model, hoverId, highlight = false) {
+    // (a log counts by its version: its lines aren't compared every frame)
+    const sig = JSON.stringify([model, hoverId, highlight, Math.round(this.scroll), this.canvas.width, this.canvas.height, this.corner, this.handleHot], (k, v) => (k === 'log' ? undefined : v));
     if (sig === this._last) return;
     this._last = sig;
     this.isOpen = !!model;
@@ -492,13 +518,17 @@ export class MenuPanel extends CanvasPanel {
     // transparent); closed, just the button.
     const bx = this.button.x, bw = W - 2 * bx, top = this.button.y + MENU_BTN + 30; // (the buttons line up with the gear, as on the other panels)
     const closed = 2 * MENU_PAD + MENU_BTN;
+    // a log shows as many lines as it has, from LOG_MIN_LINES up to as many as fit the room left
+    this._logLines = 0;
+    const room = H - 12 - 34 - top - (model ? this._itemsHeight(ctx, model.items, bw) : 0);
+    this._logLines = Math.max(LOG_MIN_LINES, Math.floor(room / LOG_LINE));
     const itemsH = model ? this._itemsHeight(ctx, model.items, bw) : 0;
     this.box = model ? { x: 6, y: 6, w: W - 12, h: Math.min(H - 12, top + itemsH + 34) } : { x: 6, y: 6, w: closed, h: closed };
     this.view = { y0: top - 6, y1: this.box.y + this.box.h - 20 };
     this.maxScroll = Math.max(0, top + itemsH - this.view.y1);
     this.scroll = THREE.MathUtils.clamp(this.scroll, 0, this.maxScroll);
-    panelFrame(ctx, this, this.box);
-    toggleButton(ctx, this, 'gear', hoverId === 'toggle');
+    panelFrame(ctx, this, this.box, highlight);
+    toggleButton(ctx, this, this.icon, hoverId === 'toggle');
     this.rects = [];
     if (model) {
       ctx.textAlign = 'left';
@@ -536,15 +566,21 @@ export class MenuPanel extends CanvasPanel {
       }
       if (it.section?.open) {
         if (it.section.table) sum += tableHeight(it.section.table);
+        sum += wellHeight(it.section, this._logLength(it.section));
         sum += this._itemsHeight(ctx, it.section.items, w - OPTION_INDENT);
       }
       return sum;
     }, 0);
   }
 
+  /** How many lines a section's log shows (at least one: "No log output yet"; none while measuring the room). */
+  _logLength(section) {
+    return section.log && this._logLines ? Math.max(1, Math.min(section.log.length, this._logLines)) : 0;
+  }
+
   /**
    * `items` from (x, y), `w` wide, each followed by its open dropdown's choices, or its open
-   * section's Controls table and entries (indented). Returns the next y.
+   * section's Controls table, readouts and entries (indented). Returns the next y.
    */
   _drawItems(ctx, items, x, y, w, hoverId) {
     for (const it of items) {
@@ -552,6 +588,8 @@ export class MenuPanel extends CanvasPanel {
       if (it.dropdown?.open) y = this._drawOptions(ctx, it.dropdown.options, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId);
       if (it.section?.open) {
         if (it.section.table) y = this._drawControlsTable(ctx, x + OPTION_INDENT, y, x + w, tableRows(it.section.table)) + BUTTON_GAP;
+        if (it.section.rows) y = this._drawRows(ctx, it.section.rows, x + OPTION_INDENT, y, w - OPTION_INDENT);
+        if (it.section.log) y = this._drawLog(ctx, it.section.log, x + OPTION_INDENT, y, w - OPTION_INDENT);
         y = this._drawItems(ctx, it.section.items, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId);
       }
     }
@@ -663,6 +701,52 @@ export class MenuPanel extends CanvasPanel {
     return y + Math.ceil(options.length / cols) * (OPTION_H + OPTION_GAP);
   }
 
+  /** Key / value readouts in a box from (x, y), `w` wide: keys dimmed, values in monospace. Returns the next y. */
+  _drawRows(ctx, rows, x, y, w) {
+    const h = 2 * WELL_PAD + rows.length * KV_ROW;
+    well(ctx, x, y, w, h);
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = KV_FONT;
+    const keyW = Math.min(w * 0.45, Math.max(0, ...rows.map(([k]) => ctx.measureText(k).width)));
+    const vx = x + WELL_PAD + keyW + 24;
+    rows.forEach(([k, v], i) => {
+      const cy = y + WELL_PAD + (i + 0.5) * KV_ROW;
+      ctx.font = KV_FONT;
+      ctx.fillStyle = 'rgba(232,236,242,0.6)';
+      ctx.fillText(fit(ctx, k, keyW), x + WELL_PAD, cy);
+      ctx.font = MONO_FONT;
+      ctx.fillStyle = '#e8ecf2';
+      ctx.fillText(fit(ctx, v, x + w - WELL_PAD - vx), vx, cy);
+    });
+    return y + h + BUTTON_GAP;
+  }
+
+  /** The log's newest lines in a box from (x, y), `w` wide, coloured by level. Returns the next y. */
+  _drawLog(ctx, log, x, y, w) {
+    const n = this._logLength({ log });
+    const h = 2 * WELL_PAD + n * LOG_LINE;
+    well(ctx, x, y, w, h);
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = MONO_FONT;
+    const maxW = w - 2 * WELL_PAD;
+    if (!log.length) {
+      ctx.fillStyle = 'rgba(232,236,242,0.6)';
+      ctx.fillText('No log output yet', x + WELL_PAD, y + WELL_PAD + LOG_LINE / 2);
+    }
+    log.slice(-n).forEach((e, i) => {
+      const cy = y + WELL_PAD + (i + 0.5) * LOG_LINE;
+      ctx.fillStyle = 'rgba(232,236,242,0.6)';
+      const t = `${e.t} `;
+      ctx.fillText(t, x + WELL_PAD, cy);
+      const tw = ctx.measureText(t).width;
+      ctx.fillStyle = LOG_COLORS[e.level] ?? LOG_COLORS.log;
+      ctx.fillText(fit(ctx, e.text, maxW - tw), x + WELL_PAD + tw, cy);
+    });
+    return y + h + BUTTON_GAP;
+  }
+
   /** Options → Controls table, from x0 to x1: Action | Mouse/Keyboard | Gamepad | XR Controller. Returns bottom y. */
   _drawControlsTable(ctx, x0, y0, x1, rows) {
     const headH = TABLE_HEAD, rowH = TABLE_ROW;
@@ -753,22 +837,6 @@ export class ViewPanel extends CanvasPanel {
   }
 }
 
-/** `text` broken into lines no wider than maxW (at word breaks; a long word stays whole). */
-function wrapText(ctx, text, maxW) {
-  const out = [];
-  for (const para of text.split('\n')) {
-    let line = '';
-    for (const word of para.split(/(\s+)/)) {
-      if (line.trim() && ctx.measureText(line + word).width > maxW) {
-        out.push(line.trimEnd());
-        line = word.trimStart();
-      } else line += word;
-    }
-    out.push(line);
-  }
-  return out;
-}
-
 function fit(ctx, text, maxW) {
   if (ctx.measureText(text).width <= maxW) return text;
   let s = text;
@@ -776,184 +844,23 @@ function fit(ctx, text, maxW) {
   return s + '…';
 }
 
-/** The debug tablet's pixel density (canvas px per metre): its text is always this size, however big the tablet. */
-// (drawn at a lower density than the others' so its text, in smaller px, comes out as big as Options')
-const TABLET_TEXT = 1.45;
-const TABLET_PX_PER_M = 1000 / 0.34 / TABLET_TEXT;
-/** The debug tablet's size (m): at first, and the limits when resizing it (drag its corner handle). */
-export const TABLET_SIZE = { width: 0.42, height: 0.44, minWidth: 0.24, minHeight: 0.2, maxWidth: 0.9, maxHeight: 0.8 };
-const TABLET_PAD = Math.round(24 / TABLET_TEXT), TABLET_BTN = Math.round(60 / TABLET_TEXT); // the Debug button (as big as the other panels'): inset from the corner, and its size
-const LOG_COLORS = { log: '#c9d1dc', info: '#9cc8ff', warn: '#ffd166', error: '#ff8a80' };
-
 /**
- * Debug tablet for XR, like the windowed Debug panel: its button (top left) opens or closes it
- * (closed, only the button shows); open, Performance (FPS and timings), the Inspector
- * (properties of the selected / targeted block), then the recent console log; each
- * section collapses (trigger on its header). Docked (on the left controller at first) or
- * free (see Engine's XR panels), and resized by dragging its corner handle with the trigger:
- * bottom right when free (its top left stays put), top right when docked (it stands on its
- * bottom edge). The panel gets bigger or smaller, its text keeps its size (more or fewer rows
- * and log lines fit).
+ * Debug for XR, like the windowed Debug panel and drawn by the same template as Options
+ * (MenuPanel) from the same model (debugModel.js): its button (top left) opens or closes it
+ * (closed, only the button shows); open, the Performance, Inspector and Logging sections, each
+ * a button that opens its readouts beneath it (shared with the windowed panel). Docked (on the
+ * left controller at first) or free (see Engine's XR panels); resized from its corner handle
+ * (bottom right free, top right docked). The log fills the room the panel has.
  */
-export class DebugTablet extends CanvasPanel {
+export class DebugPanel extends MenuPanel {
   constructor() {
-    super(Math.round(TABLET_SIZE.width * TABLET_PX_PER_M), Math.round(TABLET_SIZE.height * TABLET_PX_PER_M), TABLET_SIZE.width);
-    this.mesh.name = 'xr-debug-tablet';
+    super('debug', 'xr-debug');
     this.mesh.visible = false;
-    this.button = { x: TABLET_PAD, y: TABLET_PAD, w: TABLET_BTN, h: TABLET_BTN };
-    this.limits = TABLET_SIZE;
-    this.dockScale = 0.5;
-    this._last = '';
   }
 
-  /** The id of the control under `uv` ('toggle': the Debug button; a section header), else null. */
+  /** The id of the control under `uv` ('toggle': the Debug button; a section's button), else null. */
   hitTest(uv) {
     if (this.onToggle(uv)) return 'toggle';
-    if (!this.isOpen) return null;
-    const { px, py } = this._px(uv);
-    const r = (this.hits ?? []).find((q) => px >= q.x && px <= q.x + q.w && py >= q.y && py <= q.y + q.h);
-    return r ? r.id : null;
-  }
-
-  /**
-   * The same content as the browser's Debug dock, top to bottom: Performance, Inspector and
-   * Logging, each under a header the trigger collapses or expands (shared with the dock).
-   * Logging takes the leftover height. d = { info: { title, rows }, perf: [[label, text]], logs,
-   * logVersion, highlight (grabbed or pointed at: brighter rim), collapsed: { performance, … },
-   * hover: id under the ray, open (closed: just the Debug button) }.
-   */
-  draw(d) {
-    const { info, perf, logs, logVersion, highlight, collapsed, hover, open = true } = d;
-    const sig = JSON.stringify([info, perf, logVersion, highlight, collapsed, hover, open, this.corner, this.handleHot, this.canvas.width, this.canvas.height]);
-    if (sig === this._last) return;
-    this._last = sig;
-    this.isOpen = open;
-    const corner = this.corner;
-    const { ctx } = this;
-    const W = this.canvas.width, H = this.canvas.height;
-    ctx.clearRect(0, 0, W, H);
-    const closed = 2 * TABLET_PAD + TABLET_BTN;
-    this.box = open ? { x: 0, y: 0, w: W, h: H } : { x: 0, y: 0, w: closed, h: closed };
-    panelFrame(ctx, this, this.box, highlight);
-    toggleButton(ctx, this, 'debug', hover === 'toggle');
-    if (!open) return void (this.texture.needsUpdate = true);
-
-    const sans = (size, weight = 400) => `${weight} ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
-    const mono = (size, weight = 400) => `${weight} ${size}px ui-monospace, Consolas, monospace`;
-    const PAD = 32, IN = 40; // left edge of headers / of content
-    const HEAD = 42, ROW = 30, LINE = 26;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#ffffff';
-    ctx.font = TITLE_FONT(this);
-    const titleX = TABLET_PAD + TABLET_BTN + 16, headY = TABLET_PAD + TABLET_BTN / 2;
-    ctx.fillText('Debug', titleX, headY);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.font = sans(22);
-    const hintRight = W - PAD - (corner === 'tr' ? this._gripPx : 0);
-    ctx.fillText(fit(ctx, 'grip: move · double-tap grip: dock', hintRight - titleX - 120), hintRight, headY);
-    ctx.textAlign = 'left';
-    this.hits = [];
-
-    /** A section header (y: its top); returns the top of its content. */
-    const header = (id, title, summary, y) => {
-      const hot = hover === `section:${id}`;
-      if (hot) {
-        roundRect(ctx, PAD - 10, y, W - 2 * PAD + 20, HEAD, 10);
-        ctx.fillStyle = 'rgba(90, 160, 255, 0.2)';
-        ctx.fill();
-      }
-      const cy = y + HEAD / 2;
-      ctx.font = sans(20, 700);
-      ctx.fillStyle = hot ? '#ffffff' : 'rgba(255,255,255,0.5)';
-      const label = title.toUpperCase();
-      ctx.fillText(label, PAD, cy);
-      const lw = ctx.measureText(label).width;
-      ctx.textAlign = 'right';
-      ctx.fillText(collapsed[id] ? '▸' : '▾', W - PAD, cy);
-      ctx.textAlign = 'left';
-      if (collapsed[id] && summary) {
-        ctx.font = mono(20);
-        ctx.fillStyle = '#e8ecf2';
-        ctx.fillText(fit(ctx, summary, W - 2 * PAD - lw - 60), PAD + lw + 16, cy);
-      }
-      this.hits.push({ id: `section:${id}`, x: PAD - 10, y, w: W - 2 * PAD + 20, h: HEAD });
-      return y + HEAD + 4;
-    };
-    const kv = (k, v, x, y, valueX, maxW) => {
-      ctx.font = mono(22, 600);
-      ctx.fillStyle = 'rgba(255,255,255,0.55)';
-      ctx.fillText(fit(ctx, k, valueX - x - 12), x, y);
-      ctx.font = mono(22);
-      ctx.fillStyle = '#e8ecf2';
-      ctx.fillText(fit(ctx, String(v), maxW), valueX, y);
-    };
-    const box = (x, y, w, h, r, fill, stroke) => {
-      roundRect(ctx, x, y, w, h, r);
-      ctx.fillStyle = fill;
-      ctx.fill();
-      if (stroke) {
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-    };
-
-    // heights of what goes below the Inspector, so its rows stop in time
-    const below = HEAD + 14 + (collapsed.logging ? 0 : 4 * LINE + 12);
-
-    // Performance: two columns when the tablet is wide enough
-    let y = header('performance', 'Performance', perf[0] ? `${perf[0][1]} FPS` : '', TABLET_PAD + TABLET_BTN + 20);
-    if (!collapsed.performance) {
-      const cols = W >= 700 ? 2 : 1;
-      perf.forEach(([k, v], i) => {
-        const col = i % cols, line = Math.floor(i / cols);
-        const x0 = col * (W / 2) + IN;
-        kv(k, v, x0, y + ROW / 2 + line * ROW, x0 + 110, W / cols - 150);
-      });
-      y += Math.ceil(perf.length / cols) * ROW + 8;
-    }
-
-    // Inspector: as many rows as fit, leaving room for Logging
-    y = header('inspector', 'Inspector', info.title, y + 6);
-    if (!collapsed.inspector) {
-      ctx.font = sans(26, 600);
-      ctx.fillStyle = '#e8ecf2';
-      ctx.fillText(fit(ctx, info.title, W - 2 * PAD), PAD, y + 18);
-      y += 38;
-      const valueX = Math.min(270, W * 0.4);
-      const rowsFit = Math.max(0, Math.floor((H - 24 - below - y) / ROW));
-      const shown = info.rows.length > rowsFit ? Math.max(0, rowsFit - 1) : info.rows.length;
-      for (const [k, v] of info.rows.slice(0, shown)) {
-        kv(k, v, IN, y + ROW / 2, valueX, W - valueX - IN);
-        y += ROW;
-      }
-      if (info.rows.length > shown) {
-        ctx.font = sans(20);
-        ctx.fillStyle = 'rgba(255,255,255,0.4)';
-        ctx.fillText(`… ${info.rows.length - shown} more (make the tablet taller)`, IN, y + ROW / 2);
-        y += ROW;
-      }
-    }
-
-    // Logging: newest at the bottom, filling the rest
-    y = header('logging', 'Logging', `${logs.length} lines`, y + 10);
-    if (!collapsed.logging) {
-      box(PAD, y, W - 2 * PAD, H - 24 - y, 12, 'rgba(0,0,0,0.3)');
-      const fitLines = Math.max(0, Math.floor((H - 30 - y) / LINE));
-      ctx.font = mono(19);
-      logs.slice(-fitLines).forEach((e, i) => {
-        ctx.fillStyle = LOG_COLORS[e.level] ?? LOG_COLORS.log;
-        ctx.fillText(fit(ctx, `${e.t} ${e.text}`, W - 2 * PAD - 24 - this._gripPx * 0.5), PAD + 12, y + LINE / 2 + 4 + i * LINE);
-      });
-      if (!logs.length) {
-        ctx.fillStyle = 'rgba(255,255,255,0.45)';
-        ctx.fillText('No log output yet', PAD + 12, y + LINE / 2 + 4);
-      }
-    }
-
-    this._drawResizeHandle(ctx);
-    this.texture.needsUpdate = true;
+    return this.isOpen ? super.hitTest(uv) : null;
   }
 }

@@ -6,7 +6,7 @@ import { menuModel, splitLabel } from './game/menu.js';
 import { menuItemIconURL } from './game/menuIcons.js';
 import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './game/controls.js';
 import { cellURL } from './game/inputIcons.js';
-import { getLogs } from './game/debugLog.js';
+import { debugModel } from './game/debugModel.js';
 import { debugSections } from './game/debugSections.js';
 import { playTick } from './game/audio.js';
 
@@ -358,20 +358,19 @@ function usePanelSize(key, panelRef, outward = +1) {
 }
 
 /**
- * One of the Debug panel's sections, drawn like an Options section: a menu button ("Title:
- * summary", a chevron) that opens its content beneath it, indented. Open or closed is shared
- * with the XR debug tablet (debugSections.js) and remembered in this browser.
+ * One of the Debug panel's sections (debugModel.js), drawn like an Options section: a menu
+ * button ("Title: summary", a chevron) that opens its content beneath it, indented. Open or
+ * closed is shared with the XR Debug panel (debugSections.js) and remembered in this browser.
  */
-function DebugSection({ id, icon, title, summary, children }) {
-  const collapsed = useSyncExternalStore(debugSections.subscribe, debugSections.getSnapshot)[id];
+function DebugSection({ item, children }) {
   return (
     <>
-      <button className="btn menu-btn" aria-expanded={!collapsed} onClick={tickThen(() => debugSections.toggle(id))}>
-        <img className="menu-icon" src={menuItemIconURL(icon)} alt="" draggable={false} />
-        <MenuLabel text={summary ? `${title}: ${summary}` : title} />
-        <img className="menu-icon menu-arrow" src={menuItemIconURL(collapsed ? 'dropdown' : 'dropdownOpen')} alt="" draggable={false} />
+      <button className="btn menu-btn" aria-expanded={item.section.open} onClick={tickThen(() => debugSections.toggle(item.id.slice(8)))}>
+        <img className="menu-icon" src={menuItemIconURL(item.icon)} alt="" draggable={false} />
+        <MenuLabel text={item.label} />
+        <img className="menu-icon menu-arrow" src={menuItemIconURL(item.section.open ? 'dropdownOpen' : 'dropdown')} alt="" draggable={false} />
       </button>
-      {!collapsed && <div className="menu-section debug-section-body">{children}</div>}
+      {item.section.open && <div className="menu-section debug-section-body">{children}</div>}
     </>
   );
 }
@@ -418,65 +417,53 @@ function DebugPanel({ engine }) {
       </aside>
     );
   }
-  const info = engine.debugInfo();
-  const logs = getLogs(1000);
-  const ms = (v, digits) => (v == null ? '—' : `${v.toFixed(digits)} ms`);
+  const model = debugModel(engine);
   return (
     <aside className="side-panel debug-panel" ref={panelRef} style={size}>
       <ResizeGrip place="grip-bottom-right" title="Drag to resize (double-click: reset)" {...grip} />
       <header className="side-header">
         {button}
-        <h2>Debug</h2>
+        <h2>{model.title}</h2>
       </header>
       <div className="side-body menu-items">
-        <DebugSection id="performance" icon="performance" title="Performance" summary={`${engine.fps.toFixed(0)} FPS`}>
-          <div className="debug-box">
-            <table className="debug-table">
-              <tbody>
-                <tr><th>FPS</th><td>{engine.fps.toFixed(0)}</td></tr>
-                <tr><th>Turn</th><td>{ms(engine.turnMs, 1)}</td></tr>
-                <tr><th>Anim</th><td>{ms(engine.animMs, 2)}</td></tr>
-                <tr><th>Render</th><td>{ms(engine.renderMs, 2)}</td></tr>
-                <tr><th>Draws</th><td>{engine.drawCalls ?? '—'}</td></tr>
-                <tr><th>Triangles</th><td>{engine.triangles?.toLocaleString() ?? '—'}</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </DebugSection>
-        <DebugSection id="inspector" icon="inspector" title="Inspector" summary={info.title}>
-          <div className="debug-box">
-            <table className="debug-table">
-              <tbody>
-                {info.rows.map(([k, v]) => (
-                  <tr key={k}>
-                    <th>{k}</th>
-                    <td>{String(v)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </DebugSection>
-        <DebugSection id="logging" icon="logging" title="Logging" summary={`${logs.length} lines`}>
-          <div
-            className="debug-log"
-            ref={logRef}
-            onScroll={(ev) => {
-              const el = ev.currentTarget;
-              stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
-            }}
-          >
-            {logs.length ? (
-              logs.map((entry, i) => (
-                <div key={i} className={`log-${entry.level}`}>
-                  <span className="log-time">{entry.t}</span> {entry.text}
-                </div>
-              ))
-            ) : (
-              <div className="log-empty">No log output yet</div>
+        {model.items.map((it) => (
+          <DebugSection key={it.id} item={it}>
+            {it.section.rows && (
+              <div className="debug-box">
+                <table className="debug-table">
+                  <tbody>
+                    {it.section.rows.map(([k, v]) => (
+                      <tr key={k}>
+                        <th>{k}</th>
+                        <td>{v}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </div>
-        </DebugSection>
+            {it.section.log && (
+              <div
+                className="debug-log"
+                ref={logRef}
+                onScroll={(ev) => {
+                  const el = ev.currentTarget;
+                  stick.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+                }}
+              >
+                {it.section.log.length ? (
+                  it.section.log.map((entry, i) => (
+                    <div key={i} className={`log-${entry.level}`}>
+                      <span className="log-time">{entry.t}</span> {entry.text}
+                    </div>
+                  ))
+                ) : (
+                  <div className="log-empty">No log output yet</div>
+                )}
+              </div>
+            )}
+          </DebugSection>
+        ))}
       </div>
     </aside>
   );
