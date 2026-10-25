@@ -422,6 +422,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         varying float vStyle;
         varying float vTint; // opaque creatures: 1 = drawn in a buff's colour (see World._refreshLook)
         varying vec3 vNoisePos;
+        varying vec3 vLatPos; // where it is in the build (lattice cm, shared by all blocks): status glows flow across a body's blocks
         varying vec3 vTexOrigin;
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
@@ -456,6 +457,11 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         // origin, so neighbouring blocks continue one pattern, and it stays glued to the block
         // while it slides
         vNoisePos = blockPos + vTexOrigin;
+        #ifdef MERGED_BODY
+        vLatPos = transformed; // (a body's vertices are in the build's space already)
+        #else
+        vLatPos = (instanceMatrix * vec4(transformed, 1.0)).xyz; // (the block's place, as drawn: sliding too)
+        #endif
         vLocalNormal = normal; // block-local face normal (instances are only translated; bodies: the smooth normal)
         vLocalPos = blockPos;  // block-local position (without the texture origin)
         vSeed = blockStyle.y;
@@ -522,6 +528,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         varying float vStyle;
         varying float vTint;
         varying vec3 vNoisePos;
+        varying vec3 vLatPos; // where it is in the build (lattice cm, shared by all blocks): status glows flow across a body's blocks
         varying vec3 vTexOrigin;
         varying vec3 vLocalNormal;
         varying vec3 vLocalPos;
@@ -1036,7 +1043,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           int ti = int(vTint + 0.5);
           bool creatureStyle = ${BLOCK_TYPES.filter((t) => t.creature).map((t) => `abs(vStyle - ${t.style.toFixed(1)}) < 0.5`).join(' || ')};
           if (creatureStyle && ti > 0 && ti <= ${TINT_BUFFS.length}) {
-            float wave = vLocalPos.y * 4.5 + perlin3(vNoisePos * 1.4 + vec3(0.0, uTime * 0.3, 0.0)) * 2.2;
+            // (in the build's own space, not each block's: one pattern runs on across the body's blocks)
+            float wave = vLatPos.y * 4.5 + perlin3(vLatPos * 1.4 + vec3(0.0, uTime * 0.3, 0.0)) * 2.2;
             float crest = pow(0.5 + 0.5 * sin(wave - uTime * 5.0), 6.0);
             float pulse = 0.55 + 0.45 * sin(uTime * 3.2);
             crystalGlow += BUFF_GLOWS[ti - 1] * (0.12 + 1.1 * crest) * pulse;

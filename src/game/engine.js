@@ -150,7 +150,12 @@ const PANEL_FLY_S = 0.4;
 const PUSH_RATE = 1.5;
 const PUSH_MIN_M = 0.25; // …but never slower than at this distance (m)
 const PANEL_REEL_MIN_M = 0.05; // a panel reels in no nearer the hand than this (m)
-const ROLL_RATE = Math.PI; // XR: a grip's thumbstick left / right turns the build about that controller's ray, at most this fast (rad/s) // a triple tap's panels fly to their dock over this long
+const ROLL_RATE = Math.PI;
+/** XR: a probe (touch ball) on a panel's face presses it, like a fingertip: within this of the face (m, beyond its own size) it points there… */
+const POKE_REACH_M = 0.015;
+const POKE_PRESS = 0.55; // …pushed in until its centre is this share of its size from the face, it presses…
+const POKE_RELEASE = 0.85; // …and pulled back past this, lets go
+const _pokeScale = new THREE.Vector3(); // XR: a grip's thumbstick left / right turns the build about that controller's ray, at most this fast (rad/s) // a triple tap's panels fly to their dock over this long
 const MENU_SCROLL_PX_S = 1400; // XR Options: canvas px a second it scrolls at the thumbstick's full tilt
 const PANEL_PULSE = { grab: [0.6, 50], detach: [0.4, 30], dock: [0.9, 80], zone: [0.25, 20] }; // haptics: [strength, ms]
 const _panelRay = new THREE.Raycaster();
@@ -810,13 +815,7 @@ export class Engine {
       });
       ctrl.addEventListener('selectend', () => {
         const hand = this._handOf(slot);
-        if (hand && this._uiPress === hand) {
-          const slider = this._sliderDrag;
-          this._uiPress = null;
-          this._sliderDrag = null;
-          this._endResize();
-          if (slider === 'xrResolution') this._restartXR(); // (let go: the new resolution takes a new session)
-        }
+        if (hand) this._releaseUi(hand);
       });
       // Grips: a grip touching or pointing at a panel takes the panel, and a double tap docks
       // or undocks panels (see _gripPanelStart); one touching or pointing at a creature picks
@@ -3962,6 +3961,44 @@ export class Engine {
    * a toggle button, an action, the Tool dropdown or a tool, a debug tablet control, a menu
    * item or slider (held: drags it). Returns whether it pressed something.
    */
+  /** `hand`'s press on a panel ends (its trigger let go, or its probe pulled back): a slider or resize it was dragging stops. */
+  _releaseUi(hand) {
+    if (this._uiPress !== hand) return;
+    const slider = this._sliderDrag;
+    this._uiPress = null;
+    this._sliderDrag = null;
+    this._endResize();
+    if (slider === 'xrResolution') this._restartXR(); // (let go: the new resolution takes a new session)
+  }
+
+  /**
+   * XR: `hand`'s probe (its touch ball) against a panel's face: the visible panel it's on (its
+   * centre in front of the face, within reach, over the panel), nearest first; null if none.
+   * { origin, dir }: a ray straight into the face from in front of the probe (what it's over),
+   * `depth`: how far its centre is in front of the face, `r`: the probe's size (both m).
+   */
+  _pokeAt(hand) {
+    const slot = this.hands[hand];
+    if (!slot?.ball?.visible) return null;
+    const p = this._touchBallPos(slot);
+    const r = (this._touchBallGeo?.boundingSphere?.radius ?? 1) * this.worldRoot.scale.x;
+    let best = null;
+    for (const { panel } of Object.values(this._panels)) {
+      const m = panel.mesh;
+      if (!m.visible || !panel.box) continue;
+      m.updateWorldMatrix(true, false);
+      const local = m.worldToLocal(p.clone());
+      const b = panel.boxMetres();
+      if (local.x < b.left || local.x > b.right || local.y < b.bottom || local.y > b.top) continue;
+      const depth = local.z * m.getWorldScale(_pokeScale).x;
+      if (depth > r + POKE_REACH_M || depth < -2 * r) continue; // (too far in front, or right through it)
+      if (best && Math.abs(depth) >= Math.abs(best.depth)) continue;
+      const n = new THREE.Vector3(0, 0, 1).transformDirection(m.matrixWorld);
+      best = { origin: p.clone().addScaledVector(n, 0.05), dir: n.clone().negate(), depth, r };
+    }
+    return best;
+  }
+
   _pressUi(hand) {
     if (this._resizeHover) {
       this._resizing = this._resizeHover;
@@ -4232,15 +4269,28 @@ export class Engine {
     // UI first: the panels (Options, Debug, the Control menu), under the right controller's ray (or
     // the gaze); else under the left's (it presses them with its trigger: it can reach the panels
     // docked on the right hand). A hand holding its trigger on a panel keeps it.
-    const pointers = !xr ? [] : gaze ? ['gaze'] : this._uiPress === 'left' ? ['left', 'right'] : ['right', 'left'];
+    // A probe touching a panel points at what it's over instead (and comes first); pushed into the face, it presses (below).
+    const pokes = xr && !gaze ? { left: this._pokeAt('left'), right: this._pokeAt('right') } : {};
+    let pointers = !xr ? [] : gaze ? ['gaze'] : this._uiPress === 'left' ? ['left', 'right'] : ['right', 'left'];
+    pointers = [...pointers.filter((h) => pokes[h]), ...pointers.filter((h) => !pokes[h])];
     for (const hand of pointers) {
-      if (!(hand === 'gaze' ? this._setRayFromHead() : this._setRayFromController(hand))) continue;
+      if (pokes[hand]) this.raycaster.set(pokes[hand].origin, pokes[hand].dir);
+      else if (!(hand === 'gaze' ? this._setRayFromHead() : this._setRayFromController(hand))) continue;
       uiHit = this._pointAtPanels(gaze, menuOpen, menuShown);
       if (!uiHit) continue;
       this._uiHand = hand;
       break;
     }
     if (this._resizing) this._panels[this._resizing].panel.handleHot = true;
+    // a probe pushed into a panel's face (its centre past POKE_PRESS of its size) presses there, as
+    // the trigger would; pulled back out (past POKE_RELEASE) lets go
+    for (const hand of ['left', 'right']) {
+      const pk = pokes[hand], was = !!this._pokePressed?.[hand];
+      const pressed = !!pk && (was ? pk.depth < pk.r * POKE_RELEASE : pk.depth < pk.r * POKE_PRESS && this._uiHand === hand);
+      if (pressed && !was && this._pressUi(hand)) this._pulse(0.5, 25, hand);
+      if (!pressed && was) this._releaseUi(hand);
+      (this._pokePressed ??= {})[hand] = pressed;
+    }
     if (uiHit) {
       if (gaze) {
         // what a stare (or a tap) would press; a slider's key includes the value it would set

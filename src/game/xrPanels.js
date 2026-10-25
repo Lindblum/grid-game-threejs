@@ -11,7 +11,7 @@ import { drawCell, cellWidth } from './inputIcons.js';
 
 /** Every XR panel's thickness: a slab this deep (m, in the world) behind its face (its corners rounded like the face's frame). */
 const PANEL_DEPTH_M = 0.01;
-const SLAB_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.55, metalness: 0.15 });
+const SLAB_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.55, metalness: 0.15, transparent: true, opacity: 0.8, depthWrite: false }); // (slightly see-through)
 
 /** A flat plane textured with a 2D canvas, used for in-world UI panels in XR (with a slab behind it: updateSlab). */
 class CanvasPanel {
@@ -164,6 +164,7 @@ class CanvasPanel {
       this.slab.raycast = () => {}; // (the face is what's pointed at)
       this.slab.name = 'xr-panel-slab';
       this.mesh.add(this.slab);
+      this.slab.renderOrder = this.mesh.renderOrder - 1; // (behind its face: drawn first)
     }
     const key = `${w.toFixed(4)}|${h.toFixed(4)}|${d.toFixed(4)}`;
     if (key !== this._slabKey) {

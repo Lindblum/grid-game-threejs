@@ -103,7 +103,7 @@ const OBSERVER_CONTROLS = [
     action: 'Menu select',
     mk: { g: ['mouse:L'], t: 'Click' },
     pad: { g: ['dpad:ud', 'sep:+', 'pad:A'], t: 'D-pad up / down, then A' },
-    xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point and pull the trigger (either controller: the left one presses panels only). Hold it on a panel’s corner ridges to resize it; a thumbstick up / down scrolls Options' },
+    xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point and pull the trigger (either controller: the left one presses panels only), or push a controller’s probe (the cell in front of it) into the panel, like a fingertip (pull it back to let go; held in, it drags a slider). Hold it on a panel’s corner ridges to resize it; a thumbstick up / down scrolls Options' },
   },
   {
     action: 'Debug panel',
