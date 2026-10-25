@@ -49,10 +49,16 @@ const OBSERVER_CONTROLS = [
     xr: { g: ['xr:A', 'sep:+', 'xr:stick:L:any'], t: 'A: the selected creature excretes the item in its tail slot. Hold A and push the left thumbstick to choose where (it excretes on letting go)' },
   },
   {
+    action: 'Mate (selected creature)',
+    mk: { g: ['key:X', 'sep:+', 'key:W'], t: 'X, when the selected creature is Fertile (it ate a Berry) beside another of its kind: they mate, and it then carries an Egg. Hold X and press WASD / the arrows to choose which one (on letting go)' },
+    pad: { g: ['pad:A', 'sep:+', 'stick:L:any'], t: 'A (instead of using the tool), when the selected creature is Fertile beside another of its kind: they mate. Hold A and push the left stick to choose which one' },
+    xr: { g: ['xr:X', 'sep:+', 'xr:stick:R:any'], t: 'X (instead of Wait), when the selected creature is Fertile beside another of its kind: they mate. Hold X and push the right thumbstick to choose which one' },
+  },
+  {
     action: 'Wander / Wait (selected creature)',
     mk: { g: ['text:—'], t: 'No keyboard / mouse binding yet' },
     pad: { g: ['pad:view'], t: 'View (Back): Wait, or resume what it was doing (toggle)' },
-    xr: { g: ['xr:Y', 'sep:/', 'xr:X'], t: 'Left Y: Wander (opens the menu when nothing is selected), left X: Wait' },
+    xr: { g: ['xr:Y', 'sep:/', 'xr:X'], t: 'Left Y: Wander (opens the menu when nothing is selected), left X: Wait (Mate instead, when it could)' },
   },
   {
     action: 'Options (pauses)',

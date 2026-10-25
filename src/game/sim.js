@@ -6,7 +6,7 @@
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
 import { EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
-import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly } from './blocks.js';
+import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly, MATE_TURNS, GESTATION_TURNS } from './blocks.js';
 
 
 /** Chance per turn that a creature carrying something in its inventory excretes it (see maybeExcrete). */
@@ -248,7 +248,8 @@ export function stepDirt(world, turn) {
 
 /**
  * Whether a chain creature's head (`head`, body `own`) could step into cell (x, y, z): the
- * cell is empty and touches a block it can walk on (walkableBlocks). A creature without
+ * cell is empty and touches a block it can walk on (walkableBlocks: another chain creature's
+ * body counts, so a Squirmy crawls over a Squirmy; its own doesn't hold it up). A creature without
  * `selfAvoidance` (Squirmy) may go next to any chain creature block, its own body or
  * another's (chains keep their own ids, so touching ones don't merge). One with it (Slither)
  * never goes next to another chain creature, nor next to its own body on its very next step
@@ -263,6 +264,7 @@ function squirmyCellOk(world, head, own, x, y, z, strict) {
     if (!n || n === head) continue;
     if (isChainCreature(n.type)) {
       if (avoids && (strict || !own.has(n))) return false;
+      if (!own.has(n) && canWalkOn(head.type, n.type)) habitat = true; // (another's body is ground to walk on: a Squirmy over a Squirmy; its own isn't)
     } else if (canWalkOn(head.type, n.type)) habitat = true;
   }
   return habitat || canFly(head); // Flight: no surface needed
@@ -303,11 +305,16 @@ export function stepSquirmies(world, skip = new Set()) {
       // steered by the player (controlled, or selected): its head goes that way, and a walk it
       // was on ends (steered somewhere it can't go: 'creatureBlocked')
       stopSteeredWalk(head);
+      endMate(head);
       const to = steerTo(world, head);
       if (to) {
         moveChain(world, sq.segments, to);
         moved++;
       } else world.emit('creatureBlocked', head);
+      continue;
+    }
+    if (head.behavior === BEHAVIOR.MATE) {
+      mateTurn(world, head); // (a chain doesn't clamber about: it stays with its mate)
       continue;
     }
     if (head.isControlled && head.behavior !== BEHAVIOR.WALK) continue; // Creature controls: unsteered, it stays put (unless sent somewhere with Select)
@@ -478,7 +485,7 @@ function moveChain(world, segments, to) {
  * Foraging, for a creature left to itself (`creature.isAssignedBehavior` false: the player hasn't
  * given it something to do) with its head's inventory slot free. Its priority foods are
  * its priorityDiet (its type's, plus its buffs', e.g. Rockbiter's Crystal: blocks.js), counting
- * only those it can eat right now:
+ * only those it can eat right now (and no Berries while it's Fertile already: only when told to):
  *  - a priority food right next to it: it eats it (creatureEat)
  *  - else one it can see (within its sightRadius): it takes one step along the shortest path
  *    to a cell next to the nearest one it can reach. `stepToward(goal)` finds that step for
@@ -488,6 +495,7 @@ function moveChain(world, segments, to) {
 function forage(world, creature, stepToward, moveTo) {
   if (creature.isAssignedBehavior || !world.freeSlotFor(creature)) return false;
   const wanted = new Set(priorityDietOf(creature).filter((type) => canEat(creature, type)));
+  if (creature.buffs?.some((x) => x.type === 'fertile')) wanted.delete(BLOCK.BERRY); // (Fertile already: Berries only when told to)
   if (!wanted.size) return false;
   for (const [dx, dy, dz] of shuffle([...NEIGHBOR_DIRS])) {
     const n = world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz));
@@ -539,6 +547,11 @@ export function creatureEat(world, creature, food) {
   if (buff) {
     world.addBuff(creature, buff.buff, buff.turns, buff.charges);
     slot.inventory = null;
+  }
+  if (wasBerry) {
+    // a Berry makes it Fertile: it can Mate with one of its kind (mateChoices), until it does
+    world.addBuff(creature, 'fertile', null);
+    world.emit('creatureFertile', creature);
   }
   if (creature.type === BLOCK.BUZZY && wasBerry) world.growSegment(creature); // a Buzzy grows a body segment (wings and legs too)
   if (isChainCreature(creature.type) && wasBerry) {
@@ -1195,6 +1208,101 @@ function pursuitGoal(world, creature, ok, q = creature.pursue) {
   return best;
 }
 
+// ---------------------------------------------------------------- mating and eggs
+
+/** The creature block `block` belongs to (a Buzzy segment's head, a chain's head, a one-block creature), or null. */
+function creatureOfBlock(world, block) {
+  if (!block || !isCreature(block.type)) return null;
+  if (block.segmentOf) return block.segmentOf;
+  if (isChainCreature(block.type)) return world.squirmyOf.get(block)?.segments[0] ?? block;
+  return block;
+}
+
+/**
+ * Who creature `c` (one-block, or a chain's head) could Mate with right now: [{ partner, cell }]
+ * (the partner's block beside it). It must be Fertile (a Berry), not mating already, with room
+ * in its head's slot for the Egg; a partner is another of its kind beside its head, not mating.
+ */
+export function mateChoices(world, c) {
+  if (!c?.buffs?.some((x) => x.type === 'fertile') || c.mate || c.vanishing || !world.freeSlotFor(c)) return [];
+  const out = [], seen = new Set();
+  for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+    const b = world.blocks.get(cellKey(c.x + dx, c.y + dy, c.z + dz));
+    const p = creatureOfBlock(world, b);
+    if (!p || p === c || p.type !== c.type || p.mate || p.vanishing || seen.has(p)) continue;
+    seen.add(p);
+    out.push({ partner: p, cell: b });
+  }
+  return out;
+}
+
+/** Creature `a` starts mating with `b` (one of mateChoices): both Mate for MATE_TURNS turns (`a` stays Fertile until its Egg forms: mateTurn). Returns whether it began. */
+export function startMate(world, a, b) {
+  if (!mateChoices(world, a).some((x) => x.partner === b)) return false;
+  for (const [c, other, initiator] of [[a, b, true], [b, a, false]]) {
+    delete c.walkTarget;
+    delete c.pursue;
+    delete c.hunt;
+    delete c.walkStuck;
+    c.mate = { partner: other, turns: MATE_TURNS, initiator };
+    c.behavior = BEHAVIOR.MATE;
+  }
+  world.emit('creatureMating', a);
+  return true;
+}
+
+/**
+ * A mating creature's turn (BEHAVIOR.MATE; the one that started it runs the pair): they
+ * clamber over each other (swap cells: one-block creatures), with the 'creatureMating' sound,
+ * for MATE_TURNS turns; then the one that started it carries an Egg in its head's slot
+ * ('eggMade'), and both go back to what they do. A mate gone meanwhile ends it. Returns whether it moved.
+ */
+function mateTurn(world, c) {
+  const m = c.mate, p = m?.partner;
+  if (!m || !p || world.blocks.get(cellKey(p.x, p.y, p.z)) !== p || p.vanishing || p.mate?.partner !== c) {
+    endMate(c);
+    return false;
+  }
+  if (!m.initiator) return false; // (its partner runs the pair)
+  if (--m.turns > 0) {
+    world.emit('creatureMating', c);
+    return world.swap(c, p);
+  }
+  const slot = world.freeSlotFor(c);
+  if (slot) {
+    slot.inventory = BLOCK.EGG;
+    world.removeBuff(c, 'fertile'); // (its Egg: Fertile no longer)
+    world.emit('eggMade', c);
+  }
+  endMate(c);
+  return false;
+}
+
+/** Mating is over for creature `c` (and its partner): each goes back to waiting (selected) or wandering. */
+function endMate(c) {
+  const p = c?.mate?.partner;
+  for (const x of [c, p]) {
+    if (!x) continue;
+    if (x === p && x.mate?.partner !== c) continue; // (it's moved on to another: leave it be)
+    delete x.mate;
+    if (x.behavior === BEHAVIOR.MATE) x.behavior = x.isSelected ? BEHAVIOR.WAIT : BEHAVIOR.WANDER; // (also one restored mid-mating, its partner gone)
+  }
+}
+
+/**
+ * Every turn: each Egg counts down to hatching (GESTATION_TURNS after it was laid or placed, or
+ * loaded) and then hatches (World.hatch: it shrinks away, its creature grows in). Its spots
+ * follow the creature inside it.
+ */
+export function stepEggs(world) {
+  for (const egg of [...world.ofType(BLOCK.EGG)]) {
+    if (egg.vanishing) continue;
+    if (egg.spotsOf !== egg.inventory) world._refreshLook(egg); // (loaded, or just laid: its spots)
+    egg.hatchTurn ??= world.turn + GESTATION_TURNS;
+    if (world.turn >= egg.hatchTurn) world.hatch(egg);
+  }
+}
+
 /** A creature the player steers stops any walk it was sent on (Select), and waits once the steering stops. */
 function stopSteeredWalk(creature) {
   if (creature.behavior !== BEHAVIOR.WALK) return;
@@ -1440,9 +1548,14 @@ export function stepSoloCreatures(world, skip = new Set()) {
       // steered by the player (controlled, or selected): it goes that way, and a walk it was on
       // ends (steered somewhere it can't go: 'creatureBlocked')
       stopSteeredWalk(c);
+      endMate(c);
       const to = steerTo(world, c);
       if (to && world.move(c, to, world.stepSeconds)) moved++;
       else world.emit('creatureBlocked', c);
+      continue;
+    }
+    if (c.behavior === BEHAVIOR.MATE) {
+      if (mateTurn(world, c)) moved++;
       continue;
     }
     if (c.isControlled) {

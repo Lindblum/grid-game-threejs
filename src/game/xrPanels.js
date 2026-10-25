@@ -246,7 +246,7 @@ const RH_PAD = 24, RH_BTN = 60, RH_HEAD = RH_PAD + RH_BTN + 29, RH_ROW = 67, RH_
 const RH_ROW_RADIUS = 21, RH_ROW_PAD = 21, RH_ICON = 44, RH_TITLE_GAP = 23;
 const RH_SLOTS_X = RH_PAD + RH_INDENT + RH_WELL_PAD; // the first tool slot's left
 const rhWidth = (perRow) => RH_SLOTS_X + perRow * SLOT + (perRow - 1) * SLOT_GAP + RH_WELL_PAD + RH_PAD;
-const rhHeight = (rows) => RH_HEAD + 3 * (RH_ROW + RH_GAP) + 2 * RH_WELL_PAD + rows * SLOT + (rows - 1) * SLOT_GAP + RH_PAD; // (two action rows, the dropdown, the well)
+const rhHeight = (rows) => RH_HEAD + 4 * (RH_ROW + RH_GAP) + 2 * RH_WELL_PAD + rows * SLOT + (rows - 1) * SLOT_GAP + RH_PAD; // (three action rows, the dropdown, the well)
 const RH_MIN_PER_ROW = 3, RH_START_PER_ROW = 5; // tools to a row: at least, and at first (roughly square, like the windowed panel)
 const RH_FONT = '500 32px system-ui, -apple-system, Segoe UI, sans-serif';
 
@@ -288,8 +288,8 @@ export class RightHudPanel extends CanvasPanel {
    * drawToolIcon), hover ('toggle', 'eat', 'excrete', 'tools', a tool slot's index, or null) }.
    */
   draw(d) {
-    const { open, title, actions = { eat: [], excrete: null }, glyphs, tools, toolsOpen, toolIndex, label, message, style = {}, hover = null } = d;
-    const sig = `${open}|${title}|${actions.eat.join(',')}|${actions.excrete}|${tools}|${toolsOpen}|${toolIndex}|${label}|${message || ''}|${style.materials}|${!!style.smooth}|${hover}|${gridMode()}|${this.perRow}|${this.corner}|${this.handleHot}`; // (icons show the grid's block shape)
+    const { open, title, actions = { eat: [], excrete: null, mate: [] }, glyphs, tools, toolsOpen, toolIndex, label, message, style = {}, hover = null } = d;
+    const sig = `${open}|${title}|${actions.eat.join(',')}|${actions.excrete}|${(actions.mate ?? []).join(',')}|${tools}|${toolsOpen}|${toolIndex}|${label}|${message || ''}|${style.materials}|${!!style.smooth}|${hover}|${gridMode()}|${this.perRow}|${this.corner}|${this.handleHot}`; // (icons show the grid's block shape)
     if (sig === this._last) return;
     this._last = sig;
     this.isOpen = open;
@@ -313,6 +313,7 @@ export class RightHudPanel extends CanvasPanel {
     if (open && tools && toolsOpen) y += wellH + RH_GAP;
     const eatRow = open && actions.eat.length ? rowAt('eat') : null;
     const excreteRow = open && actions.excrete ? rowAt('excrete') : null;
+    const mateRow = open && actions.mate?.length ? rowAt('mate') : null;
     // the panel: just the button when hidden, else down to its last row (or the well)
     const panelW = open ? W : RH_BTN + 2 * RH_PAD;
     const panelH = !open ? RH_BTN + 2 * RH_PAD : this.rows.length ? y - RH_GAP + RH_PAD : RH_BTN + 2 * RH_PAD;
@@ -359,6 +360,7 @@ export class RightHudPanel extends CanvasPanel {
     };
     if (eatRow) actionRow(eatRow, 'Consume', glyphs.eat, actions.eat);
     if (excreteRow) actionRow(excreteRow, 'Excrete', glyphs.excrete, [actions.excrete]);
+    if (mateRow) actionRow(mateRow, 'Mate', glyphs.mate, actions.mate);
     if (toolsRow) {
       // the Tool dropdown: the use-the-tool button's glyph, "Tool", at the right the current tool
       // (its icon left of its name; a message instead, for a moment), the chevron
@@ -785,8 +787,7 @@ const LOG_COLORS = { log: '#c9d1dc', info: '#9cc8ff', warn: '#ffd166', error: '#
 /**
  * Debug tablet for XR, like the windowed Debug panel: its button (top left) opens or closes it
  * (closed, only the button shows); open, Performance (FPS and timings), the Inspector
- * (properties of the selected / targeted block), Claude (the prompt: typed with the system
- * keyboard, dictated or cleared; not sent anywhere yet), then the recent console log; each
+ * (properties of the selected / targeted block), then the recent console log; each
  * section collapses (trigger on its header). Docked (on the left controller at first) or
  * free (see Engine's XR panels), and resized by dragging its corner handle with the trigger:
  * bottom right when free (its top left stays put), top right when docked (it stands on its
@@ -804,7 +805,7 @@ export class DebugTablet extends CanvasPanel {
     this._last = '';
   }
 
-  /** The id of the control under `uv` ('toggle': the Debug button; a section header, the prompt box or a button), else null. */
+  /** The id of the control under `uv` ('toggle': the Debug button; a section header), else null. */
   hitTest(uv) {
     if (this.onToggle(uv)) return 'toggle';
     if (!this.isOpen) return null;
@@ -814,17 +815,15 @@ export class DebugTablet extends CanvasPanel {
   }
 
   /**
-   * The same content as the browser's Debug dock, top to bottom: Performance, Inspector, Claude
-   * (reply area, prompt box, microphone / clear / Send) and Logging, each under a header the
-   * trigger collapses or expands (shared with the dock). Logging takes the leftover height.
-   * d = { info: { title, rows }, perf: [[label, text]], logs, logVersion, highlight (grabbed or
-   * pointed at: brighter rim), claude: { prompt, listening, micSupported, speaking,
-   * speechSupported, response }, collapsed: { performance, … }, hover: id under the ray, open
-   * (closed: just the Debug button) }.
+   * The same content as the browser's Debug dock, top to bottom: Performance, Inspector and
+   * Logging, each under a header the trigger collapses or expands (shared with the dock).
+   * Logging takes the leftover height. d = { info: { title, rows }, perf: [[label, text]], logs,
+   * logVersion, highlight (grabbed or pointed at: brighter rim), collapsed: { performance, … },
+   * hover: id under the ray, open (closed: just the Debug button) }.
    */
   draw(d) {
-    const { info, perf, logs, logVersion, highlight, claude, collapsed, hover, open = true } = d;
-    const sig = JSON.stringify([info, perf, logVersion, highlight, claude, collapsed, hover, open, this.corner, this.handleHot, this.canvas.width, this.canvas.height]);
+    const { info, perf, logs, logVersion, highlight, collapsed, hover, open = true } = d;
+    const sig = JSON.stringify([info, perf, logVersion, highlight, collapsed, hover, open, this.corner, this.handleHot, this.canvas.width, this.canvas.height]);
     if (sig === this._last) return;
     this._last = sig;
     this.isOpen = open;
@@ -901,8 +900,7 @@ export class DebugTablet extends CanvasPanel {
     };
 
     // heights of what goes below the Inspector, so its rows stop in time
-    const CLAUDE_H = 56 + 8 + 48 + 8 + 70 + 8 + 48 + 8;
-    const below = HEAD + 14 + (collapsed.claude ? 0 : CLAUDE_H) + HEAD + 14 + (collapsed.logging ? 0 : 4 * LINE + 12);
+    const below = HEAD + 14 + (collapsed.logging ? 0 : 4 * LINE + 12);
 
     // Performance: two columns when the tablet is wide enough
     let y = header('performance', 'Performance', perf[0] ? `${perf[0][1]} FPS` : '', TABLET_PAD + TABLET_BTN + 20);
@@ -916,7 +914,7 @@ export class DebugTablet extends CanvasPanel {
       y += Math.ceil(perf.length / cols) * ROW + 8;
     }
 
-    // Inspector: as many rows as fit, leaving room for Claude and Logging
+    // Inspector: as many rows as fit, leaving room for Logging
     y = header('inspector', 'Inspector', info.title, y + 6);
     if (!collapsed.inspector) {
       ctx.font = sans(26, 600);
@@ -936,55 +934,6 @@ export class DebugTablet extends CanvasPanel {
         ctx.fillText(`… ${info.rows.length - shown} more (make the tablet taller)`, IN, y + ROW / 2);
         y += ROW;
       }
-    }
-
-    // Claude: reply area (not connected yet), the prompt box (trigger: the system keyboard), buttons
-    y = header('claude', 'Claude', 'Not connected', y + 10);
-    if (!collapsed.claude) {
-      const w = W - 2 * PAD;
-      const button = (id, x, bw, { icon, text, disabled = false, active = false, activeColor = 'red' }) => {
-        const hot = hover === id && !disabled;
-        box(x, y, bw, 48, 10,
-          active ? (activeColor === 'blue' ? 'rgba(90, 160, 255, 0.45)' : 'rgba(255, 90, 90, 0.45)') : hot ? 'rgba(90, 160, 255, 0.4)' : 'rgba(255,255,255,0.09)',
-          active ? (activeColor === 'blue' ? '#9cc8ff' : '#ff8a80') : hot ? '#9cc8ff' : 'rgba(255,255,255,0.14)');
-        if (icon) drawMenuItemIcon(ctx, icon, x + bw / 2, y + 24, 30, { alpha: disabled ? 0.45 : 1 });
-        if (text) {
-          ctx.font = sans(22, 500);
-          ctx.textAlign = 'center';
-          ctx.fillStyle = disabled ? 'rgba(255,255,255,0.4)' : '#ffffff';
-          ctx.fillText(text, x + bw / 2, y + 24);
-          ctx.textAlign = 'left';
-        }
-        if (!disabled) this.hits.push({ id, x, y, w: bw, h: 48 });
-      };
-      box(PAD, y, w, 56, 12, 'rgba(0,0,0,0.3)');
-      ctx.font = mono(20);
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.fillText(fit(ctx, claude.response, w - 32), PAD + 16, y + 28);
-      y += 56 + 8;
-
-      // read the response feed aloud (speech synthesis)
-      button('speak', PAD, 64, { icon: 'speak', active: claude.speaking, activeColor: 'blue', disabled: !claude.speechSupported });
-      y += 48 + 8;
-
-      const promptHot = hover === 'prompt';
-      box(PAD, y, w, 70, 12, 'rgba(0,0,0,0.35)', promptHot ? '#9cc8ff' : claude.listening ? '#ff8a80' : 'rgba(255,255,255,0.18)');
-      ctx.font = sans(22);
-      if (claude.prompt) {
-        ctx.fillStyle = '#e8ecf2';
-        const lines = wrapText(ctx, claude.prompt, w - 32).slice(-2); // the end of a long prompt
-        lines.forEach((l, i) => ctx.fillText(fit(ctx, l, w - 32), PAD + 16, y + 21 + i * 28));
-      } else {
-        ctx.fillStyle = 'rgba(255,255,255,0.4)';
-        ctx.fillText('Ask Claude…', PAD + 16, y + 35);
-      }
-      this.hits.push({ id: 'prompt', x: PAD, y, w, h: 70 });
-      y += 70 + 8;
-
-      button('mic', PAD, 64, { icon: 'mic', active: claude.listening, disabled: !claude.micSupported });
-      button('clear', PAD + 72, 64, { icon: 'clear' });
-      button('send', W - PAD - 110, 110, { text: 'Send', disabled: true });
-      y += 48 + 8;
     }
 
     // Logging: newest at the bottom, filling the rest

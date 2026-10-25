@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RANDOM_BLOCKS } from './tools.js';
-import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature, isChainCreature } from './blocks.js';
+import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature, isChainCreature, TINT_BUFFS, EGG_SPOT_TYPES, CREATURE_TYPES } from './blocks.js';
 import { EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, gridMode, isValidCell, onGridChange, randomCellOnSphere, setGridMode } from './lattice.js';
 import { GRIDS, DEFAULT_GRID, dirName } from './grids.js';
 import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
@@ -395,6 +395,11 @@ export class World {
           this.eyes.track(block, 0);
         } else if (!block.isHead && wasHead) this.eyes.untrack(block);
       });
+      // a glowing chain glows all over, a segment it just grew (or a split-off part) included
+      const tint = segments.find((b) => b.buffs?.length);
+      if (tint || segments.some((b) => b.tinted)) {
+        if (segments.some((b) => (b.tinted ?? 0) !== (segments[0].tinted ?? 0)) || !segments[0].tinted !== !tint) this._refreshLook(segments[0]);
+      }
     }
   }
 
@@ -647,6 +652,14 @@ export class World {
     if (spent) this._dropExpiredBuffs(block);
   }
 
+  /** Takes buff `type` off `block` (if it has it), with its events and look (e.g. Fertile, used up by mating). */
+  removeBuff(block, type) {
+    const x = block.buffs?.find((y) => y.type === type);
+    if (!x) return;
+    x.turns = 0;
+    this._dropExpiredBuffs(block);
+  }
+
   /** Removes `block`'s buffs that ran out (0 turns or 0 charges), with events and its look. */
   _dropExpiredBuffs(block) {
     const gone = (x) => (x.turns !== null && x.turns <= 0) || (x.charges !== null && x.charges <= 0);
@@ -678,10 +691,19 @@ export class World {
    * blocks otherwise) adds pulsing glowing ripples in that colour over a creature's shell.
    */
   _refreshLook(block) {
-    const tint = block.buffs?.map((x) => BUFF_TYPES[x.type]).find((x) => x?.color);
-    block.batch.mesh.setColorAt(block.index, _c.set(BLOCK_COLORS[block.type]));
-    if (!isTranslucent(block.type)) this._style(block).setZ(block.index, tint ? 1 : 0);
-    this._logChange(block.x, block.y, block.z); // (Smooth rendering: its body's colours)
+    // a creature glows all over: every block of its body (a chain's segments, a Buzzy's) takes
+    // the tint of the first coloured buff any of them carries (buffs sit on the head)
+    const body = isCreature(block.type) ? this.clusterOf(block) : [block];
+    const buffed = body.map((b) => b.buffs?.find((x) => BUFF_TYPES[x.type]?.color)).find(Boolean);
+    // (the tint flag: that buff's place in TINT_BUFFS + 1; an Egg's: its creature's in EGG_SPOT_TYPES + 1)
+    const tint = block.type === BLOCK.EGG ? EGG_SPOT_TYPES.indexOf(block.inventory) + 1 : TINT_BUFFS.indexOf(buffed?.type) + 1;
+    block.spotsOf = block.inventory; // (an Egg: the creature its spots were drawn for)
+    for (const b of body) {
+      b.batch.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[b.type]));
+      if (!isTranslucent(b.type)) this._style(b).setZ(b.index, tint);
+      b.tinted = tint;
+      this._logChange(b.x, b.y, b.z); // (Smooth rendering: its body's colours)
+    }
     this._dirty();
     this._changed();
   }
@@ -1190,6 +1212,7 @@ export class World {
     (head.segments ??= []).push(seg);
     this._logChange(seg.x, seg.y, seg.z); // its cluster is now the head's
     this._changed();
+    if (head.buffs?.length) this._refreshLook(head); // (a glowing Buzzy's new segment glows too)
   }
 
   /** A body segment breaks off (its head or a segment ahead of it is gone): it becomes a creature of its own. */
@@ -1320,6 +1343,53 @@ export class World {
   }
 
   /**
+   * Egg `egg` hatches: it shrinks away where it is ('eggHatched'), and once it's gone the
+   * creature inside it (its inventory; an empty one, placed with the tool: any kind) grows into
+   * its cell (_bornFrom). Returns false if it's already going.
+   */
+  hatch(egg) {
+    const kinds = [...CREATURE_TYPES];
+    egg.hatching = egg.inventory ?? kinds[Math.floor(Math.random() * kinds.length)];
+    if (!this.vanish(egg, egg, { distanceCm: 0 })) return false;
+    this.emit('eggHatched', egg);
+    return true;
+  }
+
+  /** The hatched Egg `egg` is gone: its creature takes its cell, growing in from nothing ('creatureBorn'). */
+  _bornFrom(egg) {
+    const { x, y, z } = egg;
+    if (!this.add(x, y, z, egg.hatching)) return;
+    const c = this.get(x, y, z);
+    this.appear(c, { x, y, z });
+    this.emit('creatureBorn', c);
+  }
+
+  /**
+   * Creatures `a` and `b` (one-block, side by side) swap cells, each sliding over to the
+   * other's (mating: they clamber over each other), and turn to face the way they went.
+   * Returns whether they did (not with body segments).
+   */
+  swap(a, b, durationS = this.stepSeconds) {
+    if (a.segments?.length || b.segments?.length || a.segmentOf || b.segmentOf) return false;
+    const pa = new THREE.Vector3(a.x, a.y, a.z), pb = new THREE.Vector3(b.x, b.y, b.z);
+    const ka = cellKey(a.x, a.y, a.z), kb = cellKey(b.x, b.y, b.z);
+    if (this.blocks.get(ka) !== a || this.blocks.get(kb) !== b) return false;
+    this.blocks.set(ka, b);
+    this.blocks.set(kb, a);
+    [a.x, a.y, a.z] = [pb.x, pb.y, pb.z];
+    [b.x, b.y, b.z] = [pa.x, pa.y, pa.z];
+    this.anims.set(kb, { from: pa.clone(), to: pb.clone(), t0: this.time, dur: durationS * 1000, easeIn: true });
+    this.anims.set(ka, { from: pb.clone(), to: pa.clone(), t0: this.time, dur: durationS * 1000, easeIn: true });
+    this._logChange(pa.x, pa.y, pa.z);
+    this._logChange(pb.x, pb.y, pb.z);
+    this._reorient(a, [pb.x - pa.x, pb.y - pa.y, pb.z - pa.z], durationS);
+    this._reorient(b, [pa.x - pb.x, pa.y - pb.y, pa.z - pb.z], durationS);
+    this._dirty();
+    this._changed();
+    return true;
+  }
+
+  /**
    * Plays an "arriving" animation on `block` (already in the world, in its cell): over
    * `durationS` it moves from point `from` (cm) into its cell while growing from nothing to
    * full size. The reverse of vanish.
@@ -1393,6 +1463,11 @@ export class World {
       return null;
     }
     const made = this.get(cell.x, cell.y, cell.z);
+    if (made.type === BLOCK.EGG) {
+      // an Egg holds a young creature of its parent's kind (its spots that kind's colour), hatching in time (sim.js stepEggs)
+      made.inventory = tail.type;
+      this._refreshLook(made);
+    }
     this.setSmooth(made, true); // excreted blocks are smooth-shaded (unless their type is shadeFlat)
     this.appear(made, tail);
     this.emit('blockExcreted', { by: tail, block: made, sound });
@@ -1423,6 +1498,7 @@ export class World {
         this.vanishing.delete(b);
         this.remove(b.x, b.y, b.z);
         this.emit('blockVanished', b);
+        if (b.hatching) this._bornFrom(b); // (an Egg that hatched: its creature grows into the cell)
         continue;
       }
       const e = t * t * (3 - 2 * t); // smoothstep ease in/out

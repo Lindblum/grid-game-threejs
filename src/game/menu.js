@@ -39,6 +39,9 @@ export const VOLUME = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
 
 /** Options → Accessibility → Camera Speed: a multiplier on how fast the camera turns (mouse and stick), 10% to 150%. */
 export const CAMERA_SPEED = Object.freeze({ min: 0.1, max: 1.5, step: 0.1, default: 1 });
+/** Options → Video, with View Mode 3D (SBS / Interlaced): Depth (a multiplier on the eyes' separation: 0 flat) and Convergence (how far the screen's depth sits, × the distance to what the camera looks at). */
+export const STEREO_DEPTH = Object.freeze({ min: 0, max: 2, step: 0.1, default: 1 });
+export const STEREO_CONVERGENCE = Object.freeze({ min: 0.5, max: 2, step: 0.05, default: 1 });
 /** Options → Accessibility → Vibration: how strong the controllers' haptics are, 0 (off) to 2 (1: as made). */
 export const VIBRATION = Object.freeze({ min: 0, max: 2, step: 0.1, default: 1 }); // (above 100%: every buzz stronger, up to the controller's most)
 
@@ -216,8 +219,26 @@ function materialsItem(state) {
 
 /** Options → Video: graphics / performance settings. */
 function videoItems(state) {
+  const stereo = !state.inXR && (state.screenView === 'sbs' || state.screenView === 'interlaced');
   return [
     viewItem(state),
+    // 3D views: how strong, and at what distance the screen is
+    ...(stereo
+      ? [
+        {
+          id: 'stereoDepth',
+          label: `Depth: ${state.stereoDepth > 0 ? `${Math.round(state.stereoDepth * 100)}%` : 'Flat'}`,
+          icon: 'stereoDepth',
+          slider: { min: STEREO_DEPTH.min, max: STEREO_DEPTH.max, step: STEREO_DEPTH.step, value: state.stereoDepth },
+        },
+        {
+          id: 'stereoConvergence',
+          label: `Convergence: ${state.stereoConvergence.toFixed(2)}×`,
+          icon: 'stereoConvergence',
+          slider: { min: STEREO_CONVERGENCE.min, max: STEREO_CONVERGENCE.max, step: STEREO_CONVERGENCE.step, value: state.stereoConvergence },
+        },
+      ]
+      : []),
     background(state),
     materialsItem(state),
     {

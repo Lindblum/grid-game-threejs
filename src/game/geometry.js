@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BLOCK_STYLE, BLOCK_TYPES, BUFF_TYPES } from './blocks.js';
+import { BLOCK_COLORS, BLOCK_STYLE, BLOCK_TYPES, BUFF_TYPES, EGG_SPOT_TYPES, TINT_BUFFS } from './blocks.js';
 import { GRID, NEIGHBOR_DIRS } from './lattice.js';
 import { PERLIN_PERIOD, VORONOI_BORDER_MAX, VORONOI_PERIOD, createNoiseTexture } from './noiseTexture.js';
 
@@ -222,6 +222,15 @@ export const CRYSTAL_THICKNESS_CM = 1.6;
 /** Water refraction (Materials: Procedural): its index of refraction and how deep a body the light crosses (cm). How much light passes through follows its shader's opacity. */
 export const WATER_IOR = 1.33;
 export const WATER_THICKNESS_CM = 1.2;
+/**
+ * Fog and Nimbus scattering (Refraction on, any Materials): what's behind a cloud shows through
+ * blurred. Physical transmission with no bending (no thickness) and rough: how rough sets how
+ * blurred (the transmission image's mip level; it needs an ior of 1.5 to blur at all).
+ */
+export const CLOUD_BLUR_ROUGHNESS = 0.3;
+/** …and how much more of what's behind a scattering cloud shows than its opacity would let through blended (see the transmission chunk). */
+const CLOUD_SCATTER_GAIN = 4;
+const CLOUD_IOR = 1.5;
 
 export function createBlockMaterials() {
   const uniforms = {
@@ -241,14 +250,15 @@ export function createBlockMaterials() {
   // writing depth: they're nearly opaque, so what's behind them is hidden (instead of the
   // later-drawn blocks showing through in front of them), while Water and Crystal in front of
   // a cloud still blend over it
-  const cloud = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true });
+  const cloudOptions = { roughness: CLOUD_BLUR_ROUGHNESS, metalness: 0.0, transparent: true, depthWrite: true, ior: CLOUD_IOR, thickness: 0 }; // (physical: to scatter, see applyRefraction)
+  const cloud = new THREE.MeshPhysicalMaterial(cloudOptions);
   // Rendering: Smooth: each cluster drawn as one merged, smoothed mesh (clusterBody.js); ordinary (not
   // instanced) geometry carrying the same attributes per vertex, colour as vertex colour
   const body = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true });
   // a body the camera is inside (World.setSeeThrough): dithered all over, its inside faces drawn too
   const bodySeeThrough = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.0, vertexColors: true, side: THREE.DoubleSide });
   const bodyTranslucent = new THREE.MeshPhysicalMaterial({ ...waterOptions, vertexColors: true });
-  const bodyCloud = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0, transparent: true, depthWrite: true, vertexColors: true });
+  const bodyCloud = new THREE.MeshPhysicalMaterial({ ...cloudOptions, vertexColors: true });
   // …and a depth pre-pass for each (drawn first, by the same mesh: see BlockBatch's depthMaterial
   // and ClusterBodies._bodyMesh): with the depth laid down, the colour pass blends only each
   // pixel's nearest surface, once, so a cloud is the same see-through all over whatever order its
@@ -295,7 +305,8 @@ export function createBlockMaterials() {
   // Options → Refraction: On, Crystal and Water bend the scene behind them (transmission: the
   // opaque scene drawn again, per eye in XR, into a mipmapped image), with Materials: Procedural
   // only; Off, or with Simple / Solid (for slower GPUs), they are simply see-through,
-  // alpha-blended at their shader's opacity, which is much cheaper
+  // alpha-blended at their shader's opacity, which is much cheaper. Fog and Nimbus scatter (what's
+  // behind them blurred, from the same image) whenever it's On, whatever the Materials
   let refraction = true;
   const applyRefraction = () => {
     const set = (mats, transmission) => {
@@ -313,6 +324,15 @@ export function createBlockMaterials() {
     set([translucent, bodyTranslucent], refracts ? 1 : 0);
     // refracting Water is drawn whole (writing depth, not blended): no depth pre-pass needed
     translucentDepth.visible = bodyTranslucentDepth.visible = !refracts;
+    // clouds: scattering (transmission, not blended) or blended; they write depth either way
+    for (const m of [cloud, bodyCloud]) {
+      const t = refraction ? 1 : 0;
+      if (m.transmission === t) continue;
+      m.transmission = t;
+      m.transparent = !refraction;
+      m.needsUpdate = true;
+    }
+    cloudDepth.visible = bodyCloudDepth.visible = !refraction; // (scattering, a cloud is drawn whole: no pre-pass)
   };
   const setMaterials = (level) => {
     if (!MATERIALS.includes(level) || options.level === level) return;
@@ -518,7 +538,10 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         ${NOISE_GLSL}
         ${WATER_GLSL}
         ${BUMP_GLSL}
-        #define BUFF_GLOW vec3(${new THREE.Color(Object.values(BUFF_TYPES).find((buff) => buff.color).color).toArray().map((v) => v.toFixed(3)).join(', ')})
+        // a buff's glow colour, by a creature's tint flag (TINT_BUFFS: 1 Rockbiter gold, 2 Fertile pink, …)
+        const vec3 BUFF_GLOWS[${TINT_BUFFS.length}] = vec3[${TINT_BUFFS.length}](${TINT_BUFFS.map((k) => `vec3(${new THREE.Color(BUFF_TYPES[k].color).toArray().map((v) => v.toFixed(3)).join(', ')})`).join(', ')});
+        // an Egg's spot colour, by its tint flag: the creature inside it (EGG_SPOT_TYPES)
+        const vec3 EGG_SPOTS[${EGG_SPOT_TYPES.length}] = vec3[${EGG_SPOT_TYPES.length}](${EGG_SPOT_TYPES.map((t) => `vec3(${new THREE.Color(BLOCK_COLORS[t]).toArray().map((v) => v.toFixed(3)).join(', ')})`).join(', ')});
         // a rounded body's "out from the centre" direction: a merged body's smooth normal; a lone
         // block's direction from its centre with Rendering: Smooth, else (Blocky: no exceptions,
         // creatures and clouds too) its flat face normal
@@ -933,6 +956,24 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           diffuseColor.rgb = col;
           surfaceRough = mix(0.12, 0.6, gap);              // glossy scales, dull seams
           noOutline = ROUND_LOOK;
+        } else if (abs(vStyle - ${BLOCK_STYLE.egg.toFixed(1)}) < 0.5) {
+          // Egg: a smooth, faintly mottled white shell with blotchy spots (and fine freckles) in
+          // the colour of the creature inside (its tint flag: EGG_SPOTS), else speckled brown
+          vec3 p = vNoisePos;
+          float blot = perlin3(p * 1.9 + vSeed) * 0.7 + perlin3(p * 4.3 + vSeed * 1.7) * 0.3;
+          float spot = smoothstep(0.26, 0.34, blot);
+          float freckle = FINE(smoothstep(0.55, 0.68, perlin3(p * 9.0 + 2.3)));
+          int si = int(vTint + 0.5);
+          vec3 spotCol = si > 0 && si <= ${EGG_SPOT_TYPES.length} ? EGG_SPOTS[si - 1] : vec3(0.42, 0.32, 0.22);
+          vec3 shellCol = diffuseColor.rgb * (0.94 + 0.06 * perlin3(p * 2.7 + 5.1));
+          diffuseColor.rgb = mix(shellCol, spotCol, max(spot, freckle * 0.55));
+          crystalGlow = shellCol * 0.18 * (1.0 - max(spot, freckle * 0.55)); // (a chalky white that stays white in dim light)
+          bumpH = spot * 0.15 - freckle * 0.1;
+          bumpStrength = 0.02;
+          surfaceRough = 0.4;  // a soft eggshell sheen
+          specDim = 0.6;
+          cloudNormal = BODY_DIR; // rounded, like a creature
+          noOutline = ROUND_LOOK;
         }
         #endif
         if (vSmooth > 0.5) noOutline = 1.0; // smooth-shaded blocks: a rounded look, no dark corners
@@ -987,12 +1028,18 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           // a buff with a colour (e.g. Rockbiter gold) leaves the shell as it is and adds a layer
           // of glowing ripples in that colour: bands that travel up over the body, warped by
           // noise, sharpened into thin crests, the whole glow pulsing brighter and dimmer
-          float tint = clamp(vTint, 0.0, 1.0);
-          if (tint > 0.0) {
+        }
+        {
+          // a buff with a colour (Rockbiter gold, Fertile pink) on any creature: its shell stays
+          // as it is, under a layer of glowing ripples in that colour, bands that travel up over
+          // the body, warped by noise, sharpened into thin crests, the whole glow pulsing
+          int ti = int(vTint + 0.5);
+          bool creatureStyle = ${BLOCK_TYPES.filter((t) => t.creature).map((t) => `abs(vStyle - ${t.style.toFixed(1)}) < 0.5`).join(' || ')};
+          if (creatureStyle && ti > 0 && ti <= ${TINT_BUFFS.length}) {
             float wave = vLocalPos.y * 4.5 + perlin3(vNoisePos * 1.4 + vec3(0.0, uTime * 0.3, 0.0)) * 2.2;
             float crest = pow(0.5 + 0.5 * sin(wave - uTime * 5.0), 6.0);
             float pulse = 0.55 + 0.45 * sin(uTime * 3.2);
-            crystalGlow += BUFF_GLOW * (0.12 + 1.1 * crest) * pulse * tint;
+            crystalGlow += BUFF_GLOWS[ti - 1] * (0.12 + 1.1 * crest) * pulse;
           }
         }
         #endif
@@ -1017,12 +1064,16 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
       )
       .replace(
         '#include <transmission_fragment>',
-        // refractive Water: how much of the scene behind shows through follows the shader's
-        // opacity (clear in the troughs, less so on the crests and at grazing angles)
-        translucentPass && !subPass
+        // refractive Water, and scattering clouds: how much of the scene behind shows through
+        // follows the shader's opacity (Water: clear in the troughs, less so on the crests and at
+        // grazing angles; a cloud: its thin parts)
+        translucentPass && !crystalPass
           ? THREE.ShaderChunk.transmission_fragment.replace(
             'material.transmission = transmission;',
-            'material.transmission = transmission * clamp(1.0 - diffuseColor.a, 0.0, 1.0);',
+            // (a cloud lets through more than its blended look would: blurred, a little is lost)
+            cloudPass ? `material.transmission = transmission * clamp((1.0 - diffuseColor.a) * ${CLOUD_SCATTER_GAIN.toFixed(2)}, 0.0, 0.85);
+          material.roughness = ${CLOUD_BLUR_ROUGHNESS.toFixed(3)}; // (how blurred: the cloud's own surface roughness, for its shading, is far rougher)`
+              : 'material.transmission = transmission * clamp(1.0 - diffuseColor.a, 0.0, 1.0);',
           )
           : '#include <transmission_fragment>',
       )

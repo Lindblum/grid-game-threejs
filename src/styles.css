@@ -86,11 +86,12 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 }
 
 /* View Mode → 3D: SBS / Interlaced: the page's UI once per eye, each laid out on the whole window
-   and shifted toward the other eye (--pop), so the two fuse a little in front of the screen.
+   and shifted toward the other eye by --pop (0: none: the menus sit at the depth of the camera's
+   target, which the 3D views put at the screen, so they show no depth of their own).
    SBS squeezes each into its half; Interlaced weaves them row by row (the left eye on the 1st,
    3rd, … rows from the top, as interlaced.js draws the view; --row: one device pixel). Only the
    topmost copy takes the pointer in Interlaced (a mask doesn't change what's under it) */
-.eye { position: absolute; inset: 0; pointer-events: none; --pop: 0.3vw; }
+.eye { position: absolute; inset: 0; pointer-events: none; --pop: 0px; }
 .eye-sbs { transform-origin: 0 0; }
 .eye-sbs.eye-left { transform: translateX(calc(var(--pop) / 2)) scaleX(0.5); }
 .eye-sbs.eye-right { transform: translateX(calc(50vw - var(--pop) / 2)) scaleX(0.5); }
@@ -228,10 +229,9 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 /* Options → Debug: a side panel under Options; its sections open beneath their buttons */
 /* the panel's own text size (14 px × Accessibility → Text Size), like the Options menu's */
 .debug-section-body { display: flex; flex-direction: column; gap: var(--ui-gap); }
-/* Debug's text fields (Performance's and the Inspector's readouts, the log, Claude's reply and
-   prompt): one darkened, framed box (like xr-music-threejs's progression queue); values and
+/* Debug's text fields (Performance's and the Inspector's readouts, the log): one darkened, framed box (like xr-music-threejs's progression queue); values and
    log lines in monospace */
-.debug-box, .debug-log, .claude-log, .claude-text {
+.debug-box, .debug-log {
   padding: var(--ui-pad-y) var(--ui-pad-x);
   border: 1px solid var(--ui-well-border);
   border-radius: var(--ui-radius);
@@ -248,22 +248,10 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .debug-log .log-warn { color: #ffd166; }
 .debug-log .log-error { color: #ff8a80; }
 .debug-log .log-empty { color: var(--muted); }
-/* Debug → Claude (placeholder: not connected yet) */
-.claude-log { min-height: 48px; max-height: 160px; overflow: auto; font-family: ui-monospace, Consolas, monospace; }
-.claude-log .log-empty { color: var(--muted); }
-.claude-text { width: 100%; box-sizing: border-box; resize: none; font: inherit; color: var(--text); outline: none; }
-.claude-text:focus { border-color: var(--accent); }
-.claude-buttons { display: flex; gap: var(--ui-gap); align-items: center; }
-.claude-buttons .btn { min-height: var(--ui-field-h); padding: var(--ui-pad-y) var(--ui-pad-x); border-radius: var(--ui-radius); }
-.claude-buttons .icon-btn { display: grid; place-items: center; width: var(--ui-field-h); height: var(--ui-field-h); padding: 0; }
-.claude-buttons .icon-btn img { width: var(--ui-icon); height: var(--ui-icon); }
-.claude-buttons .send-btn { margin-left: auto; }
 /* dictating: the microphone button glows red */
 /* the hidden field the XR system keyboard types into: focusable, but out of sight */
 .xr-keyboard-field { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; border: 0; padding: 0; resize: none; }
 /* reading the response aloud: the speech button glows blue */
-.claude-buttons .icon-btn.speaking { background: rgba(90, 160, 255, 0.45); border-color: #9cc8ff; }
-.claude-buttons .icon-btn.listening { background: rgba(255, 90, 90, 0.4); border-color: #ff8a80; }
 .hud { pointer-events: auto; padding: 8px 12px 12px; position: relative; max-width: 100%; box-sizing: border-box; overflow: hidden; }
 .hud-label {
   display: flex; justify-content: space-between; align-items: baseline;

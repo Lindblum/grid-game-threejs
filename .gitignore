@@ -2,5 +2,5 @@ node_modules
 dist
 *.bat
 *-Notes.txt
-# secrets (the Debug → Claude bridge token)
+# local settings (secrets, e.g. NGROK_HOST)
 .env.local

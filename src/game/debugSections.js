@@ -2,7 +2,7 @@
 // Debug dock and the XR debug tablet, and remembered in this browser. `panel` is the whole panel
 // (its Debug button): collapsed, only the button shows.
 
-export const DEBUG_SECTIONS = ['performance', 'inspector', 'claude', 'logging'];
+export const DEBUG_SECTIONS = ['performance', 'inspector', 'logging'];
 
 const key = (id) => `debugCollapsed.${id}`;
 const read = (id) => {

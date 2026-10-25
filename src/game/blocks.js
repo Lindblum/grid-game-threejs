@@ -55,7 +55,13 @@ export const BEHAVIOR = Object.freeze({
   WALK: 'walk', // heads for `walkTarget` (set with the Select tool) by the shortest path
   TRAPPED: 'trapped', // walled in on all sides: does nothing; freed by a gap, dies if it lasts too long
   BURROW: 'burrow', // every 30–60 Wander turns, for 3–6 turns: excrete, eat, go down, over and over (sim.js burrow)
+  MATE: 'mate', // with a partner of its kind (Mate, while Fertile): they clamber over each other for MATE_TURNS turns, then the one that started it carries an Egg (sim.js mateTurn)
 });
+
+/** Mating lasts this many turns (BEHAVIOR.MATE). */
+export const MATE_TURNS = 5;
+/** An Egg hatches this many turns after it's laid or placed (sim.js stepEggs). */
+export const GESTATION_TURNS = 5;
 
 export const BLOCK_TYPES = [
   { key: 'STONE', id: 'gray', name: 'Stone', color: '#9aa0a6', style: 2, opacity: 1, sinkable: true },
@@ -78,11 +84,10 @@ export const BLOCK_TYPES = [
     priorityDiet: ['BERRY', 'PLOP'],
     walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 2,
-    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED],
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.MATE],
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
     excretes: { WOOD: 'DIRT' },
-    eatBuffs: { BERRY: { buff: 'rockbiter', turns: null, charges: 5 } },
   },
   {
     // like a Crawly, but it flies (as if it always had the Flight buff)
@@ -96,7 +101,7 @@ export const BLOCK_TYPES = [
     priorityDiet: ['BERRY'],
     walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 3,
-    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED],
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.MATE],
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
   },
@@ -110,7 +115,7 @@ export const BLOCK_TYPES = [
     priorityDiet: ['BERRY'],
     walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 1, // around its head
-    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.BURROW], // the head's behavior drives the chain
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.BURROW, BEHAVIOR.MATE], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
   },
@@ -126,12 +131,15 @@ export const BLOCK_TYPES = [
     priorityDiet: ['CRAWLY', 'SQUIRMY'],
     walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 2, // around its head
-    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED], // the head's behavior drives the chain
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.MATE], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
   },
   { key: 'FOG', id: 'fog', name: 'Fog', color: '#d3d7dd', style: 9, opacity: 0.93 }, // light gray
   { key: 'NIMBUS', id: 'nimbus', name: 'Nimbus', color: '#5b616b', style: 10, opacity: 0.93 }, // dark gray
+  // laid by a creature that mated (it excretes it), or placed: its inventory is the creature
+  // inside (its spots are that creature's colour), which hatches out after GESTATION_TURNS
+  { key: 'EGG', id: 'egg', name: 'Egg', color: '#f4efe4', style: 16, opacity: 1, sinkable: true }, // white, spotted
   // world-creation helper: a placeholder that takes up cells while the NEW_SCENE_TEMPLATE runs
   // (e.g. to leave a cave or gap), then every Void is deleted (World.generateNew). Never drawn.
   { key: 'VOID', id: 'void', name: 'Void', color: '#ffffff', style: 13, opacity: 1, hidden: true },
@@ -173,7 +181,14 @@ export const BUFF_TYPES = Object.freeze({
     priorityDiet: [BLOCK.CRYSTAL], // …and goes after any Crystal it sees
   },
   flight: { name: 'Flight', fly: true }, // any empty cell is a floor to it, and it never falls
+  fertile: { name: 'Fertile', color: '#ff6fb8' }, // (a Berry: it can Mate; no time limit, used up by mating; pink ripples, like Rockbiter's gold)
 });
+
+/** The buffs with a colour, in order: a creature's tint flag (blockStyle.z) is its first coloured buff's place here + 1 (World._refreshLook; the shader's BUFF_GLOW_n). */
+export const TINT_BUFFS = Object.keys(BUFF_TYPES).filter((k) => BUFF_TYPES[k].color);
+
+/** The creature types, in order: an Egg's spot colour flag (blockStyle.z) is its creature's place here + 1 (World._refreshLook; the shader's EGG_SPOTS). */
+export const EGG_SPOT_TYPES = BLOCK_TYPES.filter((t) => t.creature).map((t) => t.id);
 
 // excretes is written with keys too: turn it into ids
 for (const t of BLOCK_TYPES) {

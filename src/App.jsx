@@ -7,7 +7,6 @@ import { menuItemIconURL } from './game/menuIcons.js';
 import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './game/controls.js';
 import { cellURL } from './game/inputIcons.js';
 import { getLogs } from './game/debugLog.js';
-import { claudePrompt } from './game/claudePrompt.js';
 import { debugSections } from './game/debugSections.js';
 import { playTick } from './game/audio.js';
 
@@ -60,11 +59,48 @@ export default function App() {
   );
 }
 
+/**
+ * View Mode → 3D: the UI is drawn once per eye (.eye copies): whatever is scrolled in one copy
+ * (a menu, a panel's list) scrolls the same element in the other, found by its place in its copy.
+ */
+function useMirroredScroll(on) {
+  useEffect(() => {
+    if (!on) return;
+    let mirroring = false;
+    const pathIn = (el, root) => {
+      const path = [];
+      for (let n = el; n && n !== root; n = n.parentElement) path.unshift([...n.parentElement.children].indexOf(n));
+      return path;
+    };
+    const follow = (root, path) => path.reduce((n, i) => n?.children[i], root);
+    const onScroll = (e) => {
+      const el = e.target;
+      if (mirroring || !(el instanceof Element)) return;
+      const eye = el.closest('.eye');
+      if (!eye) return;
+      const path = pathIn(el, eye);
+      mirroring = true;
+      for (const other of document.querySelectorAll('.eye')) {
+        if (other === eye) continue;
+        const twin = follow(other, path);
+        if (twin) {
+          twin.scrollTop = el.scrollTop;
+          twin.scrollLeft = el.scrollLeft;
+        }
+      }
+      requestAnimationFrame(() => (mirroring = false)); // (the twin's own scroll event, just caused, is ignored)
+    };
+    document.addEventListener('scroll', onScroll, true); // (scroll doesn't bubble: caught on the way down)
+    return () => document.removeEventListener('scroll', onScroll, true);
+  }, [on]);
+}
+
 function Overlay({ engine }) {
   const s = useSyncExternalStore(engine.subscribe, engine.getState);
   // View Mode → 3D: SBS / Interlaced: the page's UI is drawn for each eye too, a little in front
   // of the screen (see .eye in styles.css)
   const stereo = !s.inXR && (s.screenView === 'sbs' || s.screenView === 'interlaced') ? s.screenView : null;
+  useMirroredScroll(!!stereo);
   if (!stereo) return <OverlayView engine={engine} s={s} />;
   return ['left', 'right'].map((eye) => (
     <div key={eye} className={`eye eye-${stereo} eye-${eye}`} style={{ '--row': `${1 / (window.devicePixelRatio || 1)}px` }}>
@@ -343,8 +379,8 @@ function DebugSection({ id, icon, title, summary, children }) {
 /**
  * Options → Debug (browser): a side panel under Options, the next row of the left column. Its
  * terminal button opens and closes it (closed, only the button shows); open, Performance (FPS
- * and timings), the Inspector (the selected / targeted block's properties), Claude (a
- * placeholder for now) and Logging (the recent console log) each open beneath their buttons.
+ * and timings), the Inspector (the selected / targeted block's properties) and Logging (the
+ * recent console log) each open beneath their buttons.
  * Resized from its bottom-right corner (double-click resets). Polls the engine a few times a
  * second rather than every frame.
  */
@@ -421,10 +457,6 @@ function DebugPanel({ engine }) {
             </table>
           </div>
         </DebugSection>
-        {/* Claude: a placeholder for now — not wired to the Claude bridge (claudeBridge.js) yet */}
-        <DebugSection id="claude" icon="claude" title="Claude" summary="Not connected">
-          <ClaudePrompt />
-        </DebugSection>
         <DebugSection id="logging" icon="logging" title="Logging" summary={`${logs.length} lines`}>
           <div
             className="debug-log"
@@ -450,56 +482,6 @@ function DebugPanel({ engine }) {
   );
 }
 
-/**
- * Debug → Claude (browser): the reply area (placeholder) and the prompt box. The prompt (shared with
- * the XR debug tablet: claudePrompt.js) can be typed, dictated (microphone button: appended to what's
- * there) and cleared. Send isn't wired to the Claude bridge yet.
- */
-function ClaudePrompt() {
-  const { prompt, listening, micSupported, speaking, speechSupported } = useSyncExternalStore(claudePrompt.subscribe, claudePrompt.getSnapshot);
-
-  return (
-    <>
-      <div className="claude-log">
-        <div className="log-empty">{claudePrompt.responseText()}</div>
-      </div>
-      <div className="claude-buttons">
-        <button
-          className={`btn icon-btn${speaking ? ' speaking' : ''}`}
-          onClick={tickThen(() => claudePrompt.toggleSpeech())}
-          disabled={!speechSupported}
-          title={speechSupported ? (speaking ? 'Stop reading' : 'Read aloud') : 'Reading aloud isn’t supported in this browser'}
-        >
-          <img src={menuItemIconURL('speak')} alt="Read aloud" draggable={false} />
-        </button>
-      </div>
-      <textarea className="claude-text" rows={2} placeholder="Ask Claude…" value={prompt} onChange={(e) => claudePrompt.setPrompt(e.target.value)} />
-      <div className="claude-buttons">
-        <button
-          className={`btn icon-btn${listening ? ' listening' : ''}`}
-          onClick={tickThen(() => claudePrompt.toggleDictation())}
-          disabled={!micSupported}
-          title={micSupported ? (listening ? 'Stop dictating' : 'Dictate') : 'No dictation in this browser: use the keyboard’s mic'}
-        >
-          <img src={menuItemIconURL('mic')} alt="Dictate" draggable={false} />
-        </button>
-        <button className="btn icon-btn" onClick={tickThen(() => claudePrompt.clear())} title="Clear">
-          <img src={menuItemIconURL('clear')} alt="Clear" draggable={false} />
-        </button>
-        <button className="btn send-btn" disabled>Send</button>
-      </div>
-      {/* XR: focusing this (from the tablet) brings up the headset's system keyboard; what it types goes to the prompt */}
-      <textarea
-        id="claude-xr-input"
-        className="xr-keyboard-field"
-        tabIndex={-1}
-        aria-hidden="true"
-        defaultValue={prompt}
-        onInput={(e) => claudePrompt.setPrompt(e.currentTarget.value)}
-      />
-    </>
-  );
-}
 
 /** The glyph of the button that does something (inputIcons.js tokens), at the menu's icon height. */
 function ActionGlyph({ tokens }) {
@@ -713,7 +695,7 @@ function RightPanel({ engine, s }) {
     );
   }
   const tools = engine.toolsAvailable(s);
-  const { eat, excrete } = s.actions;
+  const { eat, excrete, mate = [] } = s.actions;
   const glyphs = Engine.ACTION_GLYPHS[s.inputDevice] ?? Engine.ACTION_GLYPHS.mk;
   const style = { materials: s.materials, smooth: s.smoothRendering };
   const blockIcon = (type) => toolIconURL(TOOLS.find((t) => t.block === type) ?? { id: type, block: type }, 64, style);
@@ -733,7 +715,7 @@ function RightPanel({ engine, s }) {
     );
   };
   const guide = !s.inXR; // (windowed: its Controls dropdown; in XR, Options → Accessibility → Controller Guide)
-  const body = tools || eat.length > 0 || excrete || guide;
+  const body = tools || eat.length > 0 || excrete || mate.length > 0 || guide;
   return (
     <aside className="side-panel right-panel" ref={panelRef} style={size}>
       <ResizeGrip place="grip-bottom-left" title="Drag to resize (double-click: reset)" {...grip} />
@@ -791,6 +773,7 @@ function RightPanel({ engine, s }) {
           {/* what the selected creature can do now: at the bottom */}
           {eat.length > 0 && action('Consume', glyphs.eat, eat, () => engine.selectedEat())}
           {excrete && action('Excrete', glyphs.excrete, [excrete], () => engine.selectedExcrete())}
+          {s.actions.mate?.length > 0 && action('Mate', glyphs.mate, s.actions.mate, () => engine.selectedMate())}
         </div>
       )}
     </aside>

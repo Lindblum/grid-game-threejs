@@ -222,35 +222,6 @@ const DRAW = {
     // the chosen option in a dropdown's list
     line(ctx, P, [[0.22, 0.52], [0.42, 0.72], [0.8, 0.3]]);
   },
-  mic(ctx, P, s) {
-    // microphone: capsule head, a cradle arc under it, stem and base
-    roundedRect(ctx, P, 0.37, 0.12, 0.26, 0.44, 0.13, s);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(...P(0.5, 0.44), 0.24 * s, 0.15, Math.PI - 0.15);
-    ctx.stroke();
-    line(ctx, P, [[0.5, 0.68], [0.5, 0.84]]);
-    line(ctx, P, [[0.34, 0.86], [0.66, 0.86]]);
-  },
-  speak(ctx, P) {
-    // a head in profile (facing right) with sound waves coming from the mouth
-    line(ctx, P, [
-      [0.2, 0.86], [0.2, 0.66], [0.12, 0.54], [0.12, 0.36], [0.2, 0.2], [0.34, 0.12], [0.46, 0.14],
-      [0.54, 0.24], [0.56, 0.36], [0.62, 0.46], [0.56, 0.5], [0.56, 0.62], [0.48, 0.66], [0.42, 0.66], [0.42, 0.86],
-    ]);
-    const [cx, cy] = P(0.6, 0.5);
-    const s = P(1, 0)[0] - P(0, 0)[0];
-    for (const r of [0.14, 0.26]) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, s * r, -0.7, 0.7);
-      ctx.stroke();
-    }
-  },
-  clear(ctx, P) {
-    // an X: empty the field
-    line(ctx, P, [[0.24, 0.24], [0.76, 0.76]]);
-    line(ctx, P, [[0.76, 0.24], [0.24, 0.76]]);
-  },
   prev(ctx, P) {
     line(ctx, P, [[0.6, 0.24], [0.36, 0.5], [0.6, 0.76]]);
   },
@@ -585,6 +556,20 @@ const DRAW = {
     circle(ctx, P, 0.28, 0.44, 0.06, s, { fill: true });
     line(ctx, P, [[0.5, 0.86], [0.9, 0.14]]); // struck through
   },
+  stereoDepth(ctx, P) {
+    // Depth: two frames offset, one before the other (the two eyes' views)
+    line(ctx, P, [[0.14, 0.3], [0.62, 0.3], [0.62, 0.78], [0.14, 0.78], [0.14, 0.3]]);
+    ctx.globalAlpha *= 0.55;
+    line(ctx, P, [[0.38, 0.18], [0.86, 0.18], [0.86, 0.66], [0.62, 0.66]]);
+    line(ctx, P, [[0.38, 0.18], [0.38, 0.3]]);
+  },
+  stereoConvergence(ctx, P, s) {
+    // Convergence: two eyes' lines of sight meeting at a point
+    circle(ctx, P, 0.24, 0.8, 0.07, s);
+    circle(ctx, P, 0.76, 0.8, 0.07, s);
+    line(ctx, P, [[0.27, 0.72], [0.5, 0.2], [0.73, 0.72]]);
+    circle(ctx, P, 0.5, 0.2, 0.05, s, { fill: true });
+  },
   guidesOn(ctx, P, s) {
     // Direction Guides: a creature (a block), a line out from it, and the dot it's heading for
     poly(ctx, P, [[0.12, 0.6], [0.4, 0.6], [0.4, 0.88], [0.12, 0.88]]);
@@ -622,10 +607,6 @@ const DRAW = {
     // Debug → Inspector: a magnifying glass
     circle(ctx, P, 0.43, 0.43, 0.24, s);
     line(ctx, P, [[0.6, 0.6], [0.82, 0.82]]);
-  },
-  claude(ctx, P) {
-    // Debug → Claude: a speech bubble
-    poly(ctx, P, [[0.14, 0.2], [0.86, 0.2], [0.86, 0.66], [0.46, 0.66], [0.28, 0.82], [0.3, 0.66], [0.14, 0.66]]);
   },
   logging(ctx, P) {
     // Debug → Logging: lines of text of different lengths

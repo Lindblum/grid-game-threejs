@@ -21,6 +21,7 @@ export const TOOLS = [
   { id: BLOCK.CRYSTAL, label: blockProps(BLOCK.CRYSTAL).name, block: BLOCK.CRYSTAL },
   { id: BLOCK.WOOD, label: blockProps(BLOCK.WOOD).name, block: BLOCK.WOOD },
   { id: BLOCK.BERRY, label: blockProps(BLOCK.BERRY).name, block: BLOCK.BERRY },
+  { id: BLOCK.EGG, label: blockProps(BLOCK.EGG).name, block: BLOCK.EGG },
   { id: BLOCK.WATER, label: blockProps(BLOCK.WATER).name, block: BLOCK.WATER },
   { id: BLOCK.NIMBUS, label: blockProps(BLOCK.NIMBUS).name, block: BLOCK.NIMBUS },
   { id: BLOCK.FOG, label: blockProps(BLOCK.FOG).name, block: BLOCK.FOG },

@@ -14,6 +14,8 @@ import breezeUrl from '../../sfx/breeze.wav?url';
 import buzzUrl from '../../sfx/buzz.wav?url';
 import slitherUrl from '../../sfx/slither.wav?url';
 import skitterUrl from '../../sfx/skitter.wav?url';
+import hatchUrl from '../../sfx/hatch.wav?url';
+import mateUrl from '../../sfx/mate.wav?url';
 import soilUrl from '../../music/soil.wav?url';
 // Not in sfx/ yet: resolved at run time, so the build doesn't fail; silent until the file exists.
 const excreteUrl = new URL('../../sfx/excrete.wav', import.meta.url).href;
@@ -296,6 +298,18 @@ export const SOUND_EFFECTS = {
       { wave: WAVE_TYPES.NOISE, f0: NOTE.A3, q: 1.4, t0: 0, dur: 0.16, gain: 0.05 },
       { wave: WAVE_TYPES.SINE, f0: NOTE.G3, f1: NOTE.C3, t0: 0.02, dur: 0.11, gain: 0.06 },
       { wave: WAVE_TYPES.SINE, f0: NOTE.E3, f1: NOTE.A2, t0: 0.1, dur: 0.12, gain: 0.045 },
+    ],
+  },
+  fertile: { // a creature ate a Berry and is Fertile: a warm rising shimmer, three bell notes over a sparkle
+    tones: [...bell(NOTE.C5, 0, 0.3, 0.09), ...bell(NOTE.E5, 0.07, 0.3, 0.09), ...bell(NOTE.A5, 0.14, 0.45, 0.1), { ...SPARKLE, t0: 0.1 }],
+  },
+  mate: { file: mateUrl }, // mating (each turn of it)
+  hatch: { file: hatchUrl }, // an Egg hatches
+  birth: { // a creature hatched out: a bright little chirp, rising twice
+    tones: [
+      { wave: WAVE_TYPES.SINE, f0: NOTE.E6, f1: NOTE.B6, t0: 0, dur: 0.07, gain: 0.12 },
+      { wave: WAVE_TYPES.SINE, f0: NOTE.G6, f1: NOTE.D7, t0: 0.1, dur: 0.08, gain: 0.12 },
+      ...bell(NOTE.C6, 0.2, 0.35, 0.08),
     ],
   },
   bump: { // soft, muted low "bonk": a controlled creature was steered where it can't go

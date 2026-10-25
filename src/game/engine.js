@@ -6,10 +6,9 @@ import { HeldBodies } from './heldBodies.js';
 import { ControllerGuide } from './controllerGuide.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, pathToward, pursuitCell, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
+import { canStand, pathToward, pursuitCell, mateChoices, startMate, stepEggs, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { getLogs, getLogVersion } from './debugLog.js';
-import { claudePrompt } from './claudePrompt.js';
 import { debugSections } from './debugSections.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canEat, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
@@ -22,7 +21,7 @@ import {
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
 import { RightHudPanel, MenuPanel, DebugTablet, ViewPanel } from './xrPanels.js';
-import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, VIBRATION, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
+import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, VIBRATION, STEREO_DEPTH, STEREO_CONVERGENCE, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
 import { Interlaced } from './interlaced.js';
@@ -284,6 +283,8 @@ export class Engine {
       refraction: true, // Options → Refraction: Crystal and Water bend what's behind them, with Procedural materials (Off, or Simple / Solid: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       cameraSpeed: CAMERA_SPEED.default, // Options → Accessibility → Camera Speed: a multiplier on the camera's turning
+      stereoDepth: STEREO_DEPTH.default, // Options → Video (3D views): × the eyes' separation (_stereoEyeSep)
+      stereoConvergence: STEREO_CONVERGENCE.default, // Options → Video (3D views): the screen's depth, × the camera's distance to its target (_setStereoFocus)
       vibration: VIBRATION.default, // Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 2 (_pulse; 1 as made)
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
       controllerGuide: false, // Options → Accessibility → Controller Guide: XR labels beside the controllers' buttons (_guideTexts)
@@ -297,6 +298,7 @@ export class Engine {
       toolIndex: 0,
       inXR: false, // in an XR view (a WebXR session, or the handheld motion-sensor view)
       screenView: 'normal', // View Mode outside XR: 'normal', 'sbs' or 'interlaced' (see menu.js currentView)
+      windowView: 'normal', // the last of those picked (remembered: a refresh comes back to it; screenView goes Normal on entering XR)
       views: ['normal'], // View Mode: the views this device can show (menu.js availableViews)
       phone: false, // a phone / tablet: XR is Phone AR or Phone Viewer instead of HMD Stereo
       phoneStereo: true, // phone XR: two lens-corrected eyes for a viewer (Phone Viewer), else one view (Phone AR)
@@ -312,7 +314,7 @@ export class Engine {
       // what the selected creatures could do right now (the Control menu's actions; _updateActions):
       // eat (the distinct block types next to them they could eat), excrete (the block type that
       // would come out, with somewhere for it to go); input: which glyphs to show ('mk', 'pad', 'xr')
-      actions: { eat: [], excrete: null },
+      actions: { eat: [], excrete: null, mate: [] },
       inputDevice: 'mk',
       toast: null,
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
@@ -401,7 +403,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'textSize', 'cameraSpeed', 'vibration', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'controlsGuideOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'windowView', 'textSize', 'cameraSpeed', 'vibration', 'stereoDepth', 'stereoConvergence', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'controlsGuideOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -417,7 +419,6 @@ export class Engine {
   toggleDebug() {
     const on = !this.state.debugMode;
     this.setState({ debugMode: on });
-    if (!on) claudePrompt.stopDictation();
     this._saveOptions(); // (the menu saves on leaving Options; the key saves at once)
     console.info(`Debug mode ${on ? 'on' : 'off'}`);
   }
@@ -433,6 +434,7 @@ export class Engine {
    */
   _applyOptions(saved) {
     if (!saved) return;
+    if (['normal', 'sbs', 'interlaced'].includes(saved.windowView)) this.setState({ screenView: saved.windowView, windowView: saved.windowView }); // View Mode, the last outside XR
     const bool = (k) => typeof saved[k] === 'boolean';
     // (older settings stored Music and Sounds on / off)
     if (typeof saved.musicVolume === 'number' || bool('musicOn')) this.setMusicVolume(saved.musicVolume ?? (saved.musicOn ? 1 : 0));
@@ -462,6 +464,8 @@ export class Engine {
     if (typeof saved.xrResolution === 'number') this.setXRResolution(saved.xrResolution);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
     if (typeof saved.vibration === 'number') this.setVibration(saved.vibration);
+    if (typeof saved.stereoDepth === 'number') this._setStepped('stereoDepth', saved.stereoDepth, STEREO_DEPTH);
+    if (typeof saved.stereoConvergence === 'number') this._setStepped('stereoConvergence', saved.stereoConvergence, STEREO_CONVERGENCE);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
     if (bool('fog')) this.setFog(saved.fog);
   }
@@ -546,9 +550,14 @@ export class Engine {
     // sounds for things the simulation does on its own, each from where it happens
     const at = (cell) => this._soundAt(cell);
     this.world.on('berryGrow', (berry) => playBerryGrow(at(berry)));
-    this.world.on('creatureArrived', (creature) => playCreatureDone(at(creature)));
+    this.world.on('creatureArrived', (creature) => (this._arrivals ??= []).push(creature)); // (its sound once it stops: _soundArrivals)
     this.world.on('creatureTrapped', (creature) => playCreatureTrapped(at(creature)));
     this.world.on('creatureBlocked', (creature) => playSfx('bump', 150, at(creature))); // steered where it can't go
+    this.world.on('creatureFertile', (creature) => playSfx('fertile', 0, at(creature))); // a Berry: Fertile
+    this.world.on('creatureMating', (creature) => playSfx('mate', 0, at(creature))); // (each mating turn)
+    this.world.on('eggMade', (creature) => this._logEvent('egg', creature, 'carries an Egg'));
+    this.world.on('eggHatched', (egg) => playSfx('hatch', 0, at(egg)));
+    this.world.on('creatureBorn', (creature) => playSfx('birth', 0, at(creature)));
     this.world.on('creatureTurned', (creature) => playSfx('buzz', 150, at(creature)));
     // a creature moving under its own power: a Crawly skitters, a Buzzy buzzes, a Squirmy slithers
     const MOVE_SOUNDS = { [BLOCK.CRAWLY]: 'skitter', [BLOCK.BUZZY]: 'buzz', [BLOCK.SQUIRMY]: 'slither', [BLOCK.SLITHER]: 'slither' };
@@ -1202,27 +1211,50 @@ export class Engine {
    */
   _updateActions() {
     const s = this.state;
-    const eat = new Set();
+    const eat = new Set(), mate = new Set();
     let excrete = null;
     if (s.screen === 'playing' && this.toolsReady(s)) {
       for (const c of this.selected) {
         if (this.world.get(c.x, c.y, c.z) !== c) continue;
+        for (const { partner } of mateChoices(this.world, c)) mate.add(partner.type);
         if (this.world.freeSlotFor(c)) for (const b of edibleNeighbors(this.world, c)) eat.add(b.type);
         const tail = this.world.clusterOf(c).at(-1);
         if (!excrete && tail.inventory && excretableCells(this.world, c).length) excrete = excretedType(tail.type, tail.inventory);
       }
     }
-    const actions = { eat: [...eat].sort(), excrete };
+    const actions = { eat: [...eat].sort(), excrete, mate: [...mate].sort() };
     const inputDevice = s.inXR && !this.screenUI(s) ? 'xr' : s.gamepadAim ? 'pad' : 'mk';
     if (JSON.stringify(actions) !== JSON.stringify(s.actions) || inputDevice !== s.inputDevice) this.setState({ actions, inputDevice });
   }
 
-  /** The input glyphs (inputIcons.js tokens) for Consume, Excrete and using the tool on `device` ('mk', 'pad', 'xr'). */
+  /** The input glyphs (inputIcons.js tokens) for Consume, Excrete, Mate and using the tool on `device` ('mk', 'pad', 'xr'). */
   static ACTION_GLYPHS = {
-    mk: { eat: ['key:E'], excrete: ['key:Q'], tool: ['mouse:L'] },
-    pad: { eat: ['pad:Y'], excrete: ['pad:B'], tool: ['pad:A'] },
-    xr: { eat: ['xr:B'], excrete: ['xr:A'], tool: ['xr:trigger:R'] },
+    mk: { eat: ['key:E'], excrete: ['key:Q'], mate: ['key:X'], tool: ['mouse:L'] },
+    pad: { eat: ['pad:Y'], excrete: ['pad:B'], mate: ['pad:A'], tool: ['pad:A'] },
+    xr: { eat: ['xr:B'], excrete: ['xr:A'], mate: ['xr:X'], tool: ['xr:trigger:R'] },
   };
+
+  /** Whether a selected creature could Mate now (the Control menu's Mate shows): then its button (X, gamepad A, XR X) does that. */
+  _canMate() {
+    return this.state.actions?.mate?.length > 0;
+  }
+
+  /**
+   * Mate: each selected creature that can (Fertile, one of its kind beside it: sim.js
+   * mateChoices) starts mating, with the partner whose block is `cell` (an aimed choice) or
+   * else its first. Plays "ineffective" when none can.
+   */
+  selectedMate(cell = null) {
+    if (!this.selected.length || !this.toolsReady()) return false;
+    let did = false;
+    for (const c of this.selected) {
+      const choices = mateChoices(this.world, c);
+      const pick = cell ? choices.find((x) => x.cell === cell || (x.cell.x === cell.x && x.cell.y === cell.y && x.cell.z === cell.z)) : choices[0];
+      if (pick && startMate(this.world, c, pick.partner)) did = true;
+    }
+    if (!did) playSfx('ineffective', 0);
+    return did;
+  }
 
   /** The Control menu's Controls dropdown (windowed): opens or closes it; remembered. */
   toggleControlsGuideOpen() {
@@ -1927,8 +1959,8 @@ export class Engine {
     const out = [];
     for (const c of this.selected) {
       if (this.world.get(c.x, c.y, c.z) !== c) continue;
-      const from = kind === 'eat' ? c : this.world.clusterOf(c).at(-1);
-      const cells = kind === 'eat' ? edibleNeighbors(this.world, c) : excretableCells(this.world, c);
+      const from = kind === 'excrete' ? this.world.clusterOf(c).at(-1) : c;
+      const cells = kind === 'eat' ? edibleNeighbors(this.world, c) : kind === 'mate' ? mateChoices(this.world, c).map((x) => x.cell) : excretableCells(this.world, c);
       const steps = stick ? this._screenCosines(from, cells, ...stick) ?? [] : cells.map((t) => ({ t, cos: 1 }));
       let best = null, bestCos = 0;
       if (stick) for (const { t, cos } of steps) if (cos > bestCos) [best, bestCos] = [t, cos];
@@ -1947,7 +1979,7 @@ export class Engine {
     const ok = s.screen === 'playing' && !this.isMenuOpen(s);
     if (this._aim && this._aim.source !== 'pad') return false; // (the keyboard's: _pollKeys)
     if (!this._aim && ok) {
-      for (const [button, kind] of [[3, 'eat'], [1, 'excrete']]) {
+      for (const [button, kind] of [[3, 'eat'], [1, 'excrete'], ...(this._canMate() ? [[0, 'mate']] : [])]) { // (A: Mate, when one could; else the tool)
         if (pressed[button] && !prev[button]) {
           this._aim = { kind, source: 'pad', button, stick: null };
           break;
@@ -1990,8 +2022,14 @@ export class Engine {
     const a = this._aim;
     if (!a) return false;
     if (!ok) return void (this._aim = null);
-    if (down(a.button)) {
-      const sx = ax(0), sy = ax(1);
+    // (a left-hand aim, X: Mate: its own controller's button, and the right stick aims: that thumb holds X)
+    const held = a.gp ? !!a.gp.buttons[a.button]?.pressed : down(a.button);
+    if (held) {
+      const stick = a.gp ? (i) => {
+        const v = (gp.axes.length >= 4 ? gp.axes[2 + i] : gp.axes[i]) || 0;
+        return Math.abs(v) < 0.18 ? 0 : v;
+      } : ax;
+      const sx = stick(0), sy = stick(1);
       if (sx || sy) a.stick = [sx, sy]; // (the last way it was pushed counts)
       return true;
     }
@@ -2002,7 +2040,17 @@ export class Engine {
   /** Carries out aim `a` (its button / key let go): the way it was aimed, or, never aimed, the usual Eat / Excrete. */
   _finishAim(a) {
     this._aim = null;
-    if (!a.stick) return void (a.kind === 'eat' ? this.selectedEat() : this.selectedExcrete());
+    if (!a.stick) return void (a.kind === 'eat' ? this.selectedEat() : a.kind === 'mate' ? this.selectedMate() : this.selectedExcrete());
+    if (a.kind === 'mate') {
+      // aimed: each creature with the partner its stick picked
+      let did = false;
+      for (const { c, best } of this._aimChoices('mate', a.stick)) {
+        const pick = best && mateChoices(this.world, c).find((x) => x.cell === best);
+        if (pick && startMate(this.world, c, pick.partner)) did = true;
+      }
+      if (!did) playSfx('ineffective', 0);
+      return;
+    }
     if (!this.selected.length || !this.toolsReady()) return void playSfx('ineffective', 0);
     this._cancelWalks();
     let did = false;
@@ -2023,6 +2071,11 @@ export class Engine {
   _keyCreatureDown(e) {
     if (e.code === 'KeyE' || e.code === 'KeyQ') {
       if (!e.repeat && !this._aim) this._aim = { kind: e.code === 'KeyE' ? 'eat' : 'excrete', source: 'key', key: e.code, stick: null };
+      return true;
+    }
+    if (e.code === 'KeyX' && this._canMate()) {
+      // X: Mate (held with WASD: with which one)
+      if (!e.repeat && !this._aim) this._aim = { kind: 'mate', source: 'key', key: e.code, stick: null };
       return true;
     }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
@@ -2246,6 +2299,20 @@ export class Engine {
     return c && !this.selected.includes(c) ? c : null;
   }
 
+  /**
+   * Per frame: a creature that reached where it was sent (sim: 'creatureArrived', as it sets off
+   * on its last step) sounds its arrival once that step's slide is over and it stands still.
+   */
+  _soundArrivals() {
+    if (!this._arrivals?.length) return;
+    this._arrivals = this._arrivals.filter((c) => {
+      if (this.world.get(c.x, c.y, c.z) !== c) return false; // (gone meanwhile: no sound)
+      if (this.world.slideOf(c)) return true; // (still moving)
+      playCreatureDone(this._soundAt(c));
+      return false;
+    });
+  }
+
   /** Starts a copy of the target dot that spreads out and fades away over one step animation (it follows the target dot: _showHighlight). */
   _pulseTarget() {
     this._pulseDot(this.targetHL, this.targetHL.material.color, { followsTarget: true });
@@ -2421,6 +2488,8 @@ export class Engine {
     if (id === 'xrResolution') this.setXRResolution(value);
     if (id === 'cameraSpeed') this.setCameraSpeed(value);
     if (id === 'vibration') this.setVibration(value);
+    if (id === 'stereoDepth') this._setStepped('stereoDepth', value, STEREO_DEPTH);
+    if (id === 'stereoConvergence') this._setStepped('stereoConvergence', value, STEREO_CONVERGENCE);
     if (id === 'music') this.setMusicVolume(value);
     if (id === 'sound') this.setSoundVolume(value);
   }
@@ -2438,6 +2507,14 @@ export class Engine {
     const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : CAMERA_SPEED.default, CAMERA_SPEED.min, CAMERA_SPEED.max);
     const v = Math.round(raw / CAMERA_SPEED.step) / Math.round(1 / CAMERA_SPEED.step); // (in tenths, like _volume)
     if (v !== this.state.cameraSpeed) this.setState({ cameraSpeed: v });
+  }
+
+  /** A slider's setting `key`: `value` within `spec` ({ min, max, step, default }), snapped to its steps. */
+  _setStepped(key, value, spec) {
+    const n = Number(value);
+    const raw = THREE.MathUtils.clamp(Number.isFinite(n) ? n : spec.default, spec.min, spec.max);
+    const v = +(Math.round(raw / spec.step) * spec.step).toFixed(4);
+    if (v !== this.state[key]) this.setState({ [key]: v });
   }
 
   /** Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 2 (1 as made), snapped to the slider's steps; a buzz at the new strength shows it. */
@@ -2566,6 +2643,7 @@ export class Engine {
     timed('squirmies', () => stepSquirmies(w, moved)); // …and Squirmies crawl as chains, head first…
     timed('sight', () => stepSight(w)); // …and every creature clears the Fog it can see (it shrinks away, then goes)…
     timed('digest', () => w.digest()); // …what creatures swallowed moves a block along their bodies…
+    timed('eggs', () => stepEggs(w)); // …Eggs count down, and hatch…
     timed('wood', () => stepWood(w, turn)); // …then watered trees grow Wood (or Berries)…
     timed('dirt', () => stepDirt(w, turn)); // …then Dirt soaks up leftover settled Water and turns to Moss (Plop: to Wood)…
     if (this.state.rain) timed('rain', () => stepRain(w, turn)); // …a raindrop appears far out now and then (Options → Rain)…
@@ -2804,7 +2882,8 @@ export class Engine {
       return this.enterXR();
     }
     if (s.inXR) this.exitXR();
-    this.setState({ screenView: next });
+    this.setState({ screenView: next, windowView: next });
+    this._saveOptions(); // (a refresh comes back to it)
   }
 
   /** The View panel's button: into XR: HMD Stereo from the window's views, or back to Normal from XR. */
@@ -3067,10 +3146,6 @@ export class Engine {
   _tabletAction(id) {
     playTick();
     if (id.startsWith('section:')) return debugSections.toggle(id.slice(8));
-    if (id === 'prompt') return claudePrompt.openKeyboard(); // the headset's system keyboard
-    if (id === 'clear') return claudePrompt.clear();
-    if (id === 'mic') return claudePrompt.toggleDictation(); // (disabled where there is none: the keyboard has a mic)
-    if (id === 'speak') return claudePrompt.toggleSpeech(); // read the response feed aloud
   }
 
   /**
@@ -3904,6 +3979,7 @@ export class Engine {
       tools: () => this.toggleToolsOpen(),
       eat: () => this.selectedEat(),
       excrete: () => this.selectedExcrete(),
+      mate: () => this.selectedMate(),
     }[this._hudHover];
     if (hud) {
       hud();
@@ -3914,7 +3990,7 @@ export class Engine {
       return true;
     }
     if (this._tabletHover) {
-      // pointing at the debug tablet: presses what it points at (a section header, the prompt box, a button)
+      // pointing at the debug tablet: presses what it points at (a section header)
       if (this._tabletHoverId) this._tabletAction(this._tabletHoverId);
       return true;
     }
@@ -3992,7 +4068,7 @@ export class Engine {
     }
     const rgp = this.hands.right?.source?.gamepad;
     if (rgp) {
-      if (!holding.right) this._touchStickTools(rgp);
+      if (!holding.right && !this._aim?.gp) this._touchStickTools(rgp); // (not while the right stick aims a left-hand Mate)
       const playing = this.state.screen === 'playing' && !this.state.paused;
       const stick = !!rgp.buttons[3]?.pressed; // thumbstick click: Observer ↔ Creature controls (like the gamepad's R3)
       if (stick && !this._rightStickWas && playing) this.toggleControlSchema();
@@ -4025,7 +4101,11 @@ export class Engine {
       }
       this._leftMenuWas = y;
       const x = !!lgp.buttons[4]?.pressed;
-      if (x && !this._leftXWas && playing) this.selectedBehavior(BEHAVIOR.WAIT);
+      if (x && !this._leftXWas && playing) {
+        // X: Mate (held: the right stick picks with which one), when one could; else Wait
+        if (this._canMate() && !this._aim) this._aim = { kind: 'mate', source: 'xr', gp: lgp, button: 4, stick: null };
+        else if (!this._aim) this.selectedBehavior(BEHAVIOR.WAIT);
+      }
       this._leftXWas = x;
     }
   }
@@ -4093,7 +4173,7 @@ export class Engine {
       }
       if (key === 'right') {
         const slot = this.rightHud.hitTest(hit.uv);
-        if (slot === 'toggle' || slot === 'tools' || slot === 'eat' || slot === 'excrete') this._hudHover = slot === 'toggle' ? 'rightHud' : slot;
+        if (slot === 'toggle' || slot === 'tools' || slot === 'eat' || slot === 'excrete' || slot === 'mate') this._hudHover = slot === 'toggle' ? 'rightHud' : slot;
         else if (slot != null) this._toolHover = slot;
         return hit;
       }
@@ -4138,7 +4218,7 @@ export class Engine {
     this._menuHover = null;
     this._menuPanelHover = false; // ray is on the pause panel (button or not)
     this._tabletHover = false;
-    this._tabletHoverId = null; // the tablet control under the ray (section header, prompt box, button)
+    this._tabletHoverId = null; // the tablet control under the ray (a section header)
     this._hudHover = null;
     this._toolHover = null; // the tool slot under the pointer
     for (const { panel } of Object.values(this._panels)) panel.handleHot = false;
@@ -4232,13 +4312,20 @@ export class Engine {
    * looking at sits at the screen and the page's UI (a little in front of it) stays in front.
    */
   _setStereoFocus() {
-    this.camera.focus = Math.max(this.camera.near * 2, this.camera.position.distanceTo(this.controls.target));
+    // (Convergence: the screen's depth, × the distance to what the camera looks at, which with 1 sits at the screen)
+    this.camera.focus = Math.max(this.camera.near * 2, this.camera.position.distanceTo(this.controls.target) * this.state.stereoConvergence);
+  }
+
+  /** The 3D views' eye separation (m): Options → Video → Depth × SBS_EYE_SEPARATION (0: flat). */
+  _stereoEyeSep() {
+    return SBS_EYE_SEPARATION * this.state.stereoDepth;
   }
 
   /** View Mode → 3D: SBS (half side-by-side, for 3D TVs): each eye squeezed into half the screen. */
   _renderSideBySide() {
     const r = this.renderer, cam = this.camera;
-    this._sbs ??= Object.assign(new THREE.StereoCamera(), { eyeSep: SBS_EYE_SEPARATION });
+    this._sbs ??= new THREE.StereoCamera();
+    this._sbs.eyeSep = this._stereoEyeSep();
     cam.updateMatrixWorld();
     this._setStereoFocus();
     this._sbs.update(cam);
@@ -4269,7 +4356,9 @@ export class Engine {
     } else if (s.screenView === 'sbs') this._renderSideBySide();
     else if (s.screenView === 'interlaced') {
       this._setStereoFocus();
-      (this._interlaced ??= new Interlaced(SBS_EYE_SEPARATION)).render(this.renderer, this.scene, this.camera);
+      this._interlaced ??= new Interlaced(SBS_EYE_SEPARATION);
+      this._interlaced.stereo.eyeSep = this._stereoEyeSep();
+      this._interlaced.render(this.renderer, this.scene, this.camera);
     }
     else this.renderer.render(this.scene, this.camera);
   }
@@ -4488,8 +4577,8 @@ export class Engine {
     const steering = this._steerTargets().length > 0; // the left stick moves the controlled (else selected) creature
     if (steering && !aiming && pressed[10]) this._steerAway(); // L3 held: straight away from the camera
     else if (steering && !aiming) this._steerControlled(ax(0), ax(1));
-    if (edge(0)) {
-      // A: use the tool (at the crosshair; Observer controls only)
+    if (edge(0) && !(this._aim?.source === 'pad' && this._aim.kind === 'mate')) {
+      // A: use the tool (at the crosshair; Observer controls only), unless it's started a Mate
       this._updateTarget();
       this.useTool();
     }
@@ -4625,6 +4714,7 @@ export class Engine {
     this.world.updateAnimations(sceneNow); // every 3D object's per-frame update (see World.updateAnimations)
     this._animTotal += performance.now() - a0;
     this._updateSelectionVisuals(sceneNow);
+    this._soundArrivals();
     this._updateStepMarkers();
     this._updateAimGuides();
     if (this.state.handheld) this.cardboard.update(); // the camera follows the phone
@@ -4669,7 +4759,6 @@ export class Engine {
           logs: getLogs(120),
           logVersion: getLogVersion(),
           highlight: grabbed || this._tabletHover,
-          claude: { ...claudePrompt.getSnapshot(), response: claudePrompt.responseText() },
           collapsed: debugSections.getSnapshot(),
           hover: this._hudHover === 'debug' ? 'toggle' : this._tabletHoverId,
           open: !debugSections.getSnapshot().panel,
