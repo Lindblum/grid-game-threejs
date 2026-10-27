@@ -12,8 +12,8 @@
   --ui-pad-x: 8px;        /* …and left / right, and between its icon and label */
   --ui-panel-pad: 10px;   /* inside a panel */
   --ui-indent: 16px;      /* an open section's or dropdown's contents, under its button */
-  --ui-field-h: 30px;     /* a field's least height (a corner button is this square) */
-  --ui-icon: 20px;        /* a field's icon */
+  --ui-field-h: calc(30px * var(--text-scale)); /* a field's least height (a corner button is this square): grows with Text Size */
+  --ui-icon: calc(20px * var(--text-scale));    /* a field's icon (the corner buttons' too): grows with Text Size */
   --ui-radius: 8px;       /* a field's corners */
   --ui-panel-radius: 12px;
   --ui-panel-bg: rgba(10, 14, 28, 0.72);

@@ -26,6 +26,26 @@ export function drawMenuIcon(ctx, cx, cy, size, color = '#e8ecf2') {
   ctx.restore();
 }
 
+// Lineicons' game-pad-modern-1 (regular), the Controller Guide icon 4d-viewer-threejs uses: a
+// d-pad and two buttons (filled), and the pad's outline (its inside cut out, evenodd), on a 24 grid
+const GAMEPAD_PATHS = [
+  'M9.30277 7.73899C9.71699 7.73899 10.0528 8.07477 10.0528 8.48899V9.49289H11.0577C11.4719 9.49289 11.8077 9.82868 11.8077 10.2429C11.8077 10.6571 11.4719 10.9929 11.0577 10.9929H10.0528V11.9998C10.0528 12.414 9.71699 12.7498 9.30277 12.7498C8.88856 12.7498 8.55277 12.414 8.55277 11.9998V10.9929H7.54691C7.1327 10.9929 6.79691 10.6571 6.79691 10.2429C6.79691 9.82868 7.1327 9.49289 7.54691 9.49289H8.55277V8.48899C8.55277 8.07477 8.88856 7.73899 9.30277 7.73899Z',
+  'M14.4786 11.7458C14.4786 11.3316 14.8143 10.9958 15.2286 10.9958H16.1063C16.5205 10.9958 16.8563 11.3316 16.8563 11.7458C16.8563 12.16 16.5205 12.4958 16.1063 12.4958H15.2286C14.8143 12.4958 14.4786 12.16 14.4786 11.7458Z',
+  'M15.2286 7.98899C14.8143 7.98899 14.4786 8.32477 14.4786 8.73899C14.4786 9.1532 14.8143 9.48899 15.2286 9.48899H16.1063C16.5205 9.48899 16.8563 9.1532 16.8563 8.73899C16.8563 8.32477 16.5205 7.98899 16.1063 7.98899H15.2286Z',
+  'M6.40196 5.01796C10.0998 4.33386 13.8918 4.33386 17.5897 5.01796L19.1553 5.30761C20.1235 5.48672 20.8627 6.2745 20.98 7.25207L22.1472 16.9817C22.3078 18.321 21.2621 19.4997 19.9132 19.4997H17.8162C17.0356 19.4997 16.3108 19.0951 15.901 18.4307L14.4675 16.106C14.3309 15.8845 14.0893 15.7497 13.8291 15.7497H10.1625C9.90231 15.7497 9.66071 15.8845 9.52413 16.106L8.09059 18.4307C7.68086 19.0951 6.95605 19.4997 6.17545 19.4997H4.07843C2.72954 19.4997 1.68378 18.321 1.84445 16.9817L3.01164 7.25207C3.12892 6.2745 3.86817 5.48672 4.83632 5.30761L6.40196 5.01796ZM17.3168 6.49293C13.7993 5.8422 10.1923 5.8422 6.67483 6.49293L5.10919 6.78258C4.78647 6.84228 4.54006 7.10488 4.50096 7.43073L3.33377 17.1603C3.28022 17.6068 3.6288 17.9997 4.07843 17.9997H6.17545C6.43565 17.9997 6.67726 17.8648 6.81383 17.6433L8.24738 15.3187C8.6571 14.6542 9.38192 14.2497 10.1625 14.2497H13.8291C14.6097 14.2497 15.3345 14.6542 15.7442 15.3187L17.1778 17.6433C17.3144 17.8648 17.556 17.9997 17.8162 17.9997H19.9132C20.3628 17.9997 20.7114 17.6068 20.6578 17.1603L19.4907 7.43073C19.4516 7.10488 19.2051 6.84228 18.8824 6.78258L17.3168 6.49293Z',
+];
+let gamepadPaths = null; // Path2D, made on first use
+
+/** The gamepad, `s` the icon box, centred at (cx, cy); as wide as the gear. */
+function gamepad(ctx, s, cx, cy) {
+  gamepadPaths ??= GAMEPAD_PATHS.map((d) => new Path2D(d));
+  const k = (s * 0.76) / 20.3; // the pad is 20.3 units across (1.83–22.16), centred on (12, 12)
+  ctx.save();
+  ctx.translate(cx - 12 * k, cy - 12 * k);
+  ctx.scale(k, k);
+  for (const path of gamepadPaths) ctx.fill(path, 'evenodd');
+  ctx.restore();
+}
 
 function line(ctx, P, pts) {
   ctx.beginPath();
@@ -544,17 +564,13 @@ const DRAW = {
     circle(ctx, P, 0.5, 0.5, 0.17, s);
     circle(ctx, P, 0.5, 0.5, 0.07, s, { fill: true });
   },
-  controllerGuideOn(ctx, P, s) {
-    // Controller Guide: a controller's handle with a button, and a label tag pointing at it
-    poly(ctx, P, [[0.14, 0.3], [0.42, 0.3], [0.42, 0.88], [0.14, 0.88]]);
-    circle(ctx, P, 0.28, 0.44, 0.06, s, { fill: true });
-    line(ctx, P, [[0.34, 0.44], [0.56, 0.3]]);
-    poly(ctx, P, [[0.56, 0.18], [0.9, 0.18], [0.9, 0.42], [0.56, 0.42]]);
+  controllerGuideOn(ctx, P, s, cx, cy) {
+    // Controller Guide: Lineicons' gamepad, as in 4d-viewer-threejs
+    gamepad(ctx, s, cx, cy);
   },
-  controllerGuideOff(ctx, P, s) {
-    poly(ctx, P, [[0.14, 0.3], [0.42, 0.3], [0.42, 0.88], [0.14, 0.88]]);
-    circle(ctx, P, 0.28, 0.44, 0.06, s, { fill: true });
-    line(ctx, P, [[0.5, 0.86], [0.9, 0.14]]); // struck through
+  controllerGuideOff(ctx, P, s, cx, cy) {
+    gamepad(ctx, s, cx, cy);
+    line(ctx, P, [[0.15, 0.15], [0.85, 0.85]]); // struck through
   },
   stereoDepth(ctx, P) {
     // Depth: two frames offset, one before the other (the two eyes' views)

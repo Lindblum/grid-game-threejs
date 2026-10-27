@@ -2886,7 +2886,7 @@ export class Engine {
    * Browser), so every Background, Passthrough included, works and can be switched live; else VR
    * (PC browsers driving a headset over Link).
    */
-  async enterXR() {
+  async enterXR({ quiet = false } = {}) {
     const { xrAR, xrVR, phone } = this.state;
     if (this.state.inXR) return;
     if (phone && !xrAR) return this._enterHandheld();
@@ -2918,7 +2918,7 @@ export class Engine {
       this._trapBackButton();
     } catch (e) {
       console.error(e);
-      this.toast(`Could not start XR: ${e.message || e}`, 'error');
+      if (!quiet) this.toast(`Could not start XR: ${e.message || e}`, 'error');
     }
   }
 
@@ -2927,7 +2927,7 @@ export class Engine {
    * history entry pushed on entering XR catches it: Back pops the entry, and that leaves XR.
    */
   _trapBackButton() {
-    history.pushState({ gridGameXR: true }, '');
+    if (!history.state?.gridGameXR) history.pushState({ gridGameXR: true }, ''); // (an XR Resolution restart keeps its entry)
     this._onPopState = () => {
       this._releaseBackButton(false); // Back already took the entry
       this.exitXR();
@@ -2945,26 +2945,51 @@ export class Engine {
 
   /**
    * XR Resolution let go at a value other than the session's: the session ends and a new one
-   * starts at once at the new framebuffer size (still from the trigger's release, which counts as
-   * a click). The build stays where it was, and Options opens again where it was; if the
-   * browser won't start the new session, the View panel's button goes back in.
+   * starts at once at the new framebuffer size (still from the trigger's release, if the browser
+   * counts it as a click). The build stays where it was, and Options opens again where it was.
+   * If the browser won't start the new session without a fresh click, the next click (or key)
+   * anywhere on the page goes back in, the same way.
    */
   async _restartXR() {
     const s = this.state, session = this.renderer.xr.getSession();
     if (!session || s.handheld || this._restartingXR || s.xrResolution === s.xrResolutionActive) return;
     this._restartingXR = true;
     const r = this.worldRoot;
-    const pose = { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x };
-    const menu = { menu: s.menu, page: s.page, dropdown: s.dropdown };
+    const back = {
+      pose: { pos: r.position.clone(), quat: r.quaternion.clone(), scale: r.scale.x },
+      menu: { menu: s.menu, page: s.page, dropdown: s.dropdown },
+    };
     try {
       const ended = new Promise((res) => session.addEventListener('end', res, { once: true }));
       session.end();
       await ended;
-      await this.enterXR();
+      await this.enterXR({ quiet: true });
     } finally {
       this._restartingXR = false;
     }
-    if (!this.state.inXR) return this.toast('XR Resolution changed: press the View panel’s XR button to go back in');
+    if (this.state.inXR) return this._resumeXR(back);
+    if (history.state?.gridGameXR) history.back(); // (the Back trap's entry, kept for the new session)
+    this.toast('XR Resolution changed: click anywhere to go back into XR');
+    this._armXRReentry(back);
+  }
+
+  /** The next click or key anywhere re-enters XR as `back` left it (that click does nothing else). */
+  _armXRReentry(back) {
+    const go = (e) => {
+      window.removeEventListener('click', go, true);
+      window.removeEventListener('keydown', go, true);
+      if (this.state.inXR) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.enterXR().then(() => this.state.inXR && this._resumeXR(back));
+    };
+    window.addEventListener('click', go, true);
+    window.addEventListener('keydown', go, true);
+  }
+
+  /** A restarted session: the build where it was, and the menu open where it was. */
+  _resumeXR({ pose, menu }) {
+    const r = this.worldRoot;
     this._needsXRPlacement = false;
     r.position.copy(pose.pos);
     r.quaternion.copy(pose.quat);
@@ -3043,7 +3068,7 @@ export class Engine {
     this._xrPov = this._xrZoom = null;
     for (const [hand, h] of [...this.heldBodies.held]) this._putHeld(hand, h.at); // (carried creatures go back where they were last held)
     this.heldBodies.update(() => null);
-    this._releaseBackButton();
+    this._releaseBackButton(!this._restartingXR); // (a restart keeps the entry: popping it now could land on the new session's)
     this._setDomOverlay(false);
     this.phoneStereo.disable();
     this._xrMode = null;
