@@ -462,6 +462,27 @@ function DebugPanel({ engine }) {
                 )}
               </div>
             )}
+            {it.section.items.map((sub) =>
+              sub.slider ? (
+                <label key={sub.id} className="btn menu-btn menu-slider">
+                  <img className="menu-icon" src={menuItemIconURL(sub.icon)} alt="" draggable={false} />
+                  <MenuLabel text={sub.label} />
+                  <input
+                    type="range"
+                    min={sub.slider.min}
+                    max={sub.slider.max}
+                    step={sub.slider.step}
+                    value={sub.slider.value}
+                    onChange={(e) => engine._setSlider(sub.id, Number(e.target.value))}
+                  />
+                </label>
+              ) : (
+                <button key={sub.id} className="btn menu-btn" onClick={tickThen(() => engine.resetDockTune())}>
+                  <img className="menu-icon" src={menuItemIconURL(sub.icon)} alt="" draggable={false} />
+                  <MenuLabel text={sub.label} />
+                </button>
+              ),
+            )}
           </DebugSection>
         ))}
       </div>

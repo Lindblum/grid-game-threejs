@@ -20,7 +20,7 @@ import {
   setListener, beginTurnSounds, endTurnSounds, setMusicLevel, MUSIC_LEVEL,
 } from './audio.js';
 import { RightHudPanel, MenuPanel, DebugPanel, ViewPanel } from './xrPanels.js';
-import { debugModel } from './debugModel.js';
+import { debugModel, DOCK_TUNE } from './debugModel.js';
 import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, VIBRATION, STEREO_DEPTH, STEREO_CONVERGENCE, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
@@ -131,15 +131,14 @@ const STEER_SCREEN_COS = 0.35;
 /**
  * XR panels (Options, Debug, the Control menu; see _layoutPanels): docked on a controller, they
  * stand side by side in its pointing frame (-Z forward, +Y up), their bottoms on
- * PANEL_DOCK_ANCHOR, the first one's toggle button over the controller, tilted so their faces
+ * Debug → Docking's anchor (DOCK_TUNE), the first one's toggle button over the controller, tilted so their faces
  * tip up toward the eyes (as in xr-music-threejs).
  */
 const XR_PANEL_ORDER = ['options', 'debug', 'view', 'right'];
 /** Docked on one controller, the panels stand stacked, top to bottom in this order (the last nearest the controller). */
 const XR_DOCK_STACK = ['options', 'right', 'debug', 'view'];
-const PANEL_DOCK_ANCHOR = new THREE.Vector3(0, 0.05, 0.02);
-const PANEL_DOCK_TILT = -0.5; // radians about the controller's X: the top leans forward
-const PANEL_DOCK_GAP = 0.008; // m between panels docked side by side
+/** Where the stack stands on the controller (its anchor, rotation, gap and scale) is Debug → Docking's (DOCK_TUNE; defaults as shipped). */
+const PANEL_DOCK_GAP = 0.008; // m between panels side by side in the gaze dock
 const PANEL_DOCK_REACH = 0.12; // m: a held panel let go this near the other controller docks there
 const PANEL_TOUCH_REACH = 0.03; // m: a grip this near a panel's face takes it
 const PANEL_GROW_RATE = 12; // per second: a panel in the hand eases to its free size
@@ -162,7 +161,18 @@ const _panelRay = new THREE.Raycaster();
 const _panelOffset = new THREE.Matrix4();
 const _panelStep = new THREE.Matrix4();
 const _panelWorld = new THREE.Matrix4();
-const _panelTilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), PANEL_DOCK_TILT);
+const _dockAnchor = new THREE.Vector3();
+const _dockTurn = new THREE.Quaternion();
+const _dockEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const DOCK_TUNE_KEY = 'debugDockTune';
+/** Debug → Docking's values (DOCK_TUNE's units), as last set in this browser, else the defaults. */
+function loadDockTune() {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(DOCK_TUNE_KEY)) ?? {};
+  } catch {}
+  return Object.fromEntries(Object.entries(DOCK_TUNE).map(([k, spec]) => [k, typeof saved[k] === 'number' ? saved[k] : spec.default]));
+}
 /** Keyboard creature controls: each direction key as a left stick push ([right, down], like the gamepad's axes). */
 const KEY_STICK = {
   KeyW: [0, -1], ArrowUp: [0, -1],
@@ -292,6 +302,7 @@ export class Engine {
       stereoConvergence: STEREO_CONVERGENCE.default, // Options → Video (3D views): the screen's depth, × the camera's distance to its target (_setStereoFocus)
       vibration: VIBRATION.default, // Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 2 (_pulse; 1 as made)
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
+      dockTune: loadDockTune(), // Debug → Docking: where XR panels dock on a controller (see DOCK_TUNE)
       controllerGuide: false, // Options → Accessibility → Controller Guide: XR labels beside the controllers' buttons (_guideTexts)
       directionGuides: true, // Options → Accessibility → Direction Guides (or G): Creature controls' step lines and dots, and aimed Eat / Excrete's
       viewInternal: false, // Options → Accessibility → View Internal: the selected / controlled creatures see-through, their inventories inside
@@ -2478,6 +2489,29 @@ export class Engine {
     if (id === 'stereoConvergence') this._setStepped('stereoConvergence', value, STEREO_CONVERGENCE);
     if (id === 'music') this.setMusicVolume(value);
     if (id === 'sound') this.setSoundVolume(value);
+    if (id.startsWith('dock:')) this.setDockTune(id.slice(5), value);
+  }
+
+  /** Debug → Docking: sets one of where XR panels dock (`key` of DOCK_TUNE), snapped to its slider's steps; remembered in this browser. */
+  setDockTune(key, value) {
+    const spec = DOCK_TUNE[key];
+    if (!spec) return;
+    const n = Number(value);
+    const v = +(Math.round(THREE.MathUtils.clamp(Number.isFinite(n) ? n : spec.default, spec.min, spec.max) / spec.step) * spec.step).toFixed(4);
+    if (v === this.state.dockTune[key]) return;
+    this._saveDockTune({ ...this.state.dockTune, [key]: v });
+  }
+
+  /** Debug → Docking → Reset: back to where the panels dock as shipped. */
+  resetDockTune() {
+    this._saveDockTune(Object.fromEntries(Object.entries(DOCK_TUNE).map(([k, spec]) => [k, spec.default])));
+  }
+
+  _saveDockTune(tune) {
+    this.setState({ dockTune: tune });
+    try {
+      localStorage.setItem(DOCK_TUNE_KEY, JSON.stringify(tune));
+    } catch {}
   }
 
   /** Options → Accessibility → Music / Sounds: a volume, 0 (off) to 1, snapped to the slider's steps. */
@@ -3162,6 +3196,7 @@ export class Engine {
   _tabletAction(id) {
     playTick();
     if (id.startsWith('section:')) return debugSections.toggle(id.slice(8));
+    if (id === 'dock:reset') this.resetDockTune();
   }
 
   /**
@@ -3240,17 +3275,23 @@ export class Engine {
 
   /**
    * Panels `entries` side by side in `parent`, left to right, standing on their bottom edges:
-   * on a controller, the first one's toggle button over it, tilted back (PANEL_DOCK_*); in the
+   * on a controller, the first one's toggle button over it, tilted back (Debug → Docking: DOCK_TUNE); in the
    * gaze dock (`centred`), the row centred and upright.
    */
   _layoutRow(entries, parent, centred) {
     const boxes = entries.map((e) => e.panel.boxMetres());
     const text = this.state.textSize; // (Options → Accessibility → Text Size)
-    const scales = entries.map((e) => text * (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.panel.dockScale));
+    const tune = this.state.dockTune; // (Debug → Docking)
+    const gap = centred ? PANEL_DOCK_GAP : tune.gap / 1000;
+    if (!centred) {
+      _dockAnchor.set(tune.x, tune.y, tune.z).multiplyScalar(0.01);
+      _dockTurn.setFromEuler(_dockEuler.set(THREE.MathUtils.degToRad(tune.tilt), THREE.MathUtils.degToRad(tune.yaw), THREE.MathUtils.degToRad(tune.roll)));
+    }
+    const scales = entries.map((e) => text * (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.panel.dockScale * tune.scale));
     const widths = boxes.map((b, i) => (b.right - b.left) * scales[i]);
     // in the gaze dock side by side, centred; on a controller stacked upward, left edges in line,
     // the first one's toggle button over the controller
-    let x = centred ? -(widths.reduce((a, w) => a + w, 0) + PANEL_DOCK_GAP * (entries.length - 1)) / 2 : -(boxes[0].button - boxes[0].left) * scales[0];
+    let x = centred ? -(widths.reduce((a, w) => a + w, 0) + gap * (entries.length - 1)) / 2 : -(boxes[0].button - boxes[0].left) * scales[0];
     let y = 0;
     entries.forEach((e, i) => {
       const m = e.panel.mesh, b = boxes[i], sc = scales[i];
@@ -3258,13 +3299,13 @@ export class Engine {
       m.position.set(x - b.left * sc, y - b.bottom * sc, i * 0.0005); // (each a hair in front of the last: no z-fighting where they meet)
       if (centred) m.quaternion.identity();
       else {
-        m.quaternion.copy(_panelTilt);
-        m.position.applyQuaternion(_panelTilt).add(PANEL_DOCK_ANCHOR);
+        m.quaternion.copy(_dockTurn);
+        m.position.applyQuaternion(_dockTurn).add(_dockAnchor);
       }
       m.scale.setScalar(sc);
       if (e.fly) this._flyPanel(e, parent);
-      if (centred) x += widths[i] + PANEL_DOCK_GAP;
-      else y += (b.top - b.bottom) * sc + PANEL_DOCK_GAP;
+      if (centred) x += widths[i] + gap;
+      else y += (b.top - b.bottom) * sc + gap;
     });
   }
 
@@ -4049,8 +4090,15 @@ export class Engine {
       return true;
     }
     if (this._tabletHover) {
-      // pointing at the debug tablet: presses what it points at (a section header)
-      if (this._tabletHoverId) this._tabletAction(this._tabletHoverId);
+      // pointing at the debug tablet: presses what it points at (a section header, a button), or
+      // sets the slider there (held: drags it, as in Options)
+      const id = this._tabletHoverId;
+      const slider = id ? this.debugTablet.sliderValueAt(this._tabletHoverUV, id) : null;
+      if (slider != null) {
+        this._sliderDrag = id;
+        this._uiPress = hand;
+        this._setSlider(id, slider);
+      } else if (id) this._tabletAction(id);
       return true;
     }
     if (this.isMenuOpen() && this._menuHover) {
@@ -4219,6 +4267,11 @@ export class Engine {
       if (key === 'debug') {
         this._tabletHover = true; // (the grip takes it)
         this._tabletHoverId = this.debugTablet.hitTest(hit.uv);
+        this._tabletHoverUV = hit.uv;
+        // dragging a slider (Debug → Docking): follow the ray along its track while the trigger is held
+        if (this._sliderDrag && this._tabletHoverId === this._sliderDrag) {
+          this._setSlider(this._sliderDrag, this.debugTablet.sliderValueAt(hit.uv, this._sliderDrag));
+        }
         if (this._tabletHoverId === 'toggle') {
           this._tabletHoverId = null;
           this._tabletHover = false;
