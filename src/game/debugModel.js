@@ -12,12 +12,12 @@ import { getLogs, getLogVersion } from './debugLog.js';
  * gap between stacked panels (mm) and a scale on the panels' docked size. Defaults: as shipped.
  */
 export const DOCK_TUNE = Object.freeze({
-  x: { label: 'Offset X', unit: 'cm', min: -20, max: 20, step: 0.5, default: 0, icon: 'forward' },
-  y: { label: 'Offset Y', unit: 'cm', min: -20, max: 30, step: 0.5, default: 5, icon: 'forward' },
+  x: { label: 'Offset X', unit: 'cm', min: -20, max: 20, step: 0.5, default: -1, icon: 'forward' },
+  y: { label: 'Offset Y', unit: 'cm', min: -20, max: 30, step: 0.5, default: 6, icon: 'forward' },
   z: { label: 'Offset Z', unit: 'cm', min: -20, max: 20, step: 0.5, default: 2, icon: 'forward' },
-  tilt: { label: 'Tilt', unit: '°', min: -90, max: 90, step: 1, default: (-0.5 * 180) / Math.PI, icon: 'cameraNormal' },
+  tilt: { label: 'Tilt', unit: '°', min: -90, max: 90, step: 1, default: -45, icon: 'cameraNormal' },
   yaw: { label: 'Yaw', unit: '°', min: -90, max: 90, step: 1, default: 0, icon: 'cameraNormal' },
-  roll: { label: 'Roll', unit: '°', min: -90, max: 90, step: 1, default: 0, icon: 'cameraNormal' },
+  roll: { label: 'Roll', unit: '°', min: -90, max: 90, step: 1, default: 5, icon: 'cameraNormal' },
   gap: { label: 'Gap', unit: 'mm', min: 0, max: 30, step: 1, default: 8, icon: 'controls' },
   scale: { label: 'Scale', unit: '×', min: 0.5, max: 2, step: 0.05, default: 1, icon: 'textSize' },
 });
