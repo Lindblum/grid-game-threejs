@@ -9,7 +9,8 @@ import { getLogs, getLogVersion } from './debugLog.js';
  * Debug → Docking: live tuning of where XR panels dock on a controller (Engine._layoutRow), in
  * the controller's pointing frame (-Z forward, +Y up): the stack's anchor (cm), its rotation
  * (degrees: tilt about X, the top leaning forward when negative; yaw about Y; roll about Z), the
- * gap between stacked panels (mm) and a scale on the panels' docked size. Defaults: as shipped.
+ * gap between stacked panels (mm) and a scale on the panels' docked size. These are the left
+ * hand's; the right hand mirrors them (offset X, yaw and roll reversed).
  */
 export const DOCK_TUNE = Object.freeze({
   x: { label: 'Offset X', unit: 'cm', min: -20, max: 20, step: 0.5, default: -1, icon: 'forward' },

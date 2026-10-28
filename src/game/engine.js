@@ -3269,23 +3269,25 @@ export class Engine {
       if (m.visible) rows[e.on].push(e);
     }
     const below = (e) => -XR_DOCK_STACK.indexOf(Object.keys(this._panels).find((k) => this._panels[k] === e)); // (bottom first)
-    for (const hand of ['left', 'right']) if (rows[hand].length) this._layoutRow(rows[hand].sort((a, b) => below(a) - below(b)), this.hands[hand].ctrl, false);
+    for (const hand of ['left', 'right']) if (rows[hand].length) this._layoutRow(rows[hand].sort((a, b) => below(a) - below(b)), this.hands[hand].ctrl, false, hand);
     if (rows.gaze.length) this._layoutRow(rows.gaze, this.gazeDock, true);
   }
 
   /**
    * Panels `entries` side by side in `parent`, left to right, standing on their bottom edges:
    * on a controller, the first one's toggle button over it, tilted back (Debug → Docking: DOCK_TUNE); in the
-   * gaze dock (`centred`), the row centred and upright.
+   * gaze dock (`centred`), the row centred and upright. Docking's values are the left hand's; on
+   * the right (`hand`) they're mirrored (offset X, yaw and roll reversed).
    */
-  _layoutRow(entries, parent, centred) {
+  _layoutRow(entries, parent, centred, hand) {
     const boxes = entries.map((e) => e.panel.boxMetres());
     const text = this.state.textSize; // (Options → Accessibility → Text Size)
     const tune = this.state.dockTune; // (Debug → Docking)
     const gap = centred ? PANEL_DOCK_GAP : tune.gap / 1000;
     if (!centred) {
-      _dockAnchor.set(tune.x, tune.y, tune.z).multiplyScalar(0.01);
-      _dockTurn.setFromEuler(_dockEuler.set(THREE.MathUtils.degToRad(tune.tilt), THREE.MathUtils.degToRad(tune.yaw), THREE.MathUtils.degToRad(tune.roll)));
+      const mirror = hand === 'right' ? -1 : 1;
+      _dockAnchor.set(mirror * tune.x, tune.y, tune.z).multiplyScalar(0.01);
+      _dockTurn.setFromEuler(_dockEuler.set(THREE.MathUtils.degToRad(tune.tilt), THREE.MathUtils.degToRad(mirror * tune.yaw), THREE.MathUtils.degToRad(mirror * tune.roll)));
     }
     const scales = entries.map((e) => text * (centred ? e.gazeScale * (e === this._panels.options && this.state.phone ? PHONE_MENU_SCALE : 1) : e.panel.dockScale * tune.scale));
     const widths = boxes.map((b, i) => (b.right - b.left) * scales[i]);
