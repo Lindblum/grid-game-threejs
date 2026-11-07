@@ -4,3 +4,4 @@ dist
 *-Notes.txt
 # local settings (secrets, e.g. NGROK_HOST)
 .env.local
+graphify-out
