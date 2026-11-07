@@ -2,11 +2,18 @@ import * as THREE from 'three';
 import { TOOLS } from './tools.js';
 import { drawToolIcon, roundRect } from './icons.js';
 import { drawMenuItemIcon } from './menuIcons.js';
-import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './controls.js';
+import { CONTROL_SCHEMAS, guideControls } from './controls.js';
+import { controlsGuide, guideImage } from './controlsGuide.js';
 import { splitLabel } from './menu.js';
 import { gridMode } from './lattice.js';
 /** The rows of the Controls table of control schema `table` (id). */
-const tableRows = (table) => (CONTROL_SCHEMAS[table] ?? CONTROL_SCHEMAS.observer).controls;
+/** The Controls guide of control schema `table` (id) for input `input` (threejs-ui's controlsGuide.js). */
+const guideOf = (table, input) => controlsGuide(input ?? 'xr', guideControls(CONTROL_SCHEMAS[table] ?? CONTROL_SCHEMAS.observer));
+/** That guide's height drawn `w` px wide, and the gap after it. */
+const guideHeight = (section, w) => {
+  const g = guideOf(section.table, section.input);
+  return Math.round((w * g.height) / g.width) + BUTTON_GAP;
+};
 import { drawCell, cellWidth } from './inputIcons.js';
 
 /** Every XR panel's thickness: a slab this deep (m, in the world) behind its face (its corners rounded like the face's frame). */
@@ -445,9 +452,8 @@ function trailingIcon(it) {
   return null;
 }
 
-// the menu's buttons: height and gap; the Controls table's header and rows
-const BUTTON_H = 70, BUTTON_GAP = 12, TABLE_HEAD = 44, TABLE_ROW = 66;
-const tableHeight = (table) => TABLE_HEAD + tableRows(table).length * TABLE_ROW + BUTTON_GAP;
+// the menu's buttons: height and gap
+const BUTTON_H = 70, BUTTON_GAP = 12;
 // a section's readouts (Debug: `rows`, `log`): a dark framed box (like the windowed .debug-box), its
 // padding, a key / value row's height, a log line's; the log shows at least LOG_MIN_LINES, and
 // grows into the room the panel has
@@ -494,6 +500,14 @@ export class MenuPanel extends CanvasPanel {
     this.view = null; // where the menu shows (canvas px: { y0, y1 }); out of it is hidden
     this.rects = [];
     this._last = '';
+  }
+
+  /** Scrolls the menu just far enough that item `id` shows (a thumbstick stepped onto it). */
+  scrollToShow(id) {
+    const r = this.rects.find((q) => q.id === id);
+    if (!r || !this.view) return;
+    if (r.y < this.view.y0) this.scrollBy(r.y - this.view.y0);
+    else if (r.y + r.h > this.view.y1) this.scrollBy(r.y + r.h - this.view.y1);
   }
 
   /** Scrolls the menu `px` down (up when negative), as far as it goes. */
@@ -565,7 +579,7 @@ export class MenuPanel extends CanvasPanel {
         sum += Math.ceil(options.length / optionColumns(ctx, options, w - OPTION_INDENT)) * (OPTION_H + OPTION_GAP);
       }
       if (it.section?.open) {
-        if (it.section.table) sum += tableHeight(it.section.table);
+        if (it.section.table) sum += guideHeight(it.section, w - OPTION_INDENT);
         sum += wellHeight(it.section, this._logLength(it.section));
         sum += this._itemsHeight(ctx, it.section.items, w - OPTION_INDENT);
       }
@@ -580,14 +594,14 @@ export class MenuPanel extends CanvasPanel {
 
   /**
    * `items` from (x, y), `w` wide, each followed by its open dropdown's choices, or its open
-   * section's Controls table, readouts and entries (indented). Returns the next y.
+   * section's Controls guide, readouts and entries (indented). Returns the next y.
    */
   _drawItems(ctx, items, x, y, w, hoverId) {
     for (const it of items) {
       y = this._drawItem(ctx, it, x, y, w, hoverId);
       if (it.dropdown?.open) y = this._drawOptions(ctx, it.dropdown.options, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId);
       if (it.section?.open) {
-        if (it.section.table) y = this._drawControlsTable(ctx, x + OPTION_INDENT, y, x + w, tableRows(it.section.table)) + BUTTON_GAP;
+        if (it.section.table) y = this._drawGuide(ctx, it.section, x + OPTION_INDENT, y, w - OPTION_INDENT) + BUTTON_GAP;
         if (it.section.rows) y = this._drawRows(ctx, it.section.rows, x + OPTION_INDENT, y, w - OPTION_INDENT);
         if (it.section.log) y = this._drawLog(ctx, it.section.log, x + OPTION_INDENT, y, w - OPTION_INDENT);
         y = this._drawItems(ctx, it.section.items, x + OPTION_INDENT, y, w - OPTION_INDENT, hoverId);
@@ -747,36 +761,14 @@ export class MenuPanel extends CanvasPanel {
     return y + h + BUTTON_GAP;
   }
 
-  /** Options → Controls table, from x0 to x1: Action | Mouse/Keyboard | Gamepad | XR Controller. Returns bottom y. */
-  _drawControlsTable(ctx, x0, y0, x1, rows) {
-    const headH = TABLE_HEAD, rowH = TABLE_ROW;
-    const widths = [178, 200, 188, 194];
-    const colX = widths.map((_, i) => x0 + widths.slice(0, i).reduce((a, b) => a + b, 0));
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    ctx.font = '700 18px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillStyle = 'rgba(232,236,242,0.65)';
-    CONTROL_COLUMNS.forEach((column, i) => ctx.fillText(column, colX[i] + 8, y0 + headH / 2));
-    let y = y0 + headH;
-    const glyphH = 40;
-    rows.forEach((row, r) => {
-      if (r % 2 === 0) {
-        roundRect(ctx, x0, y + 2, x1 - x0, rowH - 4, 12);
-        ctx.fillStyle = 'rgba(255,255,255,0.05)';
-        ctx.fill();
-      }
-      ctx.font = '600 21px system-ui, -apple-system, Segoe UI, sans-serif';
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'left';
-      ctx.fillText(fit(ctx, row.action, widths[0] - 12), colX[0] + 8, y + rowH / 2);
-      [row.mk, row.pad, row.xr].forEach((binding, i) => {
-        const avail = widths[i + 1] - 12;
-        const h = Math.min(glyphH, (glyphH * avail) / Math.max(1, cellWidth(ctx, binding.g, glyphH)));
-        drawCell(ctx, binding.g, colX[i + 1] + 8, y + rowH / 2, h);
-      });
-      y += rowH;
-    });
-    return y;
+  /** Options → Controls: the input in use drawn and labelled (controlsGuide.js), `w` wide from (x, y). Returns its bottom y. */
+  _drawGuide(ctx, section, x, y, w) {
+    const guide = guideOf(section.table, section.input);
+    const h = Math.round((w * guide.height) / guide.width);
+    // (the image loads after the first draw: then drawn again)
+    const img = guideImage(guide, w, () => (this._last = ''));
+    if (img.complete && img.naturalWidth) ctx.drawImage(img, x, y, w, h);
+    return y + h;
   }
 
   /** uv from a raycast hit -> item id (or null). */

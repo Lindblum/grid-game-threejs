@@ -26,7 +26,7 @@ export function drawMenuIcon(ctx, cx, cy, size, color = '#e8ecf2') {
   ctx.restore();
 }
 
-// Lineicons' game-pad-modern-1 (regular), the Controller Guide icon 4d-viewer-threejs uses: a
+// Lineicons' game-pad-modern-1 (regular), the XR Control Guides icon 4d-viewer-threejs uses: a
 // d-pad and two buttons (filled), and the pad's outline (its inside cut out, evenodd), on a 24 grid
 const GAMEPAD_PATHS = [
   'M9.30277 7.73899C9.71699 7.73899 10.0528 8.07477 10.0528 8.48899V9.49289H11.0577C11.4719 9.49289 11.8077 9.82868 11.8077 10.2429C11.8077 10.6571 11.4719 10.9929 11.0577 10.9929H10.0528V11.9998C10.0528 12.414 9.71699 12.7498 9.30277 12.7498C8.88856 12.7498 8.55277 12.414 8.55277 11.9998V10.9929H7.54691C7.1327 10.9929 6.79691 10.6571 6.79691 10.2429C6.79691 9.82868 7.1327 9.49289 7.54691 9.49289H8.55277V8.48899C8.55277 8.07477 8.88856 7.73899 9.30277 7.73899Z',
@@ -330,13 +330,9 @@ const DRAW = {
     circle(ctx, P, 0.66, 0.43, 0.04, s, { fill: true });
     circle(ctx, P, 0.74, 0.52, 0.04, s, { fill: true });
   },
-  video(ctx, P, s) {
-    // monitor on a stand, with a small play triangle on the screen
-    roundedRect(ctx, P, 0.1, 0.18, 0.8, 0.5, 0.05, s);
-    ctx.stroke();
-    line(ctx, P, [[0.5, 0.68], [0.5, 0.8]]);
-    line(ctx, P, [[0.32, 0.82], [0.68, 0.82]]);
-    poly(ctx, P, [[0.43, 0.32], [0.6, 0.43], [0.43, 0.54]]);
+  display(ctx, P, s) {
+    // the screen on its stand, as Normal view's
+    DRAW.monitor(ctx, P, s);
   },
   bgPass(ctx, P, s) {
     // framed landscape: see the real world
@@ -565,7 +561,7 @@ const DRAW = {
     circle(ctx, P, 0.5, 0.5, 0.07, s, { fill: true });
   },
   controllerGuideOn(ctx, P, s, cx, cy) {
-    // Controller Guide: Lineicons' gamepad, as in 4d-viewer-threejs
+    // XR Control Guides: Lineicons' gamepad, as in 4d-viewer-threejs
     gamepad(ctx, s, cx, cy);
   },
   controllerGuideOff(ctx, P, s, cx, cy) {

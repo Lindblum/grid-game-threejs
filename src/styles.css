@@ -62,18 +62,6 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .btn.accent { background: rgba(90, 160, 255, 0.28); border-color: rgba(156, 200, 255, 0.6); }
 
 
-/* ---------- Controls table ---------- */
-.menu-panel.controls-panel { width: min(860px, calc(100vw - 24px)); }
-.controls-scroll { overflow: auto; margin-bottom: 14px; min-height: 0; }
-.controls { width: 100%; border-collapse: collapse; font-size: calc(14px * var(--text-scale)); }
-.controls th { text-align: left; color: var(--muted); font-weight: 600; padding: var(--ui-pad-y) var(--ui-pad-x); white-space: nowrap; }
-.controls td { padding: var(--ui-pad-y) var(--ui-pad-x); vertical-align: middle; white-space: nowrap; }
-.controls tbody tr:nth-child(odd) td { background: rgba(255, 255, 255, 0.05); }
-.controls tbody tr td:first-child { border-radius: var(--ui-radius) 0 0 var(--ui-radius); }
-.controls tbody tr td:last-child { border-radius: 0 var(--ui-radius) var(--ui-radius) 0; }
-.controls td.action { font-weight: 600; }
-.controls img { display: block; }
-
 .crosshair {
   position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
   transform: translate(-50%, -50%); pointer-events: none;
@@ -143,19 +131,8 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 .action-btn .label .tool-value { display: flex; align-items: center; gap: var(--ui-pad-x); } /* (the current tool: its icon left of its name) */
 /* its Tools dropdown opens the tools in a dark well, the icons in rows */
 .tool-slots { display: flex; flex-wrap: wrap; gap: var(--ui-gap); }
-/* the Control menu's Controls dropdown: a labelled mouse / gamepad, and the keys */
-.controls-guide { display: flex; flex-direction: column; gap: var(--ui-gap); }
-.cg-diagram { width: 100%; height: auto; display: block; }
-.cg-shape > * { fill: rgba(255, 255, 255, 0.06); stroke: var(--muted); stroke-width: 1.4; }
-.cg-shape > .cg-key { fill: rgba(255, 255, 255, 0.14); }
-.cg-lead { stroke: var(--muted); stroke-width: 0.8; opacity: 0.7; }
-.cg-dot { fill: #9cc8ff; }
-.cg-label { height: 100%; display: flex; align-items: center; font-size: 9px; line-height: 1.05; color: #e8ecf2; overflow: hidden; }
-.cg-label.left { justify-content: flex-end; text-align: right; }
-.cg-label.bottom { justify-content: center; align-items: flex-start; text-align: center; }
-.cg-keys { display: flex; flex-direction: column; gap: 4px; font-size: calc(12px * var(--text-scale)); }
-.cg-key-row { display: flex; align-items: center; gap: var(--ui-pad-x); }
-.cg-key-row .action-glyph { height: calc(var(--ui-icon) * 0.8); width: auto; flex: none; }
+/* Options → Controls: the drawing of what the input in use does (threejs-ui's controlsGuide.js) */
+.controls-guide svg { display: block; width: 100%; max-width: 420px; height: auto; } /* (wider, its text would outgrow the menu's) */
 .tool-slots > .slot { width: 44px; flex: none; }
 .side-header { display: flex; align-items: center; gap: var(--ui-pad-x); margin-bottom: var(--ui-gap); flex: none; }
 .side-panel.collapsed .side-header { margin-bottom: 0; }
@@ -178,11 +155,10 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
 /* slider items (Options → Speed) */
 .menu-slider { cursor: default; flex-wrap: wrap; row-gap: var(--ui-pad-y); }
 .menu-slider input[type='range'] { flex: 1 1 140px; min-width: 120px; accent-color: var(--accent); cursor: pointer; }
-/* a dropdown's choices (Options → Video → View Mode, Background), two to a row beneath its button */
+/* a dropdown's choices (Options → Display → View Mode, Background), two to a row beneath its button */
 .menu-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-gap); margin-left: var(--ui-indent); }
-/* an open section's entries (Options → Controls, Video), indented beneath its button */
+/* an open section's entries (Options → Controls, Display), indented beneath its button */
 .menu-section { display: flex; flex-direction: column; gap: var(--ui-gap); margin-left: var(--ui-indent); }
-.menu-section > .controls-scroll { margin-bottom: 0; flex: none; }
 .menu-option {
   display: flex;
   align-items: center;

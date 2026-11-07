@@ -1218,12 +1218,6 @@ function walkRules(world, creature) {
   return (x, y, z, steps) => squirmyCellOk(world, creature, own, x, y, z, steps === 1);
 }
 
-/** The cell beside `quarry` that `creature` would head for to go after it (pursuitGoal), or null (beside it already, or no room). */
-export function pursuitCell(world, creature, quarry) {
-  const goal = pursuitGoal(world, creature, walkRules(world, creature), quarry);
-  return typeof goal === 'object' ? goal : null;
-}
-
 /**
  * A hunting creature (`creature.hunt`: sent to eat its quarry, Consume with Select) beside its
  * quarry: it turns to face it if it's right behind, and eats it (creatureEat: its diet). Eaten,

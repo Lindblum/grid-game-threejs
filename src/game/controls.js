@@ -50,7 +50,7 @@ const OBSERVER_CONTROLS = [
   },
   {
     action: 'Mate (selected critter)',
-    mk: { g: ['key:X', 'sep:+', 'key:W'], t: 'X, when the selected critter is Fertile (it ate a Berry) beside another of its kind: they mate, and it then carries an Egg. Hold X and press WASD / the arrows to choose which one (on letting go)' },
+    mk: { g: ['key:X'], t: 'X, when the selected critter is Fertile (it ate a Berry) beside another of its kind: they mate, and it then carries an Egg. Hold X and press WASD / the arrows to choose which one (on letting go)' },
     pad: { g: ['pad:A', 'sep:+', 'stick:L:any'], t: 'A (instead of using the tool), when the selected critter is Fertile beside another of its kind: they mate. Hold A and push the left stick to choose which one' },
     xr: { g: ['xr:X', 'sep:+', 'xr:stick:R:any'], t: 'X (instead of Wait), when the selected critter is Fertile beside another of its kind: they mate. Hold X and push the right thumbstick to choose which one' },
   },
@@ -154,9 +154,9 @@ export const CreatureControlSchema = {
   controls: [
     {
       action: 'Send critter',
-      mk: { g: ['mouse:L'], t: 'Click a cell beside a surface it walks on: it walks there (the dotted line shows the way); click another critter: it goes after it, wherever it goes, until it’s beside it (then it wanders). Steering it, or any other order, stops it' },
+      mk: { g: ['mouse:L'], t: 'Click a cell beside a surface it walks on: it walks there (the dotted line shows the way); click another critter: that one is selected instead. Steering it, or any other order, stops it' },
       pad: { g: ['pad:A'], t: 'A at the crosshair: it walks there; steering it, or any other order, stops it' },
-      xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point at a cell beside a surface it walks on and pull the right trigger: it walks there (the dotted line shows the way); at another critter: it goes after it, wherever it goes, until it’s beside it (then it wanders). Steering it, or any other order, stops it' },
+      xr: { g: ['ray', 'sep:+', 'xr:trigger:R'], t: 'Point at a cell beside a surface it walks on and pull the right trigger: it walks there (the dotted line shows the way); at another critter: that one is selected instead. Steering it, or any other order, stops it' },
     },
     {
       action: 'Move critter',
@@ -182,3 +182,76 @@ export const CreatureControlSchema = {
 
 /** The control schemas by id (Engine state.controlSchema). */
 export const CONTROL_SCHEMAS = { observer: ObserverControlSchema, creature: CreatureControlSchema };
+
+/** An action's name as Options → Controls shows it: short (what it's for goes without saying). */
+export const guideName = (action) => action.replace(/ \((selected critter|pauses)\)$/, '').replace(/^Move selected critter$/, 'Move');
+
+// a binding's glyph token -> the part of the device the threejs-ui guide labels (controlsGuide.js)
+const MOUSE_PARTS = { 'mouse:L': 'left', 'mouse:M': 'middle', 'mouse:R': 'right', 'mouse:wheel': 'wheel', 'mouse:move': 'move' };
+const PAD_PARTS = {
+  ...Object.fromEntries(['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'view', 'start'].map((b) => [`pad:${b}`, b])),
+  'stick:L:any': 'L',
+  'stick:L:press': 'L3',
+  'stick:R:any': 'R',
+  'stick:R:press': 'R3',
+  'dpad:any': 'dpad',
+  'dpad:ud': 'dpad',
+};
+/** An XR token's [hand, motion-controllers component id]. */
+function xrPart(token) {
+  const m = /^xr:(trigger|grip|stick):([LR])/.exec(token);
+  if (m) return [m[2] === 'L' ? 'left' : 'right', { trigger: 'xr-standard-trigger', grip: 'xr-standard-squeeze', stick: 'xr-standard-thumbstick' }[m[1]]];
+  const b = /^xr:([ABXY])$/.exec(token);
+  if (b) return [b[1] === 'A' || b[1] === 'B' ? 'right' : 'left', `${b[1].toLowerCase()}-button`];
+  return null;
+}
+
+/**
+ * Control schema `schema` as threejs-ui's Controls guide takes it (controlsGuide.js): { mk: {
+ * mouse, keys }, pad, xr: { left, right } }, each part labelled with the actions it does in
+ * play (the menus' own rows left out). In a binding, the buttons count until a "+" (what
+ * follows only modifies it), and "/" starts another; "×2" after one makes it a double press,
+ * "click" after a stick its press.
+ */
+export function guideControls(schema) {
+  const mouse = {};
+  const pad = {};
+  const xr = { left: {}, right: {} };
+  const add = (into, part, name) => {
+    if (!part) return;
+    const list = (into[part] ??= []);
+    if (!list.includes(name)) list.push(name);
+  };
+  for (const row of schema.controls) {
+    if (row.action.startsWith('Menu ')) continue; // (in the menus only: not what the button does in play)
+    const name = guideName(row.action);
+    for (const [device, into] of [['mk', mouse], ['pad', pad], ['xr', null]]) {
+      const g = row[device]?.g ?? [];
+      let modifier = false;
+      g.forEach((token, i) => {
+        if (token === 'sep:+') modifier = true;
+        else if (token === 'sep:/') modifier = false;
+        else if (!modifier && !token.startsWith('sep:') && !token.startsWith('text:')) {
+          const label = g[i + 1] === 'text:×2' ? `${name} (×2)` : g[i + 1] === 'text:click' ? `${name} (click)` : name;
+          if (device === 'mk') add(into, MOUSE_PARTS[token], label);
+          else if (device === 'pad') add(into, PAD_PARTS[token], label);
+          else {
+            const part = xrPart(token);
+            if (part) add(xr[part[0]], part[1], label);
+          }
+        }
+      });
+    }
+  }
+  const joined = (parts) => Object.fromEntries(Object.entries(parts).map(([part, names]) => [part, names.join('\n')]));
+  // the keys: each row's keys (and the "/"s between them), what they do
+  const keys = schema.controls
+    .filter((row) => !row.action.startsWith('Menu '))
+    .map((row) => ({ action: guideName(row.action), g: (row.mk?.g ?? []).filter((t) => t.startsWith('key:') || t === 'sep:/') }))
+    .filter((k) => k.g.some((t) => t.startsWith('key:')))
+    .map((k) => ({
+      action: k.action,
+      keys: k.g.filter((t, i, a) => t !== 'sep:/' || (i > 0 && i < a.length - 1 && a[i - 1] !== 'sep:/')).map((t) => (t === 'sep:/' ? '/' : t.slice(4))),
+    }));
+  return { mk: { mouse: joined(mouse), keys }, pad: joined(pad), xr: { left: joined(xr.left), right: joined(xr.right) } };
+}

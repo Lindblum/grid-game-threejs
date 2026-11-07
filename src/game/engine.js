@@ -6,7 +6,7 @@ import { HeldBodies } from './heldBodies.js';
 import { ControllerGuide } from './controllerGuide.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, pathToward, pursuitCell, mateChoices, startMate, stepEggs, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
+import { canStand, pathToward, mateChoices, startMate, stepEggs, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { debugSections } from './debugSections.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canEat, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
@@ -49,7 +49,7 @@ const _ballQuat = new THREE.Quaternion();
 const SELECT_TOOL = TOOLS.find((t) => t.id === TOOL.SELECT); // (the tool in use when none can be picked: _activeTool)
 
 /**
- * Options → Video → XR Resolution turned down during an XR session (whose framebuffer size is
+ * Options → Display → XR Resolution turned down during an XR session (whose framebuffer size is
  * fixed when it starts): each eye is drawn into this share of its part of the framebuffer
  * (XRView.requestViewportScale, asked on every view three.js gets from the frame), from the
  * next frame on. 1: all of it.
@@ -291,19 +291,19 @@ export class Engine {
       creative: true, // Options → Creative: the tools (blocks, Delete) can be picked; off, only Select (toolsAvailable)
       fog: true, // Options → Fog: Fog blocks are drawn (off: hidden, and the pointer passes through them)
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
-      xrResolution: XR_RESOLUTION.default, // Options → Video → XR Resolution: the headset's framebuffer scale (setXRResolution)
+      xrResolution: XR_RESOLUTION.default, // Options → Display → XR Resolution: the headset's framebuffer scale (setXRResolution)
       xrResolutionActive: null, // the XR session's own (fixed when it starts), while in one
-      vsync: true, // Options → Video → VSync: frames paced by the display (off: as fast as they can be drawn; see _applyVSync)
-      antialias: true, // Options → Video → Anti-aliasing (the renderer's MSAA: only takes effect when the page loads; see _initRenderer)
+      vsync: true, // Options → Display → VSync: frames paced by the display (off: as fast as they can be drawn; see _applyVSync)
+      antialias: true, // Options → Display → Anti-aliasing (the renderer's MSAA: only takes effect when the page loads; see _initRenderer)
       refraction: true, // Options → Refraction: Crystal and Water bend what's behind them, with Procedural materials (Off, or Simple / Solid: just see-through, cheaper)
       smoothRendering: false, // Options → Rendering: Smooth (clusters drawn as merged, smoothed bodies) or Blocky (default)
       cameraSpeed: CAMERA_SPEED.default, // Options → Accessibility → Camera Speed: a multiplier on the camera's turning
-      stereoDepth: STEREO_DEPTH.default, // Options → Video (3D views): × the eyes' separation (_stereoEyeSep)
-      stereoConvergence: STEREO_CONVERGENCE.default, // Options → Video (3D views): the screen's depth, × the camera's distance to its target (_setStereoFocus)
+      stereoDepth: STEREO_DEPTH.default, // Options → Display (3D views): × the eyes' separation (_stereoEyeSep)
+      stereoConvergence: STEREO_CONVERGENCE.default, // Options → Display (3D views): the screen's depth, × the camera's distance to its target (_setStereoFocus)
       vibration: VIBRATION.default, // Options → Accessibility → Vibration: the controllers' haptics, 0 (off) to 2 (_pulse; 1 as made)
       textSize: TEXT_SIZE.default, // Options → Accessibility → Text Size: the page UI's text, a multiplier
       dockTune: loadDockTune(), // Debug → Docking: where XR panels dock on a controller (see DOCK_TUNE)
-      controllerGuide: false, // Options → Accessibility → Controller Guide: XR labels beside the controllers' buttons (_guideTexts)
+      controllerGuide: false, // Options → Accessibility → XR Control Guides: XR labels beside the controllers' buttons (_guideTexts)
       directionGuides: true, // Options → Accessibility → Direction Guides (or G): Creature controls' step lines and dots, and aimed Eat / Excrete's
       viewInternal: false, // Options → Accessibility → View Internal: the selected / controlled creatures see-through, their inventories inside
       observerCameraInvert: false, // Options → Accessibility → Observer Camera: Invert turns orbiting the other way
@@ -326,7 +326,6 @@ export class Engine {
       blockCount: 0,
       rightHudOpen: true, // the Control menu / HUD (its eye button): shown, or only the button
       toolsOpen: true, // its Tools dropdown: open (the tool selector shows) or closed
-      controlsGuideOpen: false, // its Controls dropdown (windowed): open (the mouse / keys or gamepad, labelled) or closed
       // what the selected creatures could do right now (the Control menu's actions; _updateActions):
       // eat (the distinct block types next to them they could eat), excrete (the block type that
       // would come out, with somewhere for it to go); input: which glyphs to show ('mk', 'pad', 'xr')
@@ -336,7 +335,7 @@ export class Engine {
       gamepadAim: false, // aiming with a gamepad (crosshair at screen centre)
       menuFocus: null, // id of the menu item focused with the gamepad
       dropdown: null, // the menu dropdown whose list is open ('new' | 'view' | 'background'), see menu.js
-      section: null, // the Options section open beneath its button ('file' | 'controls' | 'video' | 'accessibility'), see menu.js
+      section: null, // the Options section open beneath its button ('file' | 'controls' | 'display' | 'accessibility'), see menu.js
       selectPhase: 'select', // Select tool: 'select' (pick a creature) or 'target' (pick where it walks)
     };
     this._toastId = 0;
@@ -376,7 +375,7 @@ export class Engine {
   }
 
   /**
-   * Options → Video → VSync. On: a frame per display refresh (requestAnimationFrame, through
+   * Options → Display → VSync. On: a frame per display refresh (requestAnimationFrame, through
    * three's animation loop). Off: the next frame starts as soon as one is done (a message
    * loop), so the frame rate isn't capped at the refresh rate; the browser still shows them
    * at its own refreshes. An XR session, or a hidden page, always waits for its frames.
@@ -419,7 +418,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'windowView', 'textSize', 'cameraSpeed', 'vibration', 'stereoDepth', 'stereoConvergence', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'controlsGuideOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'windowView', 'textSize', 'cameraSpeed', 'vibration', 'stereoDepth', 'stereoConvergence', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -475,7 +474,7 @@ export class Engine {
     // older cookies stored turns per minute (0–240); anything above the max multiplier is one of those
     if (typeof saved.speed === 'number') this.setSpeed(saved.speed > SPEED.max ? saved.speed / SPEED.turnsPerMinute : saved.speed);
     if (typeof saved.movementGuides === 'boolean' && !bool('directionGuides')) this.setState({ directionGuides: saved.movementGuides }); // (its old name)
-    for (const k of ['rain', 'creative', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'controlsGuideOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
+    for (const k of ['rain', 'creative', 'debugMode', 'smoothRendering', 'antialias', 'vsync', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert']) if (bool(k)) this.setState({ [k]: saved[k] });
     if (typeof saved.textSize === 'number') this.setTextSize(saved.textSize);
     if (typeof saved.xrResolution === 'number') this.setXRResolution(saved.xrResolution);
     if (typeof saved.cameraSpeed === 'number') this.setCameraSpeed(saved.cameraSpeed);
@@ -511,7 +510,7 @@ export class Engine {
 
   // ---------------------------------------------------------------- setup
   _initRenderer() {
-    // Options → Video → Anti-aliasing: a WebGL context's multisampling is fixed when it's made, so
+    // Options → Display → Anti-aliasing: a WebGL context's multisampling is fixed when it's made, so
     // the saved setting is read here, and a change takes effect on the next page load
     const antialias = loadOptionsCookie()?.antialias !== false;
     this.state.antialiasActive = antialias;
@@ -674,7 +673,7 @@ export class Engine {
     this.inventoryView = new InventoryView(this.world, root);
     // XR grab: creatures held in the hands, out of the world (see _grabCreature)
     this.heldBodies = new HeldBodies(this.world, root);
-    // Options → Accessibility → Controller Guide: labels beside the XR controllers' buttons
+    // Options → Accessibility → XR Control Guides: labels beside the XR controllers' buttons
     this.controllerGuide = new ControllerGuide(this.scene);
     // a new grid mode (World.setGridMode): every wireframe takes the new block shape
     onGridChange(() => {
@@ -776,7 +775,7 @@ export class Engine {
     for (let i = 0; i < 2; i++) {
       const ctrl = r.xr.getController(i);
       const grip = r.xr.getControllerGrip(i);
-      const model = factory.createControllerModel(grip); // (its buttons' nodes: where the Controller Guide's labels point)
+      const model = factory.createControllerModel(grip); // (its buttons' nodes: where the XR Control Guides' labels point)
       grip.add(model);
       // the touch ball: a grid cell in front of the controller; a grip with it on a creature
       // picks the creature up, on another block holds the build (_creatureAtHand, _blockAtHand).
@@ -1089,7 +1088,7 @@ export class Engine {
 
   /**
    * Presses a menu button from the keyboard. On opening another screen it focuses that screen's first item;
-   * on going back, the button that led to the screen just left (e.g. Video →).
+   * on going back, the button that led to the screen just left (e.g. Display →).
    */
   _keyMenuGo(id) {
     const before = this.state.menu;
@@ -1264,12 +1263,6 @@ export class Engine {
     }
     if (!did) playSfx('ineffective', 0);
     return did;
-  }
-
-  /** The Control menu's Controls dropdown (windowed): opens or closes it; remembered. */
-  toggleControlsGuideOpen() {
-    this.setState({ controlsGuideOpen: !this.state.controlsGuideOpen });
-    this._saveOptions();
   }
 
   /** The Control menu's (windowed and XR) Tools dropdown: opens or closes the tool selector; remembered. */
@@ -2219,7 +2212,7 @@ export class Engine {
 
   _useSelect(t) {
     // clicking a creature (any block of it) selects it (in either phase:
-    // in 'target' it swaps the selection)
+    // in 'target' it swaps the selection, rather than sending them after it)
     const creature = this._creatureOf(t?.block);
     if (creature) {
       if (this.selected.length === 1 && this.selected[0] === creature) {
@@ -2229,8 +2222,6 @@ export class Engine {
         playTick();
         return true;
       }
-      // picking where the selection goes: another creature is where, and they go after it
-      if (this._targeting && this.selected.length && !this.selected.includes(creature)) return this._sendAfter(creature);
       this._setSelected([creature]);
       playWait(this._soundAt(creature)); // selecting puts it in Wait
       return true;
@@ -2261,10 +2252,10 @@ export class Engine {
   }
 
   /**
-   * The Select tool's target is creature `quarry`: each selected creature (but it) goes after
-   * it, every turn heading for the cell beside it wherever it's got to (sim.js pursuitGoal),
-   * until given another order or the quarry is gone. It stays selected, to be sent on again.
-   * `hunt` (Consume pointing at it): only those that can eat it go, and eat it once beside it.
+   * Consume pointing at creature `quarry` (`hunt`): each selected creature (but it) that can
+   * eat it goes after it, every turn heading for the cell beside it wherever it's got to (sim.js
+   * pursuitGoal), until given another order or the quarry is gone, and eats it once beside it.
+   * It stays selected, to be sent on again. (Clicking another creature selects it instead.)
    */
   _sendAfter(quarry, { hunt = false } = {}) {
     const sent = this.selected.filter((c) => c !== quarry && (!hunt || canEat(c, quarry.type)));
@@ -2282,11 +2273,6 @@ export class Engine {
     }
     playAssign(this._soundAt(quarry));
     return true;
-  }
-
-  /** Whether creatures (or blocks) `a` and `b` are in neighbouring cells. */
-  _isBeside(a, b) {
-    return NEIGHBOR_DIRS.some(([dx, dy, dz]) => a.x + dx === b.x && a.y + dy === b.y && a.z + dz === b.z);
   }
 
   /** While Select picks where the selection goes: the creature pointed at, if it's one they could be sent after (not one of them); else null. */
@@ -2387,8 +2373,7 @@ export class Engine {
    * Walk would go (sim.js pathToward; round an edge, its arc); none with no way there.
    */
   _updateTargetLine(now) {
-    const quarry = this._targetCreature;
-    const heads = (this.targetHL.visible && this._targetCell) || quarry ? this.selected : [];
+    const heads = this.targetHL.visible && this._targetCell ? this.selected : [];
     const g = this.targetLine.geometry, pos = g.getAttribute('position'), col = g.getAttribute('color');
     const s = GRID.scale, color = new THREE.Color();
     let n = 0;
@@ -2402,7 +2387,6 @@ export class Engine {
         for (const p of this._movePath(prev, cell, this.world.edgeVia(prev, cell, c)).slice(1)) pts.push(new THREE.Vector3(p.x * s, p.y * s, p.z * s));
         prev = cell;
       }
-      if (quarry) pts.push(this.world.renderedPosition(quarry, now, new THREE.Vector3())); // (on into the creature it would go after)
       for (let i = 1; i < pts.length && n < TARGET_LINES_MAX; i++, n++) {
         pos.setXYZ(n * 2, pts[i - 1].x, pts[i - 1].y, pts[i - 1].z);
         pos.setXYZ(n * 2 + 1, pts[i].x, pts[i].y, pts[i].z);
@@ -2420,11 +2404,8 @@ export class Engine {
 
   /** Creature `c`'s path to the target cell (pathToward), searched again only when it, the target or the world changed. */
   _targetPath(c) {
-    const q = this._targetCreature;
-    if (q === c) return null;
-    // (sent after a creature: to the cell beside it it would head for; none when it's beside it already)
-    const t = q ? pursuitCell(this.world, c, q) : this._targetCell;
-    if (!t) return q && this._isBeside(c, q) ? [] : null;
+    const t = this._targetCell;
+    if (!t) return null;
     const key = `${c.x},${c.y},${c.z}>${t.x},${t.y},${t.z}@${this.world.revision}`;
     this._targetPaths ??= new WeakMap();
     const hit = this._targetPaths.get(c);
@@ -2568,7 +2549,7 @@ export class Engine {
   }
 
   /**
-   * Options → Video → XR Resolution: the headset's framebuffer scale, snapped to the slider's
+   * Options → Display → XR Resolution: the headset's framebuffer scale, snapped to the slider's
    * steps. The browser fixes the framebuffer when an XR session starts; turned down during one,
    * it shows at once while dragging (each eye drawn into less of it: xrViewportScale), and on
    * letting go the session restarts at the new size (_restartXR).
@@ -2780,8 +2761,8 @@ export class Engine {
       this.setState({ menu: id, page: 0 });
       return this.refreshSaves();
     }
-    // File, Controls, Video and Accessibility open (or close) their sections, closing any other
-    if (id === 'file' || id === 'controls' || id === 'video' || id === 'accessibility') return this.setState({ section: s.section === id ? null : id });
+    // File, Controls, Display and Accessibility open (or close) their sections, closing any other
+    if (id === 'file' || id === 'controls' || id === 'display' || id === 'accessibility') return this.setState({ section: s.section === id ? null : id });
     if (id === 'directionGuides') return this.toggleDirectionGuides();
     if (id === 'controllerGuide') return this.setState({ controllerGuide: !s.controllerGuide });
     if (id === 'viewInternal') return this.setState({ viewInternal: !s.viewInternal });
@@ -2837,14 +2818,14 @@ export class Engine {
     playTick();
   }
 
-  /** Options → Video → Materials: 'solid', 'simple' or 'procedural' (recompiles the block shaders). */
+  /** Options → Display → Materials: 'solid', 'simple' or 'procedural' (recompiles the block shaders). */
   _setMaterials(level) {
     if (!MATERIALS.includes(level)) return;
     this.world.materials.setMaterials(level);
     this.setState({ materials: level });
   }
 
-  /** Options → Video → Background: 'solid', 'skybox' or 'passthrough'. */
+  /** Options → Display → Background: 'solid', 'skybox' or 'passthrough'. */
   _setBackground(next) {
     if (!BACKGROUNDS.includes(next)) return;
     const s = this.state;
@@ -2888,7 +2869,7 @@ export class Engine {
   }
 
   /**
-   * Options → Video → View Mode (see menu.js): the windowed views switch at once; the XR views
+   * Options → Display → View Mode (see menu.js): the windowed views switch at once; the XR views
    * start a session (only from a click, as browsers require), and Phone AR / Phone Viewer switch
    * live inside one.
    */
@@ -2940,7 +2921,7 @@ export class Engine {
       );
       this._savedView = { pos: this.camera.position.clone(), target: this.controls.target.clone(), up: this.camera.up.clone() };
       this.renderer.xr.setReferenceSpaceType('local-floor');
-      this.renderer.xr.setFramebufferScaleFactor(this.state.xrResolution); // (Options → Video → XR Resolution)
+      this.renderer.xr.setFramebufferScaleFactor(this.state.xrResolution); // (Options → Display → XR Resolution)
       await this.renderer.xr.setSession(session);
       this.setState({ xrResolutionActive: this.state.xrResolution });
       this._applyXRViewportScale();
@@ -3743,7 +3724,7 @@ export class Engine {
   }
 
   /**
-   * Options → Accessibility → Controller Guide: what each of `hand`'s buttons and sticks does
+   * Options → Accessibility → XR Control Guides: what each of `hand`'s buttons and sticks does
    * right now, { componentId: text } (motion-controllers ids; ControllerGuide shows them).
    * Nothing for a button that does nothing just now.
    */
@@ -3756,6 +3737,12 @@ export class Engine {
     t['xr-standard-squeeze'] = holding ? 'Let go to drop' : 'Grab\n×2: Dock / undock panels\n×3: Summon panels';
     if (holding) t['xr-standard-thumbstick'] = '↕ Push / pull\n↔ Turn the build';
     else if (this._scrollPanel && this._uiHand === hand) t['xr-standard-thumbstick'] = '↕ Scroll';
+    else if (this._xrStepHand === hand) {
+      t['xr-standard-thumbstick'] = '↕ Step through Options\n↔ A slider';
+      t[hand === 'right' ? 'a-button' : 'x-button'] = 'Choose';
+      t[hand === 'right' ? 'b-button' : 'y-button'] = 'Back a level';
+      return t;
+    }
     if (hand === 'right') {
       const tool = this._activeTool();
       t['xr-standard-trigger'] = !playing || this._uiHand !== 'left' && this._menuPanelHover ? 'Press'
@@ -4175,9 +4162,11 @@ export class Engine {
       const y = (sgp.axes.length >= 4 ? sgp.axes[3] : sgp.axes[1]) || 0;
       if (Math.abs(y) > 0.2) this._scrollPanel.scrollBy(y * MENU_SCROLL_PX_S * (this._dt ?? 0));
     }
+    // ...and the other stick steps through it (threejs-ui), which then does nothing else
+    this._xrStepHand = this._xrMenuStep(holding);
     const rgp = this.hands.right?.source?.gamepad;
     if (rgp) {
-      if (!holding.right && !this._aim?.gp) this._touchStickTools(rgp); // (not while the right stick aims a left-hand Mate)
+      if (!holding.right && !this._aim?.gp && this._xrStepHand !== 'right') this._touchStickTools(rgp); // (not while the right stick aims a left-hand Mate)
       const playing = this.state.screen === 'playing' && !this.state.paused;
       const stick = !!rgp.buttons[3]?.pressed; // thumbstick click: Observer ↔ Creature controls (like the gamepad's R3)
       if (stick && !this._rightStickWas && playing) this.toggleControlSchema();
@@ -4186,7 +4175,7 @@ export class Engine {
     // the left stick: aims a held A / B (Excrete / Eat), else, under Creature controls, steers
     // the controlled creature (as the gamepad's does); not while it scrolls Options
     const lgpStick = this.hands.left?.source?.gamepad;
-    const scrolling = (this._scrollPanel && this._uiHand === 'left') || holding.left;
+    const scrolling = (this._scrollPanel && this._uiHand === 'left') || holding.left || this._xrStepHand === 'left';
     const lx = (i) => {
       const v = (lgpStick && !scrolling && (lgpStick.axes.length >= 4 ? lgpStick.axes[2 + i] : lgpStick.axes[i])) || 0;
       return Math.abs(v) < 0.18 ? 0 : v;
@@ -4201,7 +4190,8 @@ export class Engine {
     // Left Y: with a creature selected (while playing), puts it in Wander; otherwise it opens
     // the menu. Left X puts a selected creature back in Wait.
     const lgp = this.hands.left?.source?.gamepad;
-    if (lgp) {
+    if (lgp && this._xrStepHand === 'left') this._leftMenuWas = this._leftXWas = true; // (X / Y work Options meanwhile: pressed then, they wait to be let go)
+    else if (lgp) {
       const playing = this.state.screen === 'playing' && !this.state.paused;
       const y = !!lgp.buttons[5]?.pressed;
       if (y && !this._leftMenuWas) {
@@ -4217,6 +4207,65 @@ export class Engine {
       }
       this._leftXWas = x;
     }
+  }
+
+  /**
+   * XR: while a controller points at Options, the stick of the controller Options is docked on (docked
+   * on the pointing one, or not docked: the other's) steps through it, as the gamepad does (threejs-ui):
+   * the lit control starts at the one pointed at (and jumps to it whenever the ray moves onto another),
+   * up / down go through the menu, left / right step a slider, A / X presses, B / Y goes up a level.
+   * The pointing controller's stick scrolls it (_pollGamepads). Returns the stepping hand, or null.
+   */
+  _xrMenuStep(holding) {
+    const s = this.state, ray = this._uiHand;
+    const was = (this._xrStep ??= { ray: null, arm: {}, a: true, b: true });
+    if (!this._menuPanelHover || !this.isMenuOpen() || (ray !== 'left' && ray !== 'right')) {
+      Object.assign(was, { ray: null, a: true, b: true });
+      return null;
+    }
+    const e = this._panels.options;
+    const hand = e.dock && e.dock !== ray ? e.dock : ray === 'left' ? 'right' : 'left';
+    const gp = this.hands[hand]?.source?.gamepad;
+    if (!gp || holding[hand]) return null;
+    const model = menuModel(s), items = focusables(model);
+    // the ray moved onto another control: that one's lit, and the stick goes on from there
+    const hover = this._menuHover;
+    if (hover !== was.ray && items.some((it) => it.id === hover)) this.setState({ menuFocus: hover });
+    was.ray = hover;
+    const axis = (i) => (gp.axes.length >= 4 ? gp.axes[2 + i] : gp.axes[i]) || 0;
+    const flick = (k, v) => {
+      if (was.arm[k] !== false && Math.abs(v) > 0.6) {
+        was.arm[k] = false;
+        return Math.sign(v);
+      }
+      if (Math.abs(v) < 0.3) was.arm[k] = true;
+      return 0;
+    };
+    let idx = items.findIndex((it) => it.id === this.state.menuFocus);
+    const dy = flick('y', axis(1)); // (down: on through the list)
+    if (dy && items.length) {
+      idx = idx < 0 ? 0 : THREE.MathUtils.clamp(idx + dy, 0, items.length - 1);
+      this.setState({ menuFocus: items[idx].id });
+      this.menuPanel.scrollToShow(items[idx].id);
+      this._pulse(...PANEL_PULSE.zone, hand);
+      playTick();
+    }
+    const it = items[idx];
+    const dx = flick('x', axis(0));
+    if (dx && it?.slider) {
+      this._setSlider(it.id, it.slider.value + dx * it.slider.step); // one notch
+      playTick();
+    }
+    const a = !!gp.buttons[4]?.pressed, b = !!gp.buttons[5]?.pressed; // A / X, B / Y
+    if (a && !was.a && it && !it.slider) this._keyMenuGo(it.id);
+    if (b && !was.b) {
+      playTick();
+      if (this.state.dropdown) this._closeDropdown();
+      else if (sectionOf(model, this.state.menuFocus)) this._closeSection();
+      else if (this.state.menu !== 'main') this._keyMenuGo('back');
+    }
+    Object.assign(was, { a, b });
+    return hand;
   }
 
   // ---------------------------------------------------------------- per-frame
@@ -4317,7 +4366,6 @@ export class Engine {
     this.placeHL.visible = false;
     this.deleteHL.visible = false;
     this._hoverCreature = null;
-    this._targetCreature = null; // (a creature pointed at to send the selection after: _showHighlight)
     this.targetHL.visible = false;
     this.world.setDithered(null);
     this.target = null;
@@ -4390,7 +4438,7 @@ export class Engine {
         this.rayDot.visible = true;
       }
     }
-    if (menuShown) this.menuPanel.draw(menuOpen ? menuModel(s) : null, this._hudHover === 'menu' ? 'toggle' : this._menuHover);
+    if (menuShown) this.menuPanel.draw(menuOpen ? menuModel(s) : null, this._hudHover === 'menu' ? 'toggle' : this._xrStepHand && s.menuFocus ? s.menuFocus : this._menuHover);
     const rightOnUi = uiHit && this._uiHand !== 'left'; // (the right controller still points into the world while the left is on a panel)
 
     if (s.screen === 'playing' && !s.paused && !rightOnUi && this.toolsReady(s)) {
@@ -4443,7 +4491,7 @@ export class Engine {
     this.camera.focus = Math.max(this.camera.near * 2, this.camera.position.distanceTo(this.controls.target) * this.state.stereoConvergence);
   }
 
-  /** The 3D views' eye separation (m): Options → Video → Depth × SBS_EYE_SEPARATION (0: flat). */
+  /** The 3D views' eye separation (m): Options → Display → Depth × SBS_EYE_SEPARATION (0: flat). */
   _stereoEyeSep() {
     return SBS_EYE_SEPARATION * this.state.stereoDepth;
   }
@@ -4522,8 +4570,7 @@ export class Engine {
     if (tool.id === TOOL.SELECT) {
       const creature = this._creatureOf(t.block);
       if (creature && !this.selected.includes(creature)) {
-        this._hoverCreature = creature; // a creature you could select: drawn in _updateSelectionVisuals
-        if (this.selected.length && this._targeting) this._targetCreature = creature; // (or send them after: the dotted path to it)
+        this._hoverCreature = creature; // a creature you could select (a click swaps the selection to it: no path to it): drawn in _updateSelectionVisuals
       } else if (this.selected.length && this._targeting && this._isSelectTarget(t)) {
         this.targetHL.position.set(...t.place).multiplyScalar(GRID.scale); // (lattice units -> cm)
         this.targetHL.material.color.set(BLOCK_COLORS[this.selected[0].type]); // (the creature's colour, like its Direction Guides)

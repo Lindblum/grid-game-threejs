@@ -1,4 +1,5 @@
 import { CONTROL_SCHEMAS } from './controls.js';
+import { INPUT_NAMES } from './controlsGuide.js';
 import { GRIDS, GRID_IDS } from './grids.js';
 import { MATERIALS } from './geometry.js';
 // The Options menu model, shared by the DOM panel (top-left, under its gear button) and the
@@ -31,7 +32,7 @@ export const SPEED = Object.freeze({ min: 0, max: 4, step: 0.25, default: 1, tur
 
 /** Options → Accessibility → Text Size: a multiplier on the page UI's text, 75% to 200% in steps of 25%. */
 export const TEXT_SIZE = Object.freeze({ min: 0.75, max: 2, step: 0.25, default: 1 });
-/** Options → Video → XR Resolution: the headset's framebuffer scale (1 = the browser's recommended size; pixels drawn go with its square). */
+/** Options → Display → XR Resolution: the headset's framebuffer scale (1 = the browser's recommended size; pixels drawn go with its square). */
 export const XR_RESOLUTION = Object.freeze({ min: 0.5, max: 1, step: 0.05, default: 1 });
 
 /** Options → Accessibility → Music and Sounds: a volume, 0% (off) to 100% in steps of 10%. */
@@ -39,7 +40,7 @@ export const VOLUME = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
 
 /** Options → Accessibility → Camera Speed: a multiplier on how fast the camera turns (mouse and stick), 10% to 150%. */
 export const CAMERA_SPEED = Object.freeze({ min: 0.1, max: 1.5, step: 0.1, default: 1 });
-/** Options → Video, with View Mode 3D (SBS / Interlaced): Depth (a multiplier on the eyes' separation: 0 flat) and Convergence (how far the screen's depth sits, × the distance to what the camera looks at). */
+/** Options → Display, with View Mode 3D (SBS / Interlaced): Depth (a multiplier on the eyes' separation: 0 flat) and Convergence (how far the screen's depth sits, × the distance to what the camera looks at). */
 export const STEREO_DEPTH = Object.freeze({ min: 0, max: 2, step: 0.1, default: 1 });
 export const STEREO_CONVERGENCE = Object.freeze({ min: 0.5, max: 2, step: 0.05, default: 1 });
 /** Options → Accessibility → Vibration: how strong the controllers' haptics are, 0 (off) to 2 (1: as made). */
@@ -51,7 +52,7 @@ const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Pass
 const BACKGROUND_ICONS = { solid: 'bgSolid', skybox: 'bgSky', passthrough: 'bgPass' };
 
 /**
- * Options → Video → View Mode, in dropdown order (from 4d-viewer-threejs). Normal, 3D: SBS
+ * Options → Display → View Mode, in dropdown order (from 4d-viewer-threejs). Normal, 3D: SBS
  * (half side-by-side, for 3D TVs) and 3D: Interlaced (row-interleaved, for passive 3D monitors)
  * are windowed; the rest are XR sessions. Phones get the phone views, headsets and PCs with a
  * headset the HMD one.
@@ -164,7 +165,7 @@ function viewUnavailableReason(view, state) {
   return 'WebXR isn’t available here. Open the game in a headset browser over HTTPS for XR.';
 }
 
-/** Options → Video → View Mode: a dropdown of every view, the ones this device can't show disabled. */
+/** Options → Display → View Mode: a dropdown of every view, the ones this device can't show disabled. */
 function viewItem(state) {
   const view = currentView(state);
   const views = state.views ?? [view];
@@ -177,7 +178,7 @@ function viewItem(state) {
 }
 
 /**
- * Options → Video → Background: a solid colour, the sky panorama, or passthrough (see-through in XR),
+ * Options → Display → Background: a solid colour, the sky panorama, or passthrough (see-through in XR),
  * which needs a browser with AR sessions (Quest Browser) or a phone (its camera).
  */
 function background(state) {
@@ -206,7 +207,7 @@ function newItem(state) {
 const MATERIAL_LABELS = { solid: 'Solid', simple: 'Simple', procedural: 'Procedural' };
 const MATERIAL_ICONS = { solid: 'matSolid', simple: 'matSimple', procedural: 'matProcedural' };
 
-/** Options → Video → Materials: how detailed the block surfaces are, from cheapest to richest (geometry.js MATERIALS). */
+/** Options → Display → Materials: how detailed the block surfaces are, from cheapest to richest (geometry.js MATERIALS). */
 function materialsItem(state) {
   const current = MATERIALS.includes(state.materials) ? state.materials : 'procedural';
   return {
@@ -217,8 +218,8 @@ function materialsItem(state) {
   };
 }
 
-/** Options → Video: graphics / performance settings. */
-function videoItems(state) {
+/** Options → Display: graphics / performance settings. */
+function displayItems(state) {
   const stereo = !state.inXR && (state.screenView === 'sbs' || state.screenView === 'interlaced');
   return [
     viewItem(state),
@@ -311,7 +312,7 @@ function accessibilityItems(state) {
     },
     camera('observerCamera', 'Observer Camera', state.observerCameraInvert),
     camera('controlCamera', 'Control Camera', state.controlCameraInvert),
-    { id: 'controllerGuide', label: `Controller Guide: ${state.controllerGuide ? 'On' : 'Off'}`, icon: state.controllerGuide ? 'controllerGuideOn' : 'controllerGuideOff', toggle: true },
+    { id: 'controllerGuide', label: `XR Control Guides: ${state.controllerGuide ? 'On' : 'Off'}`, icon: state.controllerGuide ? 'controllerGuideOn' : 'controllerGuideOff', toggle: true },
     { id: 'directionGuides', label: `Direction Guides: ${state.directionGuides ? 'On' : 'Off'}`, icon: state.directionGuides ? 'guidesOn' : 'guidesOff', toggle: true },
     { id: 'viewInternal', label: `View Internal: ${state.viewInternal ? 'On' : 'Off'}`, icon: state.viewInternal ? 'internalOn' : 'internalOff', toggle: true },
   ];
@@ -332,7 +333,7 @@ function fileItems(state) {
  * `dropdown`: { open, options: [{ id, label, icon, selected }] }: the button opens or closes a list of
  * choices beneath it (drawn with a chevron at its far right).
  * `section`: { open, items, table? }: like a dropdown, but what opens beneath the button is more menu
- * entries (indented), and `table` the Controls table of that control schema (id).
+ * entries (indented), and `table` that control schema (id), `input` the input in use: its Controls guide, that input drawn and labelled (threejs-ui's controlsGuide.js).
  * `toggle`: the button switches a setting (On / Off, or the next choice); Right on the keyboard presses it too.
  * Every submenu lists Back first; renderers draw it at the very top of the panel
  * (above the save-name row). The Options screen itself has none: its gear button closes it.
@@ -340,14 +341,14 @@ function fileItems(state) {
 export function menuModel(state) {
   const { menu, saves, savesError, page } = state;
   if (menu === 'main') {
-    // File, Controls, Video and Accessibility open in place, beneath their buttons (one at a time)
+    // File, Controls, Display and Accessibility open in place, beneath their buttons (one at a time)
     const schema = CONTROL_SCHEMAS[state.controlSchema] ?? CONTROL_SCHEMAS.observer;
     return {
       title: GAME_TITLE,
       items: [
         { id: 'file', label: 'File', icon: 'file', section: { open: state.section === 'file', items: fileItems(state) } },
-        { id: 'controls', label: `Controls: ${schema.name}`, icon: 'controls', section: { open: state.section === 'controls', table: schema.id, items: [] } },
-        { id: 'video', label: 'Video', icon: 'video', section: { open: state.section === 'video', items: videoItems(state) } },
+        { id: 'controls', label: `Controls: ${INPUT_NAMES[state.inputDevice] ?? INPUT_NAMES.mk}`, icon: 'controls', section: { open: state.section === 'controls', table: schema.id, input: state.inputDevice, items: [] } },
+        { id: 'display', label: 'Display', icon: 'display', section: { open: state.section === 'display', items: displayItems(state) } },
         { id: 'accessibility', label: 'Accessibility', icon: 'accessibility', section: { open: state.section === 'accessibility', items: accessibilityItems(state) } },
         { id: 'creative', label: `Creative: ${state.creative ? 'On' : 'Off'}`, icon: state.creative ? 'creativeOn' : 'creativeOff', toggle: true },
         { id: 'rain', label: `Rain: ${state.rain ? 'On' : 'Off'}`, icon: state.rain ? 'rainOn' : 'rainOff', toggle: true },

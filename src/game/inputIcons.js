@@ -1,5 +1,5 @@
 // Glyphs for input bindings (keys, mouse buttons, gamepad and Quest Touch buttons),
-// drawn on a 2D canvas so the DOM Controls table and the XR panel look the same.
+// drawn on a 2D canvas so the DOM and the XR panels show the same glyphs.
 //
 // A binding cell is a list of tokens, e.g. ['key:Esc', 'sep:/', 'hud:menu'].
 //   key:<label>            keyboard key cap

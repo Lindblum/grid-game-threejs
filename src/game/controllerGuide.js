@@ -1,4 +1,4 @@
-// Options → Accessibility → Controller Guide (XR): a label beside each of a controller's
+// Options → Accessibility → XR Control Guides: a label beside each of a controller's
 // buttons, sticks, triggers, grips and menu button saying what it does right now. Each label points,
 // with a thin leader line, at the middle of that part on the controller's own model (the
 // motion-controllers profile's nodes for it); the labels stand in a column out to the side of the controller as you see it

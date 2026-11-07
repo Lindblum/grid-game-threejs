@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Engine } from './game/engine.js';
 import { TOOLS } from './game/tools.js';
 import { toolIconURL } from './game/icons.js';
 import { menuModel, splitLabel } from './game/menu.js';
 import { menuItemIconURL } from './game/menuIcons.js';
-import { CONTROL_SCHEMAS, CONTROL_COLUMNS } from './game/controls.js';
+import { CONTROL_SCHEMAS, guideControls } from './game/controls.js';
+import { controlsGuide } from './game/controlsGuide.js';
 import { cellURL } from './game/inputIcons.js';
 import { debugModel } from './game/debugModel.js';
 import { debugSections } from './game/debugSections.js';
@@ -188,39 +189,6 @@ function blurThen(fn) {
     e.currentTarget.blur();
     fn(e);
   };
-}
-
-/** Options → Controls: one row per action of control schema `schema` (id), glyphs for each input device. */
-function ControlsTable({ schema }) {
-  const rows = (CONTROL_SCHEMAS[schema] ?? CONTROL_SCHEMAS.observer).controls;
-  return (
-    <div className="controls-scroll">
-      <table className="controls">
-        <thead>
-          <tr>
-            {CONTROL_COLUMNS.map((column) => (
-              <th key={column}>{column}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.action}>
-              <td className="action">{row.action}</td>
-              {[row.mk, row.pad, row.xr].map((binding, i) => {
-                const img = cellURL(binding.g, 64);
-                return (
-                  <td key={i} title={binding.t}>
-                    <img src={img.url} alt={binding.t} style={{ height: 32, width: img.w / 2 }} draggable={false} />
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
 }
 
 /** A number kept in localStorage (a per-browser preference, e.g. a panel's size); `fallback` when unset or unreadable. */
@@ -497,178 +465,15 @@ function ActionGlyph({ tokens }) {
   return <img className="action-glyph" src={glyph.url} style={{ aspectRatio: `${glyph.w} / ${glyph.h}` }} alt="" draggable={false} />;
 }
 
-/** An action's name as the Controls dropdown shows it: short (what it's for goes without saying). */
-const guideName = (action) => action.replace(/ \((selected critter|pauses)\)$/, '').replace(/^Move selected critter$/, 'Move');
-
 /**
- * What each mouse button / gamepad button does under control schema `schema` (controls.js), as
- * Map token -> action names, from the schema's `device` ('mk' | 'pad') bindings: a binding's
- * buttons count until a "+" (what follows only modifies it), "/" starts another.
- */
-function buttonActions(schema, device) {
-  const out = new Map();
-  for (const row of schema.controls) {
-    if (row.action.startsWith('Menu ')) continue; // (in the menus only: not what the button does in play)
-    const name = guideName(row.action);
-    const g = row[device]?.g ?? [];
-    let modifier = false;
-    g.forEach((token, i) => {
-      if (token === 'sep:+') modifier = true;
-      else if (token === 'sep:/') modifier = false;
-      else if (!modifier && !token.startsWith('sep:') && !token.startsWith('text:')) {
-        const label = g[i + 1] === 'text:×2' ? `${name} (×2)` : name; // (a double-click)
-        if (!out.has(token)) out.set(token, []);
-        if (!out.get(token).includes(label)) out.get(token).push(label);
-      }
-    });
-  }
-  return out;
-}
-
-/**
- * A device drawn in the middle of a 300-wide SVG (`shape`), and labels in a column either
- * side, each with a leader line to its button: `anchors` [{ tokens, x, y, side }] (a button,
- * labelled with what its tokens do: `actions`, and its `press` token's after "click:");
- * buttons that do nothing are left out. Each label sits level with its button where it can
- * (its line runs straight across); labels that would overlap are moved apart as a group,
- * centred on their buttons. `side: 'bottom'`: under the drawing (at `below`), its line straight
- * down. The drawing grows to fit.
- */
-function LabelledDiagram({ shape, anchors, actions, height: minHeight, below = minHeight, above = 4 }) {
-  const W = 300, COL = 92, LINE = 10, PAD = 2, GAP = 3;
-  const named = (tokens) => [...new Set(tokens.flatMap((t) => actions.get(t) ?? []))].join(', ');
-  const shown = anchors.map((a) => {
-    const click = a.press ? named([a.press]) : '';
-    return { ...a, text: [named(a.tokens), click && `click: ${click}`].filter(Boolean).join('; ') };
-  }).filter((a) => a.text);
-  const place = (side) => {
-    // top to bottom as the buttons sit; level ones: the one further from the column first (its line passes above)
-    const col = shown.filter((a) => a.side === side).sort((a, b) => a.y - b.y || (side === 'left' ? b.x - a.x : a.x - b.x));
-    const items = col.map((a) => ({ ...a, h: Math.min(3, Math.ceil(a.text.length / 17)) * LINE + PAD * 2 }));
-    // groups of labels that touch, each centred on the mean height of its buttons
-    let groups = [];
-    for (const a of items) {
-      groups.push({ items: [a], h: a.h, mid: a.y });
-      for (;;) {
-        const g = groups.at(-1), prev = groups.at(-2);
-        if (!prev || prev.mid + prev.h / 2 + GAP <= g.mid - g.h / 2) break;
-        const merged = [...prev.items, ...g.items];
-        const h = merged.reduce((t, b) => t + b.h, 0) + GAP * (merged.length - 1);
-        groups.splice(-2, 2, { items: merged, h, mid: merged.reduce((t, b) => t + b.y, 0) / merged.length });
-      }
-    }
-    return groups.flatMap((g) => {
-      let y = g.mid - g.h / 2;
-      return g.items.map((a) => {
-        const ly = y;
-        y += a.h + GAP;
-        return { ...a, ly };
-      });
-    });
-  };
-  const bottom0 = shown.filter((a) => a.side === 'bottom').map((a) => ({ ...a, h: Math.min(3, Math.ceil(a.text.length / 24)) * LINE + PAD * 2, ly: below }));
-  const top0 = shown.filter((a) => a.side === 'top').map((a) => ({ ...a, h: LINE + PAD * 2, ly: above }));
-  const labels = [...place('left'), ...place('right'), ...bottom0, ...top0];
-  const top = Math.min(0, ...labels.map((a) => a.ly - 4));
-  const bottom = Math.max(minHeight, ...labels.map((a) => a.ly + a.h + 4));
-  return (
-    <svg className="cg-diagram" viewBox={`0 ${top} ${W} ${bottom - top}`} role="img">
-      {shape}
-      {labels.map((a) => {
-        const down = a.side === 'bottom', up = a.side === 'top', BW = 130;
-        const lx = down || up ? a.x : a.side === 'left' ? COL : W - COL;
-        // (a top label stands beside its line's end: left of it, right-aligned, or right of it)
-        const fx = up ? (a.align === 'right' ? a.x - 3 - COL : a.x + 3) : down ? Math.min(W - BW, Math.max(0, a.x - BW / 2)) : a.side === 'left' ? 0 : W - COL + 3;
-        const cls = up ? (a.align === 'right' ? 'left' : 'right') : a.side;
-        return (
-          <g key={a.tokens.join()}>
-            <line x1={a.x} y1={a.y} x2={lx} y2={down ? a.ly : a.ly + a.h / 2} className="cg-lead" />
-            <circle cx={a.x} cy={a.y} r={1.8} className="cg-dot" />
-            <foreignObject x={fx} y={a.ly} width={down ? BW : COL - 3} height={a.h}>
-              <div className={`cg-label ${cls}`} title={a.text}>{a.text}</div>
-            </foreignObject>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-const MOUSE_SHAPE = (
-  <g className="cg-shape">
-    <path d="M150 22 C128 22 122 40 122 62 L122 112 C122 136 134 150 150 150 C166 150 178 136 178 112 L178 62 C178 40 172 22 150 22 Z" />
-    <path d="M122 70 L178 70 M150 22 L150 70" />
-    <rect x="146" y="38" width="8" height="18" rx="4" className="cg-key" />
-  </g>
-);
-const MOUSE_ANCHORS = [
-  { tokens: ['mouse:L'], x: 132, y: 40, side: 'left' },
-  { tokens: ['mouse:M'], x: 147, y: 54, side: 'left' },
-  { tokens: ['mouse:move'], x: 140, y: 118, side: 'left' },
-  { tokens: ['mouse:wheel'], x: 153, y: 40, side: 'right' },
-  { tokens: ['mouse:R'], x: 168, y: 58, side: 'right' },
-];
-
-const PAD_SHAPE = (
-  <g className="cg-shape">
-    <rect x="108" y="36" width="24" height="9" rx="3" />
-    <rect x="168" y="36" width="24" height="9" rx="3" />
-    <rect x="104" y="47" width="32" height="7" rx="3" />
-    <rect x="164" y="47" width="32" height="7" rx="3" />
-    <path d="M118 56 L182 56 C200 56 206 70 210 96 C214 122 208 138 196 138 C186 138 180 126 174 116 L126 116 C120 126 114 138 104 138 C92 138 86 122 90 96 C94 70 100 56 118 56 Z" />
-    <circle cx="122" cy="76" r="9" className="cg-key" />
-    <circle cx="166" cy="98" r="9" className="cg-key" />
-    <path d="M131 92 h6 v4 h4 v6 h-4 v4 h-6 v-4 h-4 v-6 h4 z" className="cg-key" />
-    <circle cx="180" cy="68" r="4" className="cg-key" />
-    <circle cx="172" cy="76" r="4" className="cg-key" />
-    <circle cx="188" cy="76" r="4" className="cg-key" />
-    <circle cx="180" cy="84" r="4" className="cg-key" />
-    <circle cx="142" cy="72" r="2.6" className="cg-key" />
-    <circle cx="158" cy="72" r="2.6" className="cg-key" />
-  </g>
-);
-const PAD_ANCHORS = [
-  { tokens: ['pad:LT'], x: 116, y: 40, side: 'left' },
-  { tokens: ['pad:LB'], x: 112, y: 50, side: 'left' },
-  { tokens: ['pad:view'], x: 142, y: 72, side: 'top', align: 'right' },
-  { tokens: ['stick:L:any'], press: 'stick:L:press', x: 122, y: 76, side: 'left' },
-  { tokens: ['dpad:any', 'dpad:ud'], x: 134, y: 99, side: 'left' },
-  { tokens: ['pad:RT'], x: 184, y: 40, side: 'right' },
-  { tokens: ['pad:RB'], x: 188, y: 50, side: 'right' },
-  { tokens: ['pad:start'], x: 158, y: 72, side: 'top', align: 'left' },
-  { tokens: ['pad:Y'], x: 180, y: 68, side: 'right' },
-  { tokens: ['pad:X'], x: 172, y: 76, side: 'right' },
-  { tokens: ['pad:B'], x: 188, y: 76, side: 'right' },
-  { tokens: ['pad:A'], x: 180, y: 84, side: 'right' },
-  { tokens: ['stick:R:any'], press: 'stick:R:press', x: 166, y: 98, side: 'bottom' },
-];
-
-/**
- * The Control menu's Controls dropdown (windowed): what the input in use does now, under the
- * current control schema. Mouse and keyboard: the mouse with its buttons labelled, then each
- * key and its action; a gamepad: the gamepad with its buttons labelled.
+ * Options → Controls (windowed): what the input in use does, under the current control schema,
+ * drawn as every threejs-ui project draws it (controlsGuide.js): the mouse and the keys, the
+ * gamepad, or the XR controllers, each part labelled.
  */
 function ControlsGuide({ s }) {
   const schema = CONTROL_SCHEMAS[s.controlSchema] ?? CONTROL_SCHEMAS.observer;
-  if (s.inputDevice === 'pad') return <LabelledDiagram shape={PAD_SHAPE} anchors={PAD_ANCHORS} actions={buttonActions(schema, 'pad')} height={180} below={146} />;
-  const keys = schema.controls
-    .map((row) => ({ name: guideName(row.action), g: (row.mk?.g ?? []).filter((t) => t.startsWith('key:') || t === 'sep:/') }))
-    .filter((k) => !k.name.startsWith('Menu '))
-    .filter((k) => k.g.some((t) => t.startsWith('key:')))
-    .map((k) => ({ ...k, g: k.g.filter((t, i, a) => t !== 'sep:/' || (i > 0 && i < a.length - 1 && a[i - 1] !== 'sep:/')) }));
-  return (
-    <>
-      <LabelledDiagram shape={MOUSE_SHAPE} anchors={MOUSE_ANCHORS} actions={buttonActions(schema, 'mk')} height={170} />
-      <div className="cg-keys">
-        {keys.map((k) => (
-          <div key={k.name} className="cg-key-row">
-            <ActionGlyph tokens={k.g} />
-            <span>{k.name}</span>
-          </div>
-        ))}
-      </div>
-    </>
-  );
+  const guide = useMemo(() => controlsGuide(s.inputDevice, guideControls(schema)), [s.inputDevice, schema]);
+  return <div dangerouslySetInnerHTML={{ __html: guide.svg }} />;
 }
 
 /**
@@ -722,8 +527,7 @@ function RightPanel({ engine, s }) {
       </button>
     );
   };
-  const guide = !s.inXR; // (windowed: its Controls dropdown; in XR, Options → Accessibility → Controller Guide)
-  const body = tools || eat.length > 0 || excrete || mate.length > 0 || guide;
+  const body = tools || eat.length > 0 || excrete || mate.length > 0;
   return (
     <aside className="side-panel right-panel" ref={panelRef} style={size}>
       <ResizeGrip place="grip-bottom-left" title="Drag to resize (double-click: reset)" {...grip} />
@@ -759,21 +563,6 @@ function RightPanel({ engine, s }) {
                     <img src={toolIconURL(t, 96, { materials: s.materials, smooth: s.smoothRendering })} alt={t.label} draggable={false} />
                   </button>
                 ))}
-              </div>
-            </div>
-          )}
-          </>}
-          {guide && <>
-          {/* the Controls dropdown: what the mouse and keys, or the gamepad, do now */}
-          <button className="btn menu-btn action-btn" aria-expanded={!!s.controlsGuideOpen} onClick={tickThen(() => engine.toggleControlsGuideOpen())}>
-            <img className="menu-icon" src={menuItemIconURL('controls')} alt="" draggable={false} />
-            <span className="label"><span className="name">Controls</span></span>
-            <img className="menu-icon menu-arrow" src={menuItemIconURL(s.controlsGuideOpen ? 'dropdownOpen' : 'dropdown')} alt="" draggable={false} />
-          </button>
-          {s.controlsGuideOpen && (
-            <div className="menu-section">
-              <div className="debug-box controls-guide">
-                <ControlsGuide s={s} />
               </div>
             </div>
           )}
@@ -890,14 +679,14 @@ function MenuBody({ engine, s, gear, panelRef, size, grip }) {
       </button>
     );
   // a dropdown's button, then (when open) its choices, two to a row beneath it; a section's button,
-  // then (when open) its Controls table or its entries, indented beneath it
+  // then (when open) its Controls guide or its entries, indented beneath it
   const renderEntry = (it) =>
     it.section ? (
       <Fragment key={it.id}>
         {renderItem(it)}
         {it.section.open && (
           <div className="menu-section">
-            {it.section.table && <ControlsTable schema={it.section.table} />}
+            {it.section.table && <div className="controls-guide"><ControlsGuide s={s} /></div>}
             {it.section.items.map(renderEntry)}
           </div>
         )}
@@ -933,7 +722,7 @@ function MenuBody({ engine, s, gear, panelRef, size, grip }) {
   const rest = (back ? model.items.slice(1) : model.items).filter((it) => !(s.menu === 'save' && it.id === 'savenew'));
 
   return (
-    <aside className={`side-panel menu-panel${s.menu === 'main' && s.section === 'controls' ? ' controls-panel' : ''}`} ref={panelRef} style={size}>
+    <aside className="side-panel menu-panel" ref={panelRef} style={size}>
       <ResizeGrip place="grip-bottom-right" title="Drag to resize (double-click: reset)" {...grip} />
       <header className="side-header">
         {gear}
