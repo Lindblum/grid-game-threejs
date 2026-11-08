@@ -1,24 +1,24 @@
-// Sound effects (SOUND_EFFECTS: recorded samples from /sfx, and ones generated from tones),
+// Sound effects (SOUND_EFFECTS: recorded samples from public/sounds, and ones generated from tones),
 // positional sound, the music, and spreading a turn's sounds over the turn.
-// The samples are imported with ?url so Vite bundles them (sfx/ is outside public/).
-import berryGrowUrl from '../../sfx/fruit.wav?url';
-import waitUrl from '../../sfx/wait.wav?url';
-import assignUrl from '../../sfx/assign.wav?url';
-import creatureDoneUrl from '../../sfx/done.wav?url';
-import creatureTrappedUrl from '../../sfx/trapped.wav?url';
-import creatureDeathUrl from '../../sfx/death.wav?url';
-import eatUrl from '../../sfx/bite.wav?url';
-import sipUrl from '../../sfx/sip.wav?url';
-import ineffectiveUrl from '../../sfx/ineffective.wav?url';
-import breezeUrl from '../../sfx/breeze.wav?url';
-import buzzUrl from '../../sfx/buzz.wav?url';
-import slitherUrl from '../../sfx/slither.wav?url';
-import skitterUrl from '../../sfx/skitter.wav?url';
-import hatchUrl from '../../sfx/hatch.wav?url';
-import mateUrl from '../../sfx/mate.wav?url';
-import soilUrl from '../../music/soil.wav?url';
-// Not in sfx/ yet: resolved at run time, so the build doesn't fail; silent until the file exists.
-const excreteUrl = new URL('../../sfx/excrete.wav', import.meta.url).href;
+// The samples are in public/sounds/ and the music in public/music/ (served as they are, under the base path).
+const sound = (name) => `${import.meta.env.BASE_URL}sounds/${name}.wav`;
+const berryGrowUrl = sound('fruit');
+const waitUrl = sound('wait');
+const assignUrl = sound('assign');
+const creatureDoneUrl = sound('done');
+const creatureTrappedUrl = sound('trapped');
+const creatureDeathUrl = sound('death');
+const eatUrl = sound('bite');
+const sipUrl = sound('sip');
+const ineffectiveUrl = sound('ineffective');
+const breezeUrl = sound('breeze');
+const buzzUrl = sound('buzz');
+const slitherUrl = sound('slither');
+const skitterUrl = sound('skitter');
+const hatchUrl = sound('hatch');
+const mateUrl = sound('mate');
+const soilUrl = `${import.meta.env.BASE_URL}music/soil.wav`;
+const excreteUrl = sound('excrete');
 
 let ctx = null;
 let soundVolume = 1; // Options → Accessibility → Sounds: 0 (off) to 1
@@ -125,7 +125,7 @@ export function unlockAudio() {
   if (ctx) preloadSamples();
 }
 
-// ---------------------------------------------------------------- music (/music)
+// ---------------------------------------------------------------- music (public/music/)
 // Options → Music: soil.wav loops while the game is running, fading in when it starts and out
 // when it stops (it carries on from where it stopped); the pause menu fades it down to a
 // quarter, and back up on leaving it.
@@ -263,7 +263,7 @@ const _1_4 = 1 / 4;
 const _3_4 = 3 / 4;
 
 export const SOUND_EFFECTS = {
-  // ---- recorded (sfx/)
+  // ---- recorded (public/sounds/)
   berryGrow: { file: berryGrowUrl }, // a tree grew a Berry
   wait: { file: waitUrl }, // a creature went into Wait (selected, or X)
   assign: { file: assignUrl }, // a creature was given something to do (Wander, or sent to a target)

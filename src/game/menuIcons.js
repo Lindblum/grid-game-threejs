@@ -480,8 +480,9 @@ const DRAW = {
     line(ctx, P, [[0.2, 0.84], [0.8, 0.24]]); // struck through
   },
   gear(ctx, P, s, cx, cy) {
-    // Options: the gear, as wide as the other icons' glyphs (0.12–0.88 of the box)
-    drawMenuIcon(ctx, cx, cy, s * 0.76, INK);
+    // Options: the gear at Lineicons' full size, as every project shows it: 20/24 of the icon's
+    // whole square (`s` is 0.86 of that square in menuItemIconURL)
+    drawMenuIcon(ctx, cx, cy, (s * 20) / 24 / 0.86, INK);
   },
   debug(ctx, P, s) {
     // terminal window with a ">_" prompt
@@ -516,16 +517,19 @@ const DRAW = {
     line(ctx, P, [[0.5, 0.4], [0.5, 0.58]]); // body
     line(ctx, P, [[0.38, 0.78], [0.5, 0.58], [0.62, 0.78]]); // legs
   },
-  vibrationOn(ctx, P) {
-    // Vibration: a controller's handle, with buzz lines either side
-    line(ctx, P, [[0.38, 0.18], [0.62, 0.18], [0.62, 0.82], [0.38, 0.82], [0.38, 0.18]]);
-    line(ctx, P, [[0.24, 0.32], [0.18, 0.42], [0.24, 0.52], [0.18, 0.62]]);
-    line(ctx, P, [[0.76, 0.32], [0.82, 0.42], [0.76, 0.52], [0.82, 0.62]]);
+  vibrationOn(ctx, P, s) {
+    // Vibration (xr-music-threejs's, as every project's): a controller between buzz marks
+    roundedRect(ctx, P, 8 / 24, 4 / 24, 8 / 24, 16 / 24, 2.5 / 24, s);
+    ctx.stroke();
+    const zig = [[4.75, 8.5], [3, 10.25], [4.75, 12], [3, 13.75], [4.75, 15.5]];
+    line(ctx, P, zig.map(([x, y]) => [x / 24, y / 24]));
+    line(ctx, P, zig.map(([x, y]) => [1 - x / 24, y / 24]));
   },
-  vibrationOff(ctx, P) {
-    // the same handle, still, struck through
-    line(ctx, P, [[0.38, 0.18], [0.62, 0.18], [0.62, 0.82], [0.38, 0.82], [0.38, 0.18]]);
-    line(ctx, P, [[0.18, 0.84], [0.82, 0.16]]);
+  vibrationOff(ctx, P, s) {
+    // the marks gone, and a slash through it
+    roundedRect(ctx, P, 8 / 24, 4 / 24, 8 / 24, 16 / 24, 2.5 / 24, s);
+    ctx.stroke();
+    line(ctx, P, [[3.5 / 24, 3.5 / 24], [20.5 / 24, 20.5 / 24]]);
   },
   textSize(ctx, P) {
     // a large and a small "A"

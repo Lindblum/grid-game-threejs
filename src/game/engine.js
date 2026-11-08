@@ -90,7 +90,7 @@ const _povTurn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1,
 const _earPos = new THREE.Vector3(), _earFwd = new THREE.Vector3(), _earUp = new THREE.Vector3();
 const _earQuat = new THREE.Quaternion(), _earScale = new THREE.Vector3();
 /** Options → Background: Skybox: a 2:1 panorama wrapped all around the scene (loaded on first use). */
-const SKYBOX_URL = new URL('../../img/skybox.jpg', import.meta.url).href;
+const SKYBOX_URL = `${import.meta.env.BASE_URL}img/skybox.jpg`; // (public/img/)
 const ORBIT_HEIGHT_CM = 100; // light 1 m above the scene
 const ORBIT_RADIUS_CM = 300; // 3 m radius
 const ORBIT_PERIOD_S = 60; // one revolution per minute
