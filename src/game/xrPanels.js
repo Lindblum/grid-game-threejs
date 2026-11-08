@@ -454,6 +454,7 @@ function trailingIcon(it) {
 
 // the menu's buttons: height and gap
 const BUTTON_H = 70, BUTTON_GAP = 12;
+const SLIDER_TRACK = 280; // a slider's track: as long in every slider (the windowed 120 px at the canvas's scale, as every project's)
 // a section's readouts (Debug: `rows`, `log`): a dark framed box (like the windowed .debug-box), its
 // padding, a key / value row's height, a log line's; the log shows at least LOG_MIN_LINES, and
 // grows into the room the panel has
@@ -642,9 +643,9 @@ export class MenuPanel extends CanvasPanel {
     ctx.textBaseline = 'middle';
     let track = null;
     if (it.slider) {
-      // slider: track + knob in the right half; the label gets the left half
+      // slider: the label, then the track against the right edge, SLIDER_TRACK long
       const { min, max, value } = it.slider;
-      track = { x0: bx + bw * 0.55, x1: bx + bw - 34, min, max, step: it.slider.step ?? 1 };
+      track = { x0: bx + bw - 34 - SLIDER_TRACK, x1: bx + bw - 34, min, max, step: it.slider.step ?? 1 };
       const ty = y + bh / 2;
       const kx = track.x0 + ((value - min) / (max - min)) * (track.x1 - track.x0);
       ctx.lineCap = 'round';

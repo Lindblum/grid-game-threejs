@@ -137,9 +137,9 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: #1b20
   padding: var(--ui-pad-y) var(--ui-pad-x); border-radius: var(--ui-radius); text-align: left; line-height: 1.25;
 }
 .menu-btn .menu-icon { width: var(--ui-icon); height: var(--ui-icon); flex: none; }
-/* slider items (Options → Speed) */
-.menu-slider { cursor: default; flex-wrap: wrap; row-gap: var(--ui-pad-y); }
-.menu-slider input[type='range'] { flex: 1 1 140px; min-width: 120px; accent-color: var(--accent); cursor: pointer; }
+/* slider items (Options → Speed): the label, then the track, as long in every slider and every project */
+.menu-slider { cursor: default; }
+.menu-slider input[type='range'] { flex: none; width: calc(120px * var(--text-scale)); margin: 0; accent-color: var(--accent); cursor: pointer; }
 /* a dropdown's choices (Options → Display → View Mode, Background), two to a row beneath its button */
 .menu-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-gap); margin-left: var(--ui-indent); }
 /* an open section's entries (Options → Controls, Display), indented beneath its button */
