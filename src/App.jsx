@@ -98,13 +98,13 @@ function useMirroredScroll(on) {
 
 function Overlay({ engine }) {
   const s = useSyncExternalStore(engine.subscribe, engine.getState);
-  // View Mode → 3D: SBS / Interlaced: the page's UI is drawn for each eye too, a little in front
+  // View Mode → 3D: SBS: the page's UI is drawn for each eye too, a little in front
   // of the screen (see .eye in styles.css)
-  const stereo = !s.inXR && (s.screenView === 'sbs' || s.screenView === 'interlaced') ? s.screenView : null;
+  const stereo = !s.inXR && s.screenView === 'sbs' ? s.screenView : null;
   useMirroredScroll(!!stereo);
   if (!stereo) return <OverlayView engine={engine} s={s} />;
   return ['left', 'right'].map((eye) => (
-    <div key={eye} className={`eye eye-${stereo} eye-${eye}`} style={{ '--row': `${1 / (window.devicePixelRatio || 1)}px` }}>
+    <div key={eye} className={`eye eye-${stereo} eye-${eye}`}>
       <OverlayView engine={engine} s={s} />
     </div>
   ));

@@ -40,7 +40,7 @@ export const VOLUME = Object.freeze({ min: 0, max: 1, step: 0.1, default: 1 });
 
 /** Options → Accessibility → Camera Speed: a multiplier on how fast the camera turns (mouse and stick), 10% to 150%. */
 export const CAMERA_SPEED = Object.freeze({ min: 0.1, max: 1.5, step: 0.1, default: 1 });
-/** Options → Display, with View Mode 3D (SBS / Interlaced): Depth (a multiplier on the eyes' separation: 0 flat) and Convergence (how far the screen's depth sits, × the distance to what the camera looks at). */
+/** Options → Display, with View Mode 3D: SBS: Depth (a multiplier on the eyes' separation: 0 flat) and Convergence (how far the screen's depth sits, × the distance to what the camera looks at). */
 export const STEREO_DEPTH = Object.freeze({ min: 0, max: 2, step: 0.1, default: 1 });
 export const STEREO_CONVERGENCE = Object.freeze({ min: 0.5, max: 2, step: 0.05, default: 1 });
 /** Options → Accessibility → Vibration: how strong the controllers' haptics are, 0 (off) to 2 (1: as made). */
@@ -52,22 +52,20 @@ const BACKGROUND_LABELS = { solid: 'Solid', skybox: 'Skybox', passthrough: 'Pass
 const BACKGROUND_ICONS = { solid: 'bgSolid', skybox: 'bgSky', passthrough: 'bgPass' };
 
 /**
- * Options → Display → View Mode, in dropdown order (from 4d-viewer-threejs). Normal, 3D: SBS
- * (half side-by-side, for 3D TVs) and 3D: Interlaced (row-interleaved, for passive 3D monitors)
- * are windowed; the rest are XR sessions. Phones get the phone views, headsets and PCs with a
+ * Options → Display → View Mode, in dropdown order (from 4d-viewer-threejs). Normal and 3D: SBS
+ * (half side-by-side, for 3D TVs) are windowed; the rest are XR sessions. Phones get the phone views, headsets and PCs with a
  * headset the HMD one.
  */
-export const VIEWS = ['normal', 'sbs', 'interlaced', 'hmd', 'phoneAR', 'phoneViewer'];
+export const VIEWS = ['normal', 'sbs', 'hmd', 'phoneAR', 'phoneViewer'];
 export const XR_VIEWS = ['hmd', 'phoneAR', 'phoneViewer'];
 const VIEW_LABELS = {
   normal: 'Normal',
   sbs: '3D: SBS',
-  interlaced: '3D: Interlaced',
   hmd: 'XR: HMD Stereo',
   phoneAR: 'XR: Phone AR',
   phoneViewer: 'XR: Phone Viewer',
 };
-const VIEW_ICONS = { normal: 'monitor', sbs: 'monitorSbs', interlaced: 'monitorInterlaced', hmd: 'xr', phoneAR: 'phone', phoneViewer: 'phoneViewer' };
+const VIEW_ICONS = { normal: 'monitor', sbs: 'monitorSbs', hmd: 'xr', phoneAR: 'phone', phoneViewer: 'phoneViewer' };
 
 /**
  * The views this device can show. `env`: { phone, headset, xrSupported }.
@@ -75,7 +73,7 @@ const VIEW_ICONS = { normal: 'monitor', sbs: 'monitorSbs', interlaced: 'monitorI
  */
 export function availableViews(env) {
   return VIEWS.filter((view) => {
-    if (view === 'sbs' || view === 'interlaced') return !env.headset;
+    if (view === 'sbs') return !env.headset;
     if (view === 'hmd') return !env.phone && env.xrSupported;
     if (view === 'phoneAR' || view === 'phoneViewer') return env.phone;
     return true;
@@ -159,7 +157,7 @@ export function sectionOf(model, id) {
 
 /** Why this device can't show `view` (see availableViews). */
 function viewUnavailableReason(view, state) {
-  if (view === 'sbs' || view === 'interlaced') return 'A headset’s browser can’t show the 3D views';
+  if (view === 'sbs') return 'A headset’s browser can’t show 3D: SBS';
   if (view === 'phoneAR' || view === 'phoneViewer') return 'Needs a phone';
   if (state.phone) return 'Needs a headset';
   return 'WebXR isn’t available here. Open the game in a headset browser over HTTPS for XR.';
@@ -220,9 +218,10 @@ function materialsItem(state) {
 
 /** Options → Display: graphics / performance settings. */
 function displayItems(state) {
-  const stereo = !state.inXR && (state.screenView === 'sbs' || state.screenView === 'interlaced');
+  const stereo = !state.inXR && state.screenView === 'sbs';
   return [
     viewItem(state),
+    background(state),
     // 3D views: how strong, and at what distance the screen is
     ...(stereo
       ? [
@@ -240,7 +239,6 @@ function displayItems(state) {
         },
       ]
       : []),
-    background(state),
     materialsItem(state),
     {
       id: 'rendering',

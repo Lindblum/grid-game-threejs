@@ -24,7 +24,6 @@ import { debugModel, DOCK_TUNE } from './debugModel.js';
 import { menuModel, displayName, PAGE_SIZE, SPEED, TEXT_SIZE, XR_RESOLUTION, VOLUME, CAMERA_SPEED, VIBRATION, STEREO_DEPTH, STEREO_CONVERGENCE, BACKGROUNDS, XR_VIEWS, availableViews, parsePick, isDisabledChoice, focusables, sectionOf } from './menu.js';
 import { GazeDwell, GazeReticle, IDLE_DISTANCE } from './gaze.js';
 import { PhoneStereo, PHONE_AR_SESSION_INIT } from './phoneStereo.js';
-import { Interlaced } from './interlaced.js';
 import { CardboardRig, CameraFeed, enterCardboard, exitCardboard, isHeadsetBrowser, isPhone } from './cardboard.js';
 import { loadOptionsCookie, saveOptionsCookie } from './optionsCookie.js';
 import { listSaves, readSave, writeSave, normalizeSaveName, timestampName } from './saves.js';
@@ -64,7 +63,7 @@ if (typeof XRFrame !== 'undefined' && XRFrame.prototype.getViewerPose) {
   };
 }
 const GAZE_RAY_LENGTH = 2.0; // hands-free XR: how far the gaze reaches (tools and UI)
-const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS and 3D: Interlaced, m
+const SBS_EYE_SEPARATION = 0.064; // View Mode → 3D: SBS, m
 // hands-free XR: the HUDs (and the menu above them) float this far ahead, this far below the eyes,
 // and swing round to the front once the head has turned GAZE_DOCK_TURN away from them
 const GAZE_DOCK_DISTANCE = 0.55;
@@ -313,7 +312,7 @@ export class Engine {
       page: 0,
       toolIndex: 0,
       inXR: false, // in an XR view (a WebXR session, or the handheld motion-sensor view)
-      screenView: 'normal', // View Mode outside XR: 'normal', 'sbs' or 'interlaced' (see menu.js currentView)
+      screenView: 'normal', // View Mode outside XR: 'normal' or 'sbs' (see menu.js currentView)
       windowView: 'normal', // the last of those picked (remembered: a refresh comes back to it; screenView goes Normal on entering XR)
       views: ['normal'], // View Mode: the views this device can show (menu.js availableViews)
       phone: false, // a phone / tablet: XR is Phone AR or Phone Viewer instead of HMD Stereo
@@ -449,7 +448,7 @@ export class Engine {
    */
   _applyOptions(saved) {
     if (!saved) return;
-    if (['normal', 'sbs', 'interlaced'].includes(saved.windowView)) this.setState({ screenView: saved.windowView, windowView: saved.windowView }); // View Mode, the last outside XR
+    if (['normal', 'sbs'].includes(saved.windowView)) this.setState({ screenView: saved.windowView, windowView: saved.windowView }); // View Mode, the last outside XR
     const bool = (k) => typeof saved[k] === 'boolean';
     // (older settings stored Music and Sounds on / off)
     if (typeof saved.musicVolume === 'number' || bool('musicOn')) this.setMusicVolume(saved.musicVolume ?? (saved.musicOn ? 1 : 0));
@@ -4483,7 +4482,7 @@ export class Engine {
   }
 
   /**
-   * View Mode → 3D: SBS / Interlaced: the eyes converge on the camera's target, so what you're
+   * View Mode → 3D: SBS: the eyes converge on the camera's target, so what you're
    * looking at sits at the screen and the page's UI (a little in front of it) stays in front.
    */
   _setStereoFocus() {
@@ -4529,12 +4528,6 @@ export class Engine {
       this.phoneStereo.update(dt, s.background === 'passthrough');
       this.phoneStereo.render(this.scene, this.camera); // a plain render unless Phone Viewer
     } else if (s.screenView === 'sbs') this._renderSideBySide();
-    else if (s.screenView === 'interlaced') {
-      this._setStereoFocus();
-      this._interlaced ??= new Interlaced(SBS_EYE_SEPARATION);
-      this._interlaced.stereo.eyeSep = this._stereoEyeSep();
-      this._interlaced.render(this.renderer, this.scene, this.camera);
-    }
     else this.renderer.render(this.scene, this.camera);
   }
 
@@ -4998,7 +4991,6 @@ export class Engine {
     window.removeEventListener('drop', this._onDrop);
     this._uiRoot?.removeEventListener('beforexrselect', this._onBeforeXRSelect);
     this.controls.dispose();
-    this._interlaced?.dispose();
     this.renderer.dispose();
     el.remove();
     this.listeners.clear();
