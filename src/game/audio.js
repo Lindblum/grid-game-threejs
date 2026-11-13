@@ -293,6 +293,31 @@ export const SOUND_EFFECTS = {
       { wave: WAVE_TYPES.NOISE, f0: NOTE.F5, q: 0.6, t0: 0, dur: 0.14, gain: 0.25 },
     ],
   },
+  pangHunger: { // a subtle stomach grumble: a low, wobbling growl over a muffled rumble (needs.js)
+    tones: [
+      { wave: WAVE_TYPES.NOISE, f0: 130, q: 2.5, t0: 0, dur: 0.42, gain: 0.05 },
+      { wave: WAVE_TYPES.SINE, f0: 92, f1: 71, t0: 0, dur: 0.16, gain: 0.05 },
+      { wave: WAVE_TYPES.SINE, f0: 78, f1: 108, t0: 0.13, dur: 0.14, gain: 0.04 },
+      { wave: WAVE_TYPES.SINE, f0: 104, f1: 62, t0: 0.25, dur: 0.2, gain: 0.04 },
+      { wave: WAVE_TYPES.TRIANGLE, f0: 60, f1: 52, t0: 0.3, dur: 0.16, gain: 0.03 },
+    ],
+  },
+  pangThirst: { // a drier, higher grumble with a parched little rasp
+    tones: [
+      { wave: WAVE_TYPES.NOISE, f0: 300, q: 2, t0: 0, dur: 0.3, gain: 0.035 },
+      { wave: WAVE_TYPES.SINE, f0: 150, f1: 118, t0: 0, dur: 0.13, gain: 0.04 },
+      { wave: WAVE_TYPES.SINE, f0: 128, f1: 160, t0: 0.11, dur: 0.12, gain: 0.03 },
+      { wave: WAVE_TYPES.NOISE, f0: 2600, q: 1.5, t0: 0.2, dur: 0.12, gain: 0.025 },
+    ],
+  },
+  hurt: { // a little crunch: bursts of filtered noise over a quick falling thud
+    tones: [
+      { wave: WAVE_TYPES.NOISE, f0: 1100, q: 0.6, t0: 0, dur: 0.07, gain: 0.22 },
+      { wave: WAVE_TYPES.NOISE, f0: 2800, q: 1.2, t0: 0.025, dur: 0.05, gain: 0.12 },
+      { wave: WAVE_TYPES.NOISE, f0: 650, q: 0.8, t0: 0.055, dur: 0.09, gain: 0.16 },
+      { wave: WAVE_TYPES.SQUARE, f0: 260, f1: 85, t0: 0, dur: 0.11, gain: 0.045 },
+    ],
+  },
   churn: { // light low gurgle: swallowed food moving along a creature's body
     tones: [
       { wave: WAVE_TYPES.NOISE, f0: NOTE.A3, q: 1.4, t0: 0, dur: 0.16, gain: 0.05 },

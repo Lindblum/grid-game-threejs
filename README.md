@@ -1,7 +1,7 @@
 # Grid Game
 
 A small living world built from space-filling blocks: **truncated octahedra** (14
-neighbours), **rhombic dodecahedra** (12) or **cubes** (6), picked per world (see
+neighbours), **rhombic dodecahedra** (12), **cubes** (6) or **hexagonal prisms** (8), picked per world (see
 [Grid modes](#grid-modes)). Place blocks and critters,
 then watch Water flow, trees grow Berries, and Crawlies, Buzzies, Squirmies and Slithers
 roam and eat. React + Three.js; plays in a desktop browser, in WebXR with passthrough
@@ -24,16 +24,22 @@ and turn on **Options → XR**.
 
 ## Grid modes
 
-**New** in the menu picks one of three space-filling grids:
+**New** in the menu picks one of four space-filling grids (the page starts in the one used
+last, kept in localStorage):
 
 | Mode | Cells (integer x, y, z) | Neighbours |
 |---|---|---|
 | Truncated Octahedron | all even or all odd | 14: `+X` … and `+X+Y+Z` … |
 | Rhombic Dodecahedron | x + y + z even | 12: `+X+Y`, `+X-Z`, … |
 | Cube | all even | 6: `+X`, `-X`, … |
+| Hexagonal Prism | x + y + z a multiple of 3 | 8: `+X-Y`, `+Y-Z`, … round the column, `+X+Y+Z` and `-X-Y-Z` along it |
 
-Every block has an inradius of 1 cm. Directions are named by their axis signs and work the
-same in every mode. Saves record their grid (`"grid": "to" | "rd" | "cube"`); older saves open
+Every block has an inradius of 1 cm (a hexagonal prism: 2 cm tall and 2 cm across its
+flats, so its sides are 1.15 cm wide by 2 cm tall; its columns run along the (1, 1, 1) diagonal, which the lattice -> cm map,
+`GRID.toCm`, squashes to give it those proportions). In Cube and Hexagonal
+Prism, which have no faces across their edges, creatures also step diagonally across an edge
+to climb a step or round a corner. Directions are named by their axis signs and work the
+same in every mode. Saves record their grid (`"grid": "to" | "rd" | "cube" | "hex"`); older saves open
 as Truncated Octahedron. See `src/game/grids.js`.
 
 ## Controls
@@ -71,3 +77,26 @@ Rules live in `src/game/sim.js`; block and creature definitions in `src/game/blo
 **Load** lists those files. Without the API, the game downloads and opens `.json` files
 instead. You can also drop a save file, or a world template (see `NEW_SCENE_TEMPLATE` in
 `src/game/world.js`), onto the page.
+
+A template is a list of lines run in order. Lines with a `stage` build the world the way it
+should look (`src/game/worldgen.js`): `shape` (a `ball`, or a `torus` with a `tube` thickness;
+its radius and relief, in cm), `bodies` (buried things made of layers from the inside out, e.g.
+a geode: Void, then Crystal, then Stone), `fill` (Dirt around them), `cover` (Moss over part of
+the surface), `trees`, `pools`, `fauna` and `shell` (a layer of Fog). Depth and "up" follow the
+shape (away from a torus's core circle), though the game's own rules still pull everything
+toward the origin. Lines without a stage grow blocks outward from what's there (the older
+format; clouds still use it). An object template can also give a `grid` and a `seed`; the same
+seed makes the same world, and every new world's seed is logged to the console.
+
+```json
+{ "grid": "to", "seed": 7, "template": [
+  { "stage": "shape", "radius": 24, "relief": 4 },
+  { "stage": "bodies", "count": 3, "cover": 2, "layers": [
+    { "type": "Void", "size": [1.5, 3] }, { "type": "Crystal", "size": 2 }, { "type": "Stone", "size": 2 } ] },
+  { "stage": "bodies", "count": 10, "layers": [{ "type": "Stone", "size": [1.5, 4] }] },
+  { "stage": "fill", "type": "Dirt" },
+  { "stage": "cover", "type": "Moss", "fraction": 0.5 },
+  { "stage": "trees", "count": 8 },
+  { "stage": "fauna", "type": "Crawly", "count": 12 }
+] }
+```

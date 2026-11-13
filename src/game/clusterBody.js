@@ -1,16 +1,20 @@
-// Options → Rendering: Smooth: every cluster is drawn as one merged mesh, built from
+// Options → Rendering: Smooth: every cluster is drawn as merged meshes, built from
 // the cluster's outer faces (faces between two of its own blocks are left out), welded into
-// one surface, smoothed so its edges round off, and shaded with smooth normals. Clusters are
-// World.clusterOf's: connected blocks of one type, a Squirmy's chain, a Crawly or Buzzy on
-// its own. The blocks stay in the World (raycasting, rules); the block shader skips the ones
+// one surface, smoothed so its edges round off, and shaded with smooth normals. A creature is
+// one body (World.clusterOf: a Squirmy's chain, a Crawly or Buzzy on its own). Everything else
+// is cut into chunks: the blocks of one type in one bin of a fixed grid of bins holding about
+// CHUNKING.cells cells each, so a change rebuilds only the chunks near it, never a whole hill of
+// Dirt. Each chunk is smoothed with its neighbours' blocks around it (CHUNKING.haloSteps), so chunks
+// meet without seams. The blocks stay in the World (raycasting, rules); the block shader skips the ones
 // flagged in the `blockMerged` instance attribute (uniforms.uSmoothRendering), and these meshes are
 // drawn instead. Blocks growing in or shrinking away (appear / vanish) aren't merged, so
 // their animations still play on the instanced mesh.
 import * as THREE from 'three';
-import { GRID, NEIGHBOR_DIRS, cellKey } from './lattice.js';
+import { GRID, NEIGHBOR_DIRS, cellKey, isValidCell, toCm } from './lattice.js';
 import { FACE_DIRS } from './geometry.js';
 import { addDepthPrePass } from './blockBatch.js';
-import { BLOCK, blockProps, isChainCreature, isCreature, isTranslucent } from './blocks.js';
+import { arcPoint } from './world.js'; // (a cycle: world.js imports this file; arcPoint is only called at run time)
+import { BLOCK, CREATURE_TYPES, blockProps, isChainCreature, isCreature, isTranslucent } from './blocks.js';
 
 /** Taubin smoothing (shrink, then inflate) passes over a welded body: rounds its edges off. */
 const SMOOTH_PASSES = 4;
@@ -25,15 +29,18 @@ const TUBE_CAP_RINGS = 4;
 
 const _c = new THREE.Color();
 const _p = new THREE.Vector3();
+const _cm = new THREE.Vector3();
 
 /**
- * Corners of the blocks sit on a half-unit grid of lattice coordinates (every grid mode), so a corner's welding key packs (2x, 2y, 2z)
- * into one number (like lattice.js cellKey): no string per corner, and fast Map lookups.
+ * Corners of the blocks sit on a sixth-unit grid of lattice coordinates (every grid mode: halves, and a hexagonal
+ * prism's 2/3 ± 1/2), so a corner's welding key packs (6x, 6y, 6z), rounded, into one number (like lattice.js
+ * cellKey): no string per corner, and fast Map lookups.
  */
 const WELD_SPAN = 1 << 17; // 17 bits per axis: 51 in all, within the 53 a JS number holds exactly
 const WELD_HALF = WELD_SPAN / 2;
-const weldKey = (x, y, z) => ((2 * x + WELD_HALF) * WELD_SPAN + (2 * y + WELD_HALF)) * WELD_SPAN + (2 * z + WELD_HALF);
-/** A welded corner belongs to at most 8 blocks (cubes meet 8 at a corner; truncated octahedra 4, rhombic dodecahedra 4 or 6). */
+const w6 = (v) => Math.round(6 * v) + WELD_HALF;
+const weldKey = (x, y, z) => (w6(x) * WELD_SPAN + w6(y)) * WELD_SPAN + w6(z);
+/** A welded corner belongs to at most 8 blocks (cubes meet 8 at a corner; truncated octahedra 4, rhombic dodecahedra 4 or 6, hexagonal prisms 6). */
 const MAX_OWNERS = 8;
 
 /**
@@ -44,27 +51,36 @@ const MAX_OWNERS = 8;
  * fanned from its centre (3 per edge), each knowing its block (`rBlock`), face (`rFace`),
  * block-local position (`rLocal`) and welded vertex (`rWeld`). `flat` (shadeFlat types):
  * no smoothing, the faces stay flat.
+ *
+ * `halo` (a chunk of a bigger cluster: ClusterBodies): the cluster's blocks around it. They
+ * join the welding and smoothing (owner indices past `blocks` are theirs) but draw no faces,
+ * so the chunk's surface is smoothed as if the whole cluster were there, and meets its
+ * neighbouring chunks' without a seam. `inside(x, y, z)`: whether a cell counts as part of the
+ * body, so no face is made toward it (default: it holds one of `blocks` or `halo`).
  */
-export function buildBody(blocks, flat = false) {
+export function buildBody(blocks, flat = false, halo = null, inside = null) {
   // the cell shape in lattice units (corners weld on lattice coordinates), drawn in cm
-  const FACES = GRID.faces, scale = GRID.scale;
+  const FACES = GRID.faces;
+  const own = blocks.length;
+  if (halo?.length) blocks = blocks.concat(halo);
   const at = new Map();
   blocks.forEach((block, i) => at.set(cellKey(block.x, block.y, block.z), i));
+  inside ??= (x, y, z) => at.has(cellKey(x, y, z));
   // which faces are on the outside, and how big everything will be
   const outer = new Uint8Array(blocks.length * FACES.length);
-  let faceCount = 0, cornerCount = 0;
+  let faceCount = 0, cornerCount = 0, ownCorners = 0;
   blocks.forEach((block, i) => {
     for (let fi = 0; fi < FACES.length; fi++) {
       const [dx, dy, dz] = FACE_DIRS[fi];
-      const j = at.get(cellKey(block.x + dx, block.y + dy, block.z + dz));
-      if (j !== undefined) continue; // inside the body
+      if (inside(block.x + dx, block.y + dy, block.z + dz)) continue; // inside the body
       outer[i * FACES.length + fi] = 1;
       faceCount++;
       cornerCount += FACES[fi].verts.length;
+      if (i < own) ownCorners += FACES[fi].verts.length;
     }
   });
   const maxWelded = faceCount + cornerCount; // (corners are shared, so fewer in practice)
-  const renderCount = cornerCount * 3; // a triangle per face edge
+  const renderCount = ownCorners * 3; // a triangle per face edge (the halo's faces aren't drawn)
   const rest = new Float32Array(maxWelded * 3);
   const ownerIdx = new Int32Array(maxWelded * MAX_OWNERS);
   const ownerCount = new Uint8Array(maxWelded);
@@ -84,9 +100,10 @@ export function buildBody(blocks, flat = false) {
     if (c < MAX_OWNERS) ownerIdx[o + c] = i, ownerCount[w] = c + 1;
   };
   const newVertex = (x, y, z) => {
-    rest[n * 3] = x * scale;
-    rest[n * 3 + 1] = y * scale;
-    rest[n * 3 + 2] = z * scale;
+    toCm(x, y, z, _cm);
+    rest[n * 3] = _cm.x;
+    rest[n * 3 + 1] = _cm.y;
+    rest[n * 3 + 2] = _cm.z;
     return n++;
   };
   const ring = new Int32Array(6);
@@ -108,14 +125,16 @@ export function buildBody(blocks, flat = false) {
         tris[nt++] = centre;
         tris[nt++] = ring[k];
         tris[nt++] = ring[k2];
+        if (i >= own) continue; // (a halo block's: shapes the surface, isn't drawn)
         // the triangle's three render vertices: centre, corner k, corner k2
         for (let j = 0; j < 3; j++) {
           const lv = j === 0 ? f.center : verts[j === 1 ? k : k2];
           rBlock[nr] = i;
           rFace[nr] = fi;
-          rLocal[nr * 3] = lv.x * scale;
-          rLocal[nr * 3 + 1] = lv.y * scale;
-          rLocal[nr * 3 + 2] = lv.z * scale;
+          toCm(lv.x, lv.y, lv.z, _cm);
+          rLocal[nr * 3] = _cm.x;
+          rLocal[nr * 3 + 1] = _cm.y;
+          rLocal[nr * 3 + 2] = _cm.z;
           rWeld[nr] = j === 0 ? centre : ring[j === 1 ? k : k2];
           nr++;
         }
@@ -198,15 +217,18 @@ export function addSmoothShape(g) {
   return g;
 }
 
+/** Blocks not drawn by a body just now: growing in or shrinking away (drawn on their own), or of a hidden type. */
+const skipper = (world, hidden) => (block) => block.vanishing || world.vanishing.has(block) || world.appearing.has(block) || hidden.has(block.type);
+
 /**
- * The clusters to draw: World.clusterOf's groups, over the blocks that aren't animating in /
- * out, and not of `hidden` types; only those of `types`, if given.
+ * The creature bodies to draw: World.clusterOf's groups, over the creature blocks that aren't
+ * skipped (skipper); only those of `types`, if given.
  */
-function clustersOf(world, hidden, types = null) {
-  const skip = (block) => block.vanishing || world.vanishing.has(block) || world.appearing.has(block) || hidden.has(block.type);
+function creatureClustersOf(world, hidden, types = null) {
+  const skip = skipper(world, hidden);
   const done = new Set();
   const out = [];
-  const blocks = types ? [...types].flatMap((type) => [...world.ofType(type)]) : world.blocks.values();
+  const blocks = (types ? [...types] : [...CREATURE_TYPES]).filter(isCreature).flatMap((type) => [...world.ofType(type)]);
   for (const b of blocks) {
     if (done.has(b) || skip(b)) continue;
     const blocks = world.clusterOf(b).filter((x) => !skip(x) && !done.has(x));
@@ -215,6 +237,35 @@ function clustersOf(world, hidden, types = null) {
   }
   return out;
 }
+
+/**
+ * How terrain bodies (anything but creatures) are cut up: into chunks of about `cells` cells
+ * (a bin of the grid of bins: chunkGrid), each smoothed with the blocks of its type
+ * `haloSteps` neighbour steps around it (its halo; buildBody), so its surface comes out where
+ * the whole cluster's would and it meets the chunks beside it (measured against a whole-cluster
+ * build: 2 steps no difference, 1 step up to 0.025 cm, 0 steps up to 0.27 cm: visible seams).
+ * Changing it takes effect at the next full rebuild.
+ */
+export const CHUNKING = { cells: 100, haloSteps: 2 };
+
+let _chunkGrid = null;
+/**
+ * The bins for the active grid mode: `size` lattice units on a side (holding about CHUNKING.cells
+ * cells: its cells per unit³ counted once), and the halo's `margin` (lattice units).
+ */
+function chunkGrid() {
+  if (_chunkGrid?.grid === GRID && _chunkGrid.cells === CHUNKING.cells && _chunkGrid.haloSteps === CHUNKING.haloSteps) return _chunkGrid;
+  let valid = 0;
+  for (let x = 0; x < 12; x++) for (let y = 0; y < 12; y++) for (let z = 0; z < 12; z++) if (isValidCell(x, y, z)) valid++;
+  const size = Math.max(2, Math.round(Math.cbrt(CHUNKING.cells / (valid / 1728))));
+  const step = Math.max(...NEIGHBOR_DIRS.flat().map(Math.abs));
+  return (_chunkGrid = { grid: GRID, ...CHUNKING, size, margin: CHUNKING.haloSteps * step });
+}
+
+/** The bin of cell (x, y, z) as [bx, by, bz]. */
+const binOf = (x, y, z, size) => [Math.floor(x / size), Math.floor(y / size), Math.floor(z / size)];
+/** A chunk's key: its type and bin. */
+const chunkKey = (type, bx, by, bz) => `${type}|${bx},${by},${bz}`;
 
 /** More changed cells than this since the last update: rebuild everything instead (cheaper than piecemeal). */
 const FULL_REBUILD_CELLS = 3000;
@@ -228,6 +279,7 @@ export class ClusterBodies {
     this.bodies = new Set();
     this._byBlock = new Map(); // block -> its body
     this._bodyAtCell = new Map(); // cell key -> the body that had a block there when built
+    this._byChunk = new Map(); // chunk key -> its body (terrain)
     this._seeThrough = new Set(); // bodies drawn see-through (setSeeThrough)
     this.hiddenTypes = new Set(); // block types not drawn at all just now (Options → Fog off): no bodies built for them
     this._revision = -1; // world.revision the bodies were last brought up to date for
@@ -246,6 +298,7 @@ export class ClusterBodies {
     this.bodies.clear();
     this._byBlock.clear();
     this._bodyAtCell.clear();
+    this._byChunk.clear();
   }
 
   /**
@@ -258,10 +311,17 @@ export class ClusterBodies {
     else this.hiddenTypes.delete(type);
     if (!this.enabled || this._revision < 0) return; // (built in full when next needed)
     if (hidden) {
-      for (const body of [...this.bodies]) if (body.blocks[0]?.type === type) this._remove(world, body, null);
+      for (const body of [...this.bodies]) if (body.type === type) this._remove(world, body, null);
+    } else if (isCreature(type)) {
+      for (const blocks of creatureClustersOf(world, this.hiddenTypes, [type])) this._add(world, blocks);
     } else {
-      for (const blocks of clustersOf(world, this.hiddenTypes, [type])) this._add(world, blocks);
+      this._buildChunks(world, this._chunksOf(world, world.ofType(type)));
     }
+  }
+
+  /** The body drawing `block` (Smooth rendering), or null: { blocks, halo, chunk (terrain: "type|bin"), … }. */
+  bodyOf(block) {
+    return this._byBlock.get(block) ?? null;
   }
 
   _dispose(body) {
@@ -293,7 +353,8 @@ export class ClusterBodies {
     }
     for (const body of this.bodies) {
       if (!body.moving) continue;
-      body.moving = body.blocks.some((block) => world.anims.has(cellKey(block.x, block.y, block.z)));
+      body.moving = body.blocks.some((block) => world.anims.has(cellKey(block.x, block.y, block.z)))
+        || !!body.halo?.some((block) => world.anims.has(cellKey(block.x, block.y, block.z)));
       this._pose(world, body, now);
     }
   }
@@ -325,7 +386,56 @@ export class ClusterBodies {
   _rebuildAll(world) {
     this.clear();
     world.clearMergedFlags();
-    for (const blocks of clustersOf(world, this.hiddenTypes)) this._add(world, blocks);
+    for (const blocks of creatureClustersOf(world, this.hiddenTypes)) this._add(world, blocks);
+    this._buildChunks(world, this._chunksOf(world, world.blocks.values()));
+  }
+
+  /** The chunk keys holding any of `blocks` (terrain ones, not skipped). */
+  _chunksOf(world, blocks) {
+    const { size } = chunkGrid();
+    const skip = skipper(world, this.hiddenTypes);
+    const keys = new Set();
+    for (const b of blocks) if (!isCreature(b.type) && !skip(b)) keys.add(chunkKey(b.type, ...binOf(b.x, b.y, b.z, size)));
+    return keys;
+  }
+
+  /**
+   * (Re)builds the chunks `keys`: each one's old body goes, and its blocks (those of its type in
+   * its bin, not skipped) get a new body, smoothed with the blocks of its type within the halo
+   * margin around the bin. Found by looking through the bin's cells, so the cost doesn't grow
+   * with the world.
+   */
+  _buildChunks(world, keys) {
+    const { size, margin } = chunkGrid();
+    const skip = skipper(world, this.hiddenTypes);
+    for (const key of keys) {
+      const old = this._byChunk.get(key);
+      if (old) this._remove(world, old, null);
+      const bar = key.lastIndexOf('|');
+      const type = key.slice(0, bar);
+      const [bx, by, bz] = key.slice(bar + 1).split(',').map(Number);
+      const lo = [bx * size, by * size, bz * size];
+      const own = [], halo = [];
+      for (let x = lo[0] - margin; x < lo[0] + size + margin; x++) {
+        for (let y = lo[1] - margin; y < lo[1] + size + margin; y++) {
+          for (let z = lo[2] - margin; z < lo[2] + size + margin; z++) {
+            const b = world.blocks.get(cellKey(x, y, z));
+            if (!b || b.type !== type || skip(b)) continue;
+            const inBin = x >= lo[0] && x < lo[0] + size && y >= lo[1] && y < lo[1] + size && z >= lo[2] && z < lo[2] + size;
+            (inBin ? own : halo).push(b);
+          }
+        }
+      }
+      if (!own.length) continue;
+      // a cell counts as inside if it holds a drawn block of the type (in the chunk, its halo or beyond)
+      const inside = (x, y, z) => {
+        const n = world.blocks.get(cellKey(x, y, z));
+        return !!n && n.type === type && !skip(n);
+      };
+      const body = this._add(world, own, halo, inside);
+      body.chunk = key;
+      this._byChunk.set(key, body);
+    }
   }
 
   /**
@@ -337,31 +447,42 @@ export class ClusterBodies {
    */
   _rebuildChanged(world, since) {
     const log = world.changeLog;
-    const skip = (block) => block.vanishing || world.vanishing.has(block) || world.appearing.has(block) || this.hiddenTypes.has(block.type);
-    const stale = new Set(), seeds = new Set();
+    const skip = skipper(world, this.hiddenTypes);
+    const { size, margin } = chunkGrid();
+    const stale = new Set(), seeds = new Set(), chunks = new Set();
+    // terrain: every chunk of the cell's old or new type whose bin or halo holds the cell
+    const touch = (type, x, y, z) => {
+      if (!type || isCreature(type)) return;
+      const [x0, y0, z0] = binOf(x - margin, y - margin, z - margin, size), [x1, y1, z1] = binOf(x + margin, y + margin, z + margin, size);
+      for (let bx = x0; bx <= x1; bx++) for (let by = y0; by <= y1; by++) for (let bz = z0; bz <= z1; bz++) chunks.add(chunkKey(type, bx, by, bz));
+    };
     for (let i = since; i < log.length; i += 3) {
       const x = log[i], y = log[i + 1], z = log[i + 2];
       const key = cellKey(x, y, z);
       const had = this._bodyAtCell.get(key);
-      if (had) stale.add(had);
       const now = world.blocks.get(key);
-      if (now) {
+      touch(had?.type, x, y, z);
+      touch(now?.type, x, y, z);
+      // creatures: the bodies they were and are in, and same-type neighbours' (they may have joined or split)
+      if (had && !had.chunk) stale.add(had);
+      if (now && isCreature(now.type)) {
         seeds.add(now);
         const body = this._byBlock.get(now);
         if (body) stale.add(body);
       }
       for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
         const n = world.blocks.get(cellKey(x + dx, y + dy, z + dz));
-        if (!n || (n.type !== now?.type && n.type !== had?.type)) continue; // other types' clusters can't have changed
+        if (!n || !isCreature(n.type) || (n.type !== now?.type && n.type !== had?.type)) continue; // other types' clusters can't have changed
         seeds.add(n);
         const body = this._byBlock.get(n);
         if (body) stale.add(body);
       }
     }
     for (const body of stale) this._remove(world, body, seeds);
+    this._buildChunks(world, chunks);
     const done = new Set();
     for (const seed of seeds) {
-      if (done.has(seed) || this._byBlock.has(seed) || skip(seed) || world.blocks.get(cellKey(seed.x, seed.y, seed.z)) !== seed) continue;
+      if (!isCreature(seed.type) || done.has(seed) || this._byBlock.has(seed) || skip(seed) || world.blocks.get(cellKey(seed.x, seed.y, seed.z)) !== seed) continue;
       const blocks = world.clusterOf(seed).filter((block) => !skip(block));
       for (const block of blocks) done.add(block);
       // (a cluster that grew into one not marked stale: that body goes too)
@@ -373,9 +494,13 @@ export class ClusterBodies {
     }
   }
 
-  /** Builds and registers a body for `blocks` (one cluster), flagging them as drawn by it. */
-  _add(world, blocks) {
-    const body = this._create(blocks);
+  /**
+   * Builds and registers a body for `blocks` (a creature, or a chunk with its `halo` and
+   * `inside`: buildBody), flagging them as drawn by it. Returns it.
+   */
+  _add(world, blocks, halo = null, inside = null) {
+    const body = this._create(blocks, halo, inside);
+    body.type = blocks[0].type;
     body.creature = isCreature(blocks[0].type);
     body.cells = blocks.map((block) => cellKey(block.x, block.y, block.z));
     this.bodies.add(body);
@@ -386,22 +511,25 @@ export class ClusterBodies {
     for (const key of body.cells) this._bodyAtCell.set(key, body);
     this._refreshLook(world, body);
     body.moving = true; // placed on the next pose
+    return body;
   }
 
   /** Drops `body`: its blocks are drawn on their own again until a new body takes them (added to `seeds`). */
   _remove(world, body, seeds) {
     if (!this.bodies.delete(body)) return;
     this._dispose(body);
+    if (body.chunk && this._byChunk.get(body.chunk) === body) this._byChunk.delete(body.chunk);
     for (const key of body.cells) if (this._bodyAtCell.get(key) === body) this._bodyAtCell.delete(key);
     for (const block of body.blocks) {
       if (this._byBlock.get(block) === body) this._byBlock.delete(block);
+      else if (this._byBlock.has(block)) continue; // (another body has it now, e.g. a chunk it moved into: still drawn by that one)
       if (world.blocks.get(cellKey(block.x, block.y, block.z)) !== block) continue; // gone from the world
       world.setMergedFlag(block, false);
       seeds?.add(block);
     }
   }
 
-  _create(blocks) {
+  _create(blocks, halo = null, inside = null) {
     const flat = !!blockProps(blocks[0].type).shadeFlat;
     // a creature in segments (a chain creature like a Squirmy, or a Buzzy grown longer) is a
     // tube through them (see _createTube), not its cells welded
@@ -409,14 +537,14 @@ export class ClusterBodies {
     const chain = isChainCreature(blocks[0].type) ? this._world?.squirmyOf.get(blocks[0])?.segments
       : isCreature(blocks[0].type) && head.segments?.length ? [head, ...head.segments] : null;
     if (chain && blocks.length > 1) return this._createTube(blocks, chain);
-    const topo = buildBody(blocks, flat);
+    const topo = buildBody(blocks, flat, halo, inside);
     const n = topo.rWeld.length;
     const vn = topo.vertexCount;
     const g = this._bodyGeometry(n);
     g.getAttribute('localPos').array.set(topo.rLocal);
     g.getAttribute('faceIndex').array.set(topo.rFace);
     const mesh = this._bodyMesh(g, blocks[0].type);
-    return { mesh, blocks, topo, flat, indices: [], normals: new Float32Array(vn * 3), welded: new Float32Array(vn * 3), offsets: new Float32Array(blocks.length * 3) };
+    return { mesh, blocks, halo: halo?.length ? halo : null, topo, flat, indices: [], normals: new Float32Array(vn * 3), welded: new Float32Array(vn * 3), offsets: new Float32Array((blocks.length + (halo?.length ?? 0)) * 3) };
   }
 
   /**
@@ -539,13 +667,15 @@ export class ClusterBodies {
     if (body.tube) return this._poseTube(world, body, now);
     const { smooth, ownerIdx, ownerCount, tris, rWeld, vertexCount } = body.topo;
     const offsets = body.offsets;
-    const s = GRID.scale; // (rendered positions are in cm)
-    body.blocks.forEach((block, i) => {
-      world.renderedPosition(block, now, _p);
-      offsets[i * 3] = _p.x - block.x * s;
-      offsets[i * 3 + 1] = _p.y - block.y * s;
-      offsets[i * 3 + 2] = _p.z - block.z * s;
-    });
+    const place = (block, i) => {
+      world.renderedPosition(block, now, _p); // (cm)
+      toCm(block.x, block.y, block.z, _cm);
+      offsets[i * 3] = _p.x - _cm.x;
+      offsets[i * 3 + 1] = _p.y - _cm.y;
+      offsets[i * 3 + 2] = _p.z - _cm.z;
+    };
+    body.blocks.forEach(place);
+    body.halo?.forEach((block, i) => place(block, body.blocks.length + i)); // (its halo's owner indices follow its own)
     const W = body.welded, N = body.normals;
     for (let v = 0; v < vertexCount; v++) {
       let ox = 0, oy = 0, oz = 0;
@@ -609,16 +739,17 @@ export class ClusterBodies {
       P.push(centres[0]);
       T.push(new THREE.Vector3(0, 1, 0));
     } else {
-      // two segments meeting at an edge (Cube mode: World.edgeVia) bend round it: one more point
+      // two segments meeting at an edge (Cube, Hexagonal Prism: World.edgeVia) bend round it: one more point
       // between them, on the arc their slides take (at rest, the open cell's centre)
       const points = [centres[0]], at = [0]; // the spine's points; each segment's index among them
       for (let i = 1; i < n; i++) {
         const a = order[i - 1], b = order[i];
         const via = world.edgeVia(a, b, a);
         if (via) {
+          // the arc's half-way point (arcPoint), as an offset from the two segments' midpoint
           const mid = centres[i - 1].clone().add(centres[i]).multiplyScalar(0.5);
-          const out = new THREE.Vector3(via.x - (a.x + b.x) / 2, via.y - (a.y + b.y) / 2, via.z - (a.z + b.z) / 2);
-          points.push(out.setLength(centres[i - 1].distanceTo(mid)).add(mid));
+          const out = arcPoint(a, b, via, 0.5, new THREE.Vector3()).sub(new THREE.Vector3(a.x + b.x, a.y + b.y, a.z + b.z).multiplyScalar(0.5));
+          points.push(toCm(out.x, out.y, out.z, out).add(mid));
         }
         at.push(points.length);
         points.push(centres[i]);

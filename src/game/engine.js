@@ -6,12 +6,16 @@ import { HeldBodies } from './heldBodies.js';
 import { ControllerGuide } from './controllerGuide.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { STEP_FRACTION, World, arcPoint, excretedType, isSaveData, parseTemplate } from './world.js';
-import { canStand, pathToward, mateChoices, startMate, stepEggs, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
+import { treeQuench, stepFlight, canStand, pathToward, mateChoices, startMate, stepEggs, stepSquirmies, stepSight, stepNimbus, stepSoloCreatures, stepDirt, stepGroups, stepRain, stepWater, stepSink, stepFog, stepNimbusDrift, stepWood, creatureEat, creatureEatNearby, edibleNeighbors, excretableCells, nextSteppedCell, steppableCells } from './sim.js';
 import { BLOCK, BLOCK_COLORS, TOOL, TOOLS, isCreature } from './tools.js';
 import { debugSections } from './debugSections.js';
+import { MAX_QUENCH, MAX_SATE, needsOf, needsOfType, stepNeeds } from './needs.js';
+import { PainPulses } from './painPulses.js';
+import { HealthBars } from './healthBars.js';
 import { BEHAVIOR, BUFF_TYPES, blockProps, canEat, canFly, canWalkOn, describeBuff, isSingleCreature, isChainCreature, isTranslucent } from './blocks.js';
 import { SELECT_GREEN } from './icons.js';
-import { GRID, NEIGHBOR_DIRS, faceFromNormal, gridMode, isValidCell, onGridChange } from './lattice.js';
+import { GRID, NEIGHBOR_DIRS, cmDist2, faceFromNormal, fromCm, gridMode, isValidCell, onGridChange, toCm } from './lattice.js';
+import { GRIDS } from './grids.js';
 import { EDGE_SHADE, MATERIALS, cellFaces, createBlockGeometry } from './geometry.js';
 import { ENERGY_BLUE, createTouchBallMaterial, touchBallTime } from './touchBall.js';
 import {
@@ -164,6 +168,7 @@ const _dockAnchor = new THREE.Vector3();
 const _dockTurn = new THREE.Quaternion();
 const _dockEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 const DOCK_TUNE_KEY = 'debugDockTune';
+const GRID_MODE_KEY = 'gridMode'; // localStorage: the grid mode of the last world, for the next page load
 /** Debug → Docking's values (DOCK_TUNE's units), as last set in this browser, else the defaults. */
 function loadDockTune() {
   let saved = {};
@@ -288,6 +293,7 @@ export class Engine {
       speed: SPEED.default, // Options → Speed: 0x–4x (0x: stopped), where 1x is 60 turns a minute (sets the turn and animation length)
       rain: true, // Options → Rain: random raindrops appear 1 m out every 10th turn
       creative: true, // Options → Creative: the tools (blocks, Delete) can be picked; off, only Select (toolsAvailable)
+      showHealth: false, // Options → Display → Show Health: HP, Sate and Quench bars above every critter (healthBars.js)
       fog: true, // Options → Fog: Fog blocks are drawn (off: hidden, and the pointer passes through them)
       debugMode: false, // Options → Debug: debug panel (HUD / XR tablet)
       xrResolution: XR_RESOLUTION.default, // Options → Display → XR Resolution: the headset's framebuffer scale (setXRResolution)
@@ -363,6 +369,10 @@ export class Engine {
     this._detectXR();
     this._applyOptions(loadOptionsCookie()); // Options saved last time (cookie), if any
 
+    // the grid mode used last time (kept by the onGridChange listener in _initScene), if any
+    let lastGrid = null;
+    try { lastGrid = localStorage.getItem(GRID_MODE_KEY); } catch { /* (no storage) */ }
+    if (GRIDS[lastGrid] && lastGrid !== gridMode()) this.world.setGridMode(lastGrid);
     this.world.generateNew();
     this._syncCount();
     this._clock = 0;
@@ -417,7 +427,7 @@ export class Engine {
   }
 
   /** The settings the Options menu controls, as saved to the options cookie. */
-  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'windowView', 'textSize', 'cameraSpeed', 'vibration', 'stereoDepth', 'stereoConvergence', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
+  static OPTION_KEYS = ['musicVolume', 'soundVolume', 'background', 'materials', 'ambientOcclusion', 'speed', 'rain', 'creative', 'fog', 'showHealth', 'debugMode', 'smoothRendering', 'refraction', 'antialias', 'vsync', 'xrResolution', 'windowView', 'textSize', 'cameraSpeed', 'vibration', 'stereoDepth', 'stereoConvergence', 'controllerGuide', 'directionGuides', 'viewInternal', 'rightHudOpen', 'toolsOpen', 'observerCameraInvert', 'controlCameraInvert'];
 
   /** Options → Accessibility → Direction Guides, or G while playing: on / off; remembered. */
   toggleDirectionGuides() {
@@ -482,6 +492,7 @@ export class Engine {
     if (typeof saved.stereoConvergence === 'number') this._setStepped('stereoConvergence', saved.stereoConvergence, STEREO_CONVERGENCE);
     if (bool('smoothRendering')) this.world.setSmoothRendering(saved.smoothRendering);
     if (bool('fog')) this.setFog(saved.fog);
+    if (bool('showHealth')) this.setShowHealth(saved.showHealth);
   }
   toast(text, kind = 'info') {
     if (kind === 'error') playError();
@@ -561,6 +572,8 @@ export class Engine {
     scene.add(root);
     this.worldRoot = root;
     this.world = new World(root);
+    this.painPulses = new PainPulses(root); // (needs.js: hunger / thirst pangs, hurt)
+    this.healthBars = new HealthBars(root); // (Options → Display → Show Health)
     // sounds for things the simulation does on its own, each from where it happens
     const at = (cell) => this._soundAt(cell);
     this.world.on('berryGrow', (berry) => playBerryGrow(at(berry)));
@@ -574,7 +587,7 @@ export class Engine {
     this.world.on('creatureBorn', (creature) => playSfx('birth', 0, at(creature)));
     this.world.on('creatureTurned', (creature) => playSfx('buzz', 150, at(creature)));
     // a creature moving under its own power: a Crawly skitters, a Buzzy buzzes, a Squirmy slithers
-    const MOVE_SOUNDS = { [BLOCK.CRAWLY]: 'skitter', [BLOCK.BUZZY]: 'buzz', [BLOCK.SQUIRMY]: 'slither', [BLOCK.SLITHER]: 'slither' };
+    const MOVE_SOUNDS = { [BLOCK.CRAWLY]: 'skitter', [BLOCK.BUZZY]: 'buzz', [BLOCK.GLOWY]: 'buzz', [BLOCK.SQUIRMY]: 'slither', [BLOCK.SLITHER]: 'slither' };
     this.world.on('creatureMoved', (creature) => playSfx(MOVE_SOUNDS[creature.type], 150, at(creature)));
     this.world.on('blockConsumed', ({ sound, block }) => {
       playSfx(sound, 90, at(block));
@@ -585,6 +598,18 @@ export class Engine {
       if (dies) playCreatureDeath(at(block));
     });
     this.world.on('blockExcreted', ({ sound, block }) => playSfx(sound, 90, at(block)));
+    // needs (needs.js): a pang (orange: hunger, yellow: thirst) grumbles; hurt (red) crunches
+    this.world.on('creaturePang', ({ block, kind }) => {
+      this.painPulses.spawn(this.world, block, kind, this.world.time);
+      playSfx(kind === 'thirst' ? 'pangThirst' : 'pangHunger', 120, at(block));
+    });
+    this.world.on('treePang', ({ block }) => this.painPulses.spawn(this.world, block, 'thirst', this.world.time)); // (a tree's thirst: sim.js treePang)
+    this.world.on('treeWither', ({ block, was }) => this._logEvent('wither', block, `${blockProps(was).name} withered to Slop (its tree is out of Quench)`));
+    this.world.on('creatureHurt', ({ block, by, cause }) => {
+      this.painPulses.spawn(this.world, block, 'hurt', this.world.time);
+      playSfx('hurt', 80, at(block));
+      this._logEvent('hurt', block, `${cause === 'bite' ? `bitten by ${blockProps(by.type).name}` : cause === 'thirst' ? 'thirsting' : 'starving'}: ${block.hp} HP left`);
+    });
     this.world.on('inventoryMoved', ({ blocks }) => playSfx('churn', 90, at(blocks[0])));
     // event log (console, so it also shows in the debug panel): consume, excrete, buffs, behavior
     const nameOf = (type) => blockProps(type).name;
@@ -607,8 +632,8 @@ export class Engine {
     // It lives in worldRoot (cm units), so it follows the build when it is moved in XR.
     this.orbitLight = new THREE.PointLight(0xfff4e0, 2.6, 0, 0); // decay 0: no distance falloff
     const bulb = new THREE.Mesh(
-      new THREE.SphereGeometry(1.2, 16, 12),
-      new THREE.MeshBasicMaterial({ color: 0xfff4e0, toneMapped: false })
+      new THREE.SphereGeometry(4.8, 48, 32), // (the sun: golden, its light still the warm white above)
+      this.world.materials.sun // (its shader follows Options → Materials: geometry.js createSunMaterial)
     );
     this.orbitLight.add(bulb);
     root.add(this.orbitLight);
@@ -690,6 +715,8 @@ export class Engine {
       }
       // (after every other listener: the tool icons' own World must have its new shape first)
       queueMicrotask(() => this.setState({ gridMode: gridMode() }));
+      // remembered for the next page load (New, Load or a dropped file: whichever world is up)
+      try { localStorage.setItem(GRID_MODE_KEY, gridMode()); } catch { /* (no storage) */ }
     });
 
     // Small origin marker so an empty world still has a reference point.
@@ -1301,9 +1328,30 @@ export class Engine {
     ];
     const cluster = this.world.clusterOf(b); // its cluster, right now
     rows.push(['Cluster size', `${cluster.length} block${cluster.length === 1 ? '' : 's'}`]);
+    // Rendering: Smooth draws a big cluster in chunks (clusterBody.js CHUNKING): the one this block is in
+    const body = this.world.clusterBodies.enabled ? this.world.clusterBodies.bodyOf(b) : null;
+    rows.push(['Smooth body', !this.world.clusterBodies.enabled ? 'off (Rendering: Blocky)' : !body ? 'none (drawn on its own)'
+      : `${body.blocks.length} block${body.blocks.length === 1 ? '' : 's'}${body.chunk ? ` (a chunk, +${body.halo?.length ?? 0} halo)` : ''}`]);
     if (b.movedTurn != null) rows.push(['Last moved', `turn ${b.movedTurn}`]);
+    if (needsOfType(b.type)) {
+      // this block's needs (needs.js): every block of a critter has its own
+      const n = needsOf(b), t = needsOfType(b.type);
+      const head = this.world.clusterOf(b)[0];
+      rows.push(['HP', `${n.hp} / ${t.hp}`]);
+      rows.push(['Sate', `${Math.round(n.sate)} / ${MAX_SATE}${head.hungerIn != null ? ` (pang in ${head.hungerIn})` : ''}`]);
+      rows.push(['Quench', `${Math.round(n.quench)} / ${MAX_QUENCH}${head.thirstIn != null ? ` (pang in ${head.thirstIn})` : ''}`]);
+    }
+    if (b.type === BLOCK.WOOD) {
+      // a tree's thirst (sim.js treePang): this block's Quench, and its tree's on average
+      const tree = this.world.clusterOf(b).filter((x) => x.type === BLOCK.WOOD);
+      rows.push(['Quench', `${Math.round(b.quench ?? MAX_QUENCH)} / ${MAX_QUENCH} (tree: ${Math.round(treeQuench(tree))})`]);
+    }
     rows.push(['Buffs', b.buffs?.length ? b.buffs.map(describeBuff).join(', ') : 'none']);
-    if (isCreature(b.type)) rows.push(['Flies', blockProps(b.type).fly ? 'yes (its type)' : canFly(b) ? 'yes (Flight buff)' : 'no']);
+    if (isCreature(b.type)) {
+      const t = blockProps(b.type), left = (b.segmentOf ?? b).flight ?? t.flightTurns;
+      rows.push(['Flies', canFly(b) && !t.fly ? 'yes (Flight buff)' : !t.fly ? 'no'
+        : t.flightTurns == null ? 'yes (its type)' : `${left > 0 ? 'yes' : 'no, worn out'} (${left} of ${t.flightTurns} turns of flight left)`]);
+    }
     rows.push(['Inventory', b.inventory ? (TOOLS.find((t) => t.block === b.inventory)?.label ?? b.inventory) : 'empty']);
     if (b.type === BLOCK.WOOD || isCreature(b.type)) {
       rows.push(['Cluster slots', `${cluster.filter((x) => x.inventory).length} of ${cluster.length} full`]);
@@ -1756,8 +1804,7 @@ export class Engine {
    * you look. Right on top of it: where the camera looks.
    */
   _viewDirTo(c, toLattice) {
-    const s = GRID.scale;
-    const d = this.worldRoot.localToWorld(new THREE.Vector3(c.x * s, c.y * s, c.z * s)).sub(this.camera.getWorldPosition(new THREE.Vector3()));
+    const d = this.worldRoot.localToWorld(toCm(c.x, c.y, c.z, new THREE.Vector3())).sub(this.camera.getWorldPosition(new THREE.Vector3()));
     if (d.lengthSq() < 1e-10) this.camera.getWorldDirection(d);
     return d.applyQuaternion(toLattice).normalize();
   }
@@ -1771,8 +1818,7 @@ export class Engine {
     let best = null, bestCos = STEER_SCREEN_COS;
     for (const { t, cos } of this._stepCosines(c, sx, sy) ?? []) {
       if (cos <= bestCos) continue;
-      const d = Math.hypot(t.x - c.x, t.y - c.y, t.z - c.z);
-      best = [(t.x - c.x) / d, (t.y - c.y) / d, (t.z - c.z) / d];
+      best = toCm(t.x - c.x, t.y - c.y, t.z - c.z, new THREE.Vector3()).normalize().toArray(); // (as drawn: steeredCell compares in cm)
       bestCos = cos;
     }
     return best;
@@ -1801,7 +1847,7 @@ export class Engine {
 
   /**
    * Direction Guides: the line of `c`'s step to cell `t`, `f` (0..1) of the way along, as
-   * [creature, from, to] segments: straight, or for an edge step (Cube mode) the arc round its
+   * [creature, from, to] segments: straight, or for an edge step (Cube, Hexagonal Prism) the arc round its
    * edge it will slide along (_movePath).
    */
   _stepPath(c, t, f) {
@@ -1832,9 +1878,8 @@ export class Engine {
    * left out.
    */
   _screenCosines(c, cells, sx, sy, aim = null) {
-    const s = GRID.scale;
     const toScreen = (x, y, z) => {
-      const p = this.worldRoot.localToWorld(new THREE.Vector3(x * s, y * s, z * s)).project(this.camera);
+      const p = this.worldRoot.localToWorld(toCm(x, y, z, new THREE.Vector3())).project(this.camera);
       return p.z < 1 ? p : null; // (behind the camera: no use)
     };
     const from = toScreen(c.x, c.y, c.z);
@@ -1892,14 +1937,14 @@ export class Engine {
 
   /** Fills guide `lines` with `segments` ([creature, from, to]: lattice units), each in its creature's colour. */
   _drawGuideLines(lines, segments) {
-    const s = GRID.scale, color = new THREE.Color();
+    const color = new THREE.Color(), p = new THREE.Vector3();
     const pos = lines.geometry.getAttribute('position'), col = lines.geometry.getAttribute('color');
     const n = Math.min(segments.length, STEP_LINES_MAX);
     for (let i = 0; i < n; i++) {
       const [c, a, b] = segments[i];
       color.set(BLOCK_COLORS[c.type]);
-      pos.setXYZ(i * 2, a.x * s, a.y * s, a.z * s);
-      pos.setXYZ(i * 2 + 1, b.x * s, b.y * s, b.z * s);
+      pos.setXYZ(i * 2, ...toCm(a.x, a.y, a.z, p).toArray());
+      pos.setXYZ(i * 2 + 1, ...toCm(b.x, b.y, b.z, p).toArray());
       col.setXYZ(i * 2, color.r, color.g, color.b);
       col.setXYZ(i * 2 + 1, color.r, color.g, color.b);
     }
@@ -1926,7 +1971,7 @@ export class Engine {
       const hex = BLOCK_COLORS[c.type], key = overlay ? `${hex}:over` : hex;
       if (!this._stepMarkerMats.has(key)) this._stepMarkerMats.set(key, new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: overlay ? 0.9 : 0.75, depthWrite: false, depthTest: !overlay }));
       m.material = this._stepMarkerMats.get(key);
-      m.position.set(cell.x, cell.y, cell.z).multiplyScalar(GRID.scale);
+      toCm(cell.x, cell.y, cell.z, m.position);
     });
   }
 
@@ -2374,7 +2419,7 @@ export class Engine {
   _updateTargetLine(now) {
     const heads = this.targetHL.visible && this._targetCell ? this.selected : [];
     const g = this.targetLine.geometry, pos = g.getAttribute('position'), col = g.getAttribute('color');
-    const s = GRID.scale, color = new THREE.Color();
+    const color = new THREE.Color();
     let n = 0;
     for (const c of heads) {
       color.set(BLOCK_COLORS[c.type]);
@@ -2383,7 +2428,7 @@ export class Engine {
       const pts = [this.world.renderedPosition(c, now, new THREE.Vector3())];
       let prev = { x: c.x, y: c.y, z: c.z };
       for (const cell of path) {
-        for (const p of this._movePath(prev, cell, this.world.edgeVia(prev, cell, c)).slice(1)) pts.push(new THREE.Vector3(p.x * s, p.y * s, p.z * s));
+        for (const p of this._movePath(prev, cell, this.world.edgeVia(prev, cell, c)).slice(1)) pts.push(toCm(p.x, p.y, p.z, new THREE.Vector3()));
         prev = cell;
       }
       for (let i = 1; i < pts.length && n < TARGET_LINES_MAX; i++, n++) {
@@ -2455,6 +2500,12 @@ export class Engine {
   setFog(on) {
     this.world.setFogShown(on);
     this.setState({ fog: on });
+  }
+
+  /** Options → Display → Show Health: HP (red), Sate (orange) and Quench (blue) bars above every critter. */
+  setShowHealth(on) {
+    this.healthBars.setShown(on);
+    this.setState({ showHealth: on });
   }
 
   /** Sets a menu slider's value (XR pointer, gamepad). */
@@ -2639,6 +2690,9 @@ export class Engine {
     timed('sink', () => { for (const m of stepSink(w, moved)) moved.add(m); }); // …sinkable creatures (Crawlies) sink through Water…
     timed('fog', () => { for (const m of stepFog(w, moved)) moved.add(m); }); // …Fog clusters settle down, whole…
     timed('nimbusDrift', () => { for (const m of stepNimbusDrift(w, moved)) moved.add(m); }); // …Nimbus clouds drift west…
+    timed('needs', () => stepNeeds(w)); // …critters get hunger and thirst pangs (with nothing left to lose: hurt, and maybe die)…
+    timed('flight', () => stepFlight(w)); // …flyers in the air tire (worn out, they fall), and rest once they land…
+    for (const g of w.ofType(BLOCK.GLOWY)) if (!g.segmentOf) this.painPulses.spawn(w, g, 'glow', w.time); // (each Glowy pulses light green)
     timed('creatures', () => stepSoloCreatures(w, moved)); // …then one-block creatures (one that just fell with its group waits)…
     timed('squirmies', () => stepSquirmies(w, moved)); // …and Squirmies crawl as chains, head first…
     timed('sight', () => stepSight(w)); // …and every creature clears the Fog it can see (it shrinks away, then goes)…
@@ -2655,13 +2709,14 @@ export class Engine {
 
   /**
    * A new world from `template` (default: NEW_SCENE_TEMPLATE) in grid mode `grid` (grids.js;
-   * default: the current one); `name`: where it came from, for the message.
+   * default: the current one), from `seed` if given (World.generateNew); `name`: where it
+   * came from, for the message.
    */
-  newScene(template = undefined, name = null, grid = gridMode()) {
+  newScene(template = undefined, name = null, grid = gridMode(), seed = undefined) {
     this._resetClock();
     this.world.setGridMode(grid);
     this._resetPlayerView();
-    this.world.generateNew(template);
+    this.world.generateNew(template, { seed });
     this._syncCount();
     this._startPlaying();
     playLoad();
@@ -2680,8 +2735,8 @@ export class Engine {
       return this.toast(`"${file.name}" isn't a JSON file`, 'error');
     }
     if (isSaveData(data)) return this.importJSON(data, file.name);
-    const { template, grid, error } = parseTemplate(data);
-    if (template) return this.newScene(template, file.name, grid ?? gridMode());
+    const { template, grid, seed, error } = parseTemplate(data);
+    if (template) return this.newScene(template, file.name, grid ?? gridMode(), seed);
     this.toast(`"${file.name}" isn't a save file or a template (${error})`, 'error');
   }
 
@@ -2780,6 +2835,7 @@ export class Engine {
     if (id === 'rain') return this.setState({ rain: !s.rain });
     if (id === 'creative') return this.setCreative(!s.creative);
     if (id === 'fog') return this.setFog(!s.fog);
+    if (id === 'showHealth') return this.setShowHealth(!s.showHealth);
     if (id === 'antialias') return this.setState({ antialias: !s.antialias });
     if (id === 'vsync') {
       this.setState({ vsync: !s.vsync });
@@ -3560,15 +3616,16 @@ export class Engine {
    * (Options → Fog off) isn't there to touch.
    */
   _blockTouched(slot, creaturesOnly = false) {
-    const p = this._gripCm(slot).divideScalar(GRID.scale); // (lattice units)
-    const reach = Math.min(...NEIGHBOR_DIRS.map(([x, y, z]) => Math.hypot(x, y, z)));
+    const p = this._gripCm(slot);
+    fromCm(p.x, p.y, p.z, p); // (lattice units)
+    const reach = Math.min(...NEIGHBOR_DIRS.map(([x, y, z]) => Math.sqrt(cmDist2(x, y, z)))); // (cm)
     let best = null, bestD = reach;
     const cx = Math.round(p.x), cy = Math.round(p.y), cz = Math.round(p.z);
     for (let x = cx - 2; x <= cx + 2; x++) {
       for (let y = cy - 2; y <= cy + 2; y++) {
         for (let z = cz - 2; z <= cz + 2; z++) {
           const b = isValidCell(x, y, z) && this.world.get(x, y, z);
-          const d = b && Math.hypot(x - p.x, y - p.y, z - p.z);
+          const d = b && Math.sqrt(cmDist2(x - p.x, y - p.y, z - p.z));
           if (!b || d >= bestD || (creaturesOnly && !this._creatureOf(b)) || (!this.state.fog && b.type === BLOCK.FOG)) continue;
           best = b;
           bestD = d;
@@ -3647,7 +3704,7 @@ export class Engine {
   _putHeld(hand, at) {
     const h = this.heldBodies.release(hand);
     if (!h) return;
-    const from = h.offsets.map((o) => o.clone().add(at).divideScalar(GRID.scale)); // each block, let go (lattice units)
+    const from = h.offsets.map((o) => { const p = o.clone().add(at); return fromCm(p.x, p.y, p.z, p); }); // each block, let go (lattice units)
     const cell = this._nearestFit(h.records, from[0], DROP_SEARCH) ?? this._nearestFit(h.records, new THREE.Vector3(h.home.x, h.home.y, h.home.z), DROP_SEARCH_HOME);
     const head = cell && this.world.putBody(h.records, cell.x, cell.y, cell.z);
     if (!head) {
@@ -3672,7 +3729,7 @@ export class Engine {
     for (let x = cx - radius; x <= cx + radius; x++) {
       for (let y = cy - radius; y <= cy + radius; y++) {
         for (let z = cz - radius; z <= cz + radius; z++) {
-          if (isValidCell(x, y, z)) cells.push({ x, y, z, d: (x - p.x) ** 2 + (y - p.y) ** 2 + (z - p.z) ** 2 });
+          if (isValidCell(x, y, z)) cells.push({ x, y, z, d: cmDist2(x - p.x, y - p.y, z - p.z) });
         }
       }
     }
@@ -3887,7 +3944,7 @@ export class Engine {
   _headCm(c) {
     const out = new THREE.Vector3();
     if (this.world.get(c.x, c.y, c.z) === c) return this.world.renderedPosition(c, this.world.time, out);
-    return out.set(c.x, c.y, c.z).multiplyScalar(GRID.scale);
+    return toCm(c.x, c.y, c.z, out);
   }
 
   _headPose() {
@@ -4565,7 +4622,7 @@ export class Engine {
       if (creature && !this.selected.includes(creature)) {
         this._hoverCreature = creature; // a creature you could select (a click swaps the selection to it: no path to it): drawn in _updateSelectionVisuals
       } else if (this.selected.length && this._targeting && this._isSelectTarget(t)) {
-        this.targetHL.position.set(...t.place).multiplyScalar(GRID.scale); // (lattice units -> cm)
+        toCm(...t.place, this.targetHL.position); // (lattice units -> cm)
         this.targetHL.material.color.set(BLOCK_COLORS[this.selected[0].type]); // (the creature's colour, like its Direction Guides)
         this.targetHL.visible = true;
         this._targetCell = { x: t.place[0], y: t.place[1], z: t.place[2] };
@@ -4574,13 +4631,13 @@ export class Engine {
       }
     } else if (tool.block) {
       if (t.place && t.placeFree) {
-        this.placeHL.position.set(...t.place).multiplyScalar(GRID.scale);
+        toCm(...t.place, this.placeHL.position);
         // a darker shade of the block that would be placed
         this.placeHL.userData.material.color.set(BLOCK_COLORS[tool.block]).multiplyScalar(EDGE_SHADE);
         this.placeHL.visible = true;
       }
     } else if (t.block) {
-      this.deleteHL.position.set(t.block.x, t.block.y, t.block.z).multiplyScalar(GRID.scale);
+      toCm(t.block.x, t.block.y, t.block.z, this.deleteHL.position);
       this.deleteHL.visible = true;
     }
   }
@@ -4879,6 +4936,8 @@ export class Engine {
     this._advanceClock(dt);
     const a0 = performance.now();
     this.world.updateAnimations(sceneNow); // every 3D object's per-frame update (see World.updateAnimations)
+    this.painPulses.update(this.world, sceneNow, this.camera);
+    this.healthBars.update(this.world, sceneNow, this.camera);
     this._animTotal += performance.now() - a0;
     this._updateSelectionVisuals(sceneNow);
     this._soundArrivals();
@@ -4960,7 +5019,7 @@ export class Engine {
   _soundAt(cell) {
     if (!cell) return null;
     this.worldRoot.updateWorldMatrix(true, false);
-    return this.worldRoot.localToWorld(new THREE.Vector3(cell.x, cell.y, cell.z).multiplyScalar(GRID.scale));
+    return this.worldRoot.localToWorld(toCm(cell.x, cell.y, cell.z, new THREE.Vector3()));
   }
 
   /** Scene sounds are heard from the camera (the headset in XR). */

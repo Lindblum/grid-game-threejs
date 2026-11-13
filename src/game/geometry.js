@@ -5,26 +5,12 @@ import { PERLIN_PERIOD, VORONOI_BORDER_MAX, VORONOI_PERIOD, createNoiseTexture }
 
 /**
  * The block's shape is the active grid mode's cell (grids.js, lattice.js GRID): a truncated
- * octahedron, rhombic dodecahedron or cube, always with an inradius of 1 cm. GRID.faces are
- * in lattice units; cellFaces gives them in cm.
+ * octahedron, rhombic dodecahedron, cube or hexagonal prism, with an inradius of 1 cm (a prism:
+ * to its sides). GRID.faces are in lattice units; cellFaces gives them in cm.
  */
 
-const facesCm = new Map(); // grid id -> its faces in cm
-/** The active grid's cell faces in cm (GRID.faces scaled by GRID.scale): { type, name, offset, normal, verts, center, inradius }. */
-export function cellFaces() {
-  let faces = facesCm.get(GRID.id);
-  if (!faces) {
-    const s = GRID.scale;
-    faces = GRID.faces.map((f) => ({
-      ...f,
-      verts: f.verts.map((v) => v.clone().multiplyScalar(s)),
-      center: f.center.clone().multiplyScalar(s),
-      inradius: f.inradius * s,
-    }));
-    facesCm.set(GRID.id, faces);
-  }
-  return faces;
-}
+/** The active grid's cell faces in cm (GRID.faces through GRID.toCm): { type, name, offset, normal, verts, center, inradius, distance }. */
+export const cellFaces = () => GRID.cmFaces;
 
 /**
  * Lattice offset to the neighbouring cell across each face, in face order (= the
@@ -60,20 +46,20 @@ function cornerNeighbours(v, verts) {
  * share vertices with each other: their normals and face numbers differ).
  */
 export function createBlockGeometry() {
-  const s = GRID.scale;
   const latticeVerts = GRID.faces.flatMap((f) => f.verts);
   const pos = [], nor = [], face = [], ao = [], index = [];
-  const vertex = (point, faceNo, normal, corner) => {
-    pos.push(point.x * s, point.y * s, point.z * s);
+  // `point` in cm; `lattice`, the same corner in lattice units (to find the cells sharing it)
+  const vertex = (point, faceNo, normal, lattice) => {
+    pos.push(point.x, point.y, point.z);
     nor.push(normal.x, normal.y, normal.z);
     face.push(faceNo);
-    const cn = corner ? cornerNeighbours(point, latticeVerts) : [];
+    const cn = lattice ? cornerNeighbours(lattice, latticeVerts) : [];
     for (let i = 0; i < AO_SLOTS; i++) ao.push(cn[i] ?? -1);
     return pos.length / 3 - 1;
   };
-  GRID.faces.forEach((f, fi) => {
-    const centre = vertex(f.center, fi, f.normal, false);
-    const ring = f.verts.map((corner) => vertex(corner, fi, f.normal, true));
+  GRID.cmFaces.forEach((f, fi) => {
+    const centre = vertex(f.center, fi, f.normal, null);
+    const ring = f.verts.map((corner, k) => vertex(corner, fi, f.normal, GRID.faces[fi].verts[k]));
     for (let i = 0; i < ring.length; i++) index.push(centre, ring[i], ring[(i + 1) % ring.length]); // same fan, same winding
   });
   const g = new THREE.BufferGeometry();
@@ -232,6 +218,24 @@ export const CLOUD_BLUR_ROUGHNESS = 0.3;
 const CLOUD_SCATTER_GAIN = 4;
 const CLOUD_IOR = 1.5;
 
+/**
+ * The tint flag (blockStyle.z) holds a creature's facing too: flag = tint + FACING_STEP × (code + 1),
+ * the tint (a buff's colour, an Egg's spots) below FACING_STEP, and the code a direction in two
+ * angles of FACING_STEPS steps each: code = azimuth step × FACING_STEPS + elevation step
+ * (facingCode; the shader's FACING_DIR undoes it). Any direction, so a turn can sweep round smoothly.
+ */
+export const FACING_STEP = 16;
+export const FACING_STEPS = 64;
+
+/** The facing code of unit direction `d` (cm; any Vector3-like): its azimuth round +y and elevation, FACING_STEPS steps each. */
+export function facingCode(d) {
+  const az = Math.atan2(d.z, d.x); // -π .. π
+  const el = Math.asin(Math.max(-1, Math.min(1, d.y))); // -π/2 .. π/2
+  const a = Math.round(((az + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2) * FACING_STEPS) % FACING_STEPS;
+  const e = Math.min(FACING_STEPS - 1, Math.max(0, Math.round((el / Math.PI + 0.5) * (FACING_STEPS - 1))));
+  return a * FACING_STEPS + e;
+}
+
 export function createBlockMaterials() {
   const uniforms = {
     uTime: { value: 0 },
@@ -334,10 +338,12 @@ export function createBlockMaterials() {
     }
     cloudDepth.visible = bodyCloudDepth.visible = !refraction; // (scattering, a cloud is drawn whole: no pre-pass)
   };
+  const sun = createSunMaterial(uniforms);
   const setMaterials = (level) => {
     if (!MATERIALS.includes(level) || options.level === level) return;
     options.level = level;
     for (const m of all) m.needsUpdate = true; // recompile with SOLID_MATERIALS, SIMPLE_MATERIALS or neither
+    setSunLevel(sun, level);
     applyRefraction();
   };
   // Dithered blocks (World.setDithered, setSeeThrough) drop pixels with `discard`, compiled in
@@ -360,7 +366,66 @@ export function createBlockMaterials() {
     applyRefraction();
   };
   applyRefraction();
-  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, cloudDepth, bodyCloudDepth, translucentDepth, bodyTranslucentDepth, uniforms, setMaterials, setRefraction, setDiscards };
+  return { opaque, translucent, cloud, crystal, body, bodyTranslucent, bodyCloud, bodyCrystal, bodySeeThrough, bodyInternal, cloudDepth, bodyCloudDepth, translucentDepth, bodyTranslucentDepth, sun, uniforms, setMaterials, setRefraction, setDiscards };
+}
+
+/**
+ * The sun (the revolving light's ball), unlit, one look per Options → Materials level:
+ * 'solid' is plain gold; 'simple' adds limb darkening (a pale-gold centre deepening to orange
+ * at the rim) and slow, drifting convection mottling; 'procedural' adds granules (Voronoi
+ * cells, warped and drifting), sunspots and flickering bright filaments round the rim.
+ * Shares the blocks' uTime and noise texture (`uniforms`, see createBlockMaterials).
+ */
+function createSunMaterial(uniforms) {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: uniforms.uTime, uNoiseTex: uniforms.uNoiseTex },
+    toneMapped: false,
+    vertexShader: /* glsl */ `
+      varying vec3 vDir;     // the point's direction from the sun's centre (object space)
+      varying vec3 vNormalV; // view-space normal
+      varying vec3 vViewPos;
+      void main() {
+        vDir = normalize(position);
+        vNormalV = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vViewPos = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      varying vec3 vDir;
+      varying vec3 vNormalV;
+      varying vec3 vViewPos;
+      ${NOISE_GLSL}
+      void main() {
+        vec3 col = vec3(1.0, 0.76, 0.18); // gold (sRGB)
+        #ifndef SOLID_MATERIALS
+          float mu = clamp(dot(normalize(vNormalV), normalize(-vViewPos)), 0.0, 1.0); // 1 facing us, 0 at the rim
+          col = mix(vec3(0.93, 0.42, 0.05), vec3(1.0, 0.92, 0.6), pow(mu, 0.55)); // limb darkening
+          vec3 p = vDir * 3.0;
+          float t = uTime;
+          col *= 0.88 + 0.3 * perlinFbm(p * 1.4 + vec3(t * 0.08, -t * 0.05, t * 0.06)); // convection, drifting
+          #ifndef SIMPLE_MATERIALS
+            vec3 q = p * 2.6 + 0.7 * vec3(perlin3(p + t * 0.1), perlin3(p.yzx - t * 0.07), 0.0);
+            col *= mix(0.78, 1.08, smoothstep(0.0, 0.22, voronoi3(q + vec3(0.0, t * 0.04, 0.0)).x)); // granules, dark lanes between
+            float spot = perlin3(p * 0.6 + vec3(7.3, t * 0.015, 1.1));
+            col *= 1.0 - 0.65 * smoothstep(0.42, 0.58, spot); // sunspots
+            float rim = pow(1.0 - mu, 3.0) * (0.55 + 0.45 * perlin3(p * 2.2 + vec3(0.0, t * 0.5, t * 0.3)));
+            col += vec3(1.0, 0.62, 0.16) * rim * 0.9; // flickering filaments round the rim
+          #endif
+        #endif
+        gl_FragColor = vec4(pow(clamp(col, 0.0, 1.0), vec3(2.2)), 1.0); // (to linear: the colour-space step below takes it back)
+        #include <colorspace_fragment>
+      }`,
+  });
+  setSunLevel(mat, 'procedural');
+  return mat;
+}
+
+/** The sun material's Materials level (see createSunMaterial): recompiles with its defines. */
+function setSunLevel(mat, level) {
+  mat.defines = level === 'solid' ? { SOLID_MATERIALS: '' } : level === 'simple' ? { SIMPLE_MATERIALS: '' } : {};
+  mat.needsUpdate = true;
 }
 
 /**
@@ -537,6 +602,15 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
         uniform float uTime;
         uniform float uAO;
         uniform float uSmoothRendering;
+        // the tint flag (vTint) without the facing packed above it (FACING_STEP), and the facing's
+        // code (facingCode; -1: none) and direction (cm, unit length)
+        #define TINT_FLAG int(mod(vTint + 0.5, ${FACING_STEP.toFixed(1)}))
+        #define FACING_CODE (int((vTint + 0.5) / ${FACING_STEP.toFixed(1)}) - 1)
+        vec3 facingDir(int code) {
+          float az = float(code / ${FACING_STEPS}) / ${FACING_STEPS.toFixed(1)} * 6.2831853;
+          float el = (float(code - (code / ${FACING_STEPS}) * ${FACING_STEPS}) / ${(FACING_STEPS - 1).toFixed(1)} - 0.5) * 3.1415927;
+          return vec3(cos(el) * cos(az), sin(el), cos(el) * sin(az));
+        }
         varying float vAO;
         // wood's ring centres: one in each square this wide (cm): about one per block (a cell is 2 cm
         // across), so each shows its rings round a pith, shared with its neighbours
@@ -705,8 +779,8 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           surfaceRough = 0.08;
         }
         #else
-        if ((vStyle > 0.5 && vStyle < 1.5) || abs(vStyle - ${BLOCK_STYLE.plop.toFixed(1)}) < 0.5) {
-          // Dirt, and Plop (the same soil in its own darker colour)
+        if (vStyle > 0.5 && vStyle < 1.5) {
+          // Dirt
           vec3 p = vNoisePos;
           float clumps = perlinFbm(p * 2.2);                 // large damp/dry patches
           float grain = perlin3(p * 14.0) * 0.6 + perlin3(p * 31.0) * 0.4; // fine soil grain
@@ -834,10 +908,43 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           bumpH = seed * sqrt(max(0.0, 1.0 - (r * r) / (seedR * seedR))) * 0.6 - pit * 0.9;
           bumpStrength = 0.05;
           surfaceRough = mix(0.14, 0.5, max(seed, pit * 0.5));           // glossy red, matte seeds
-        } else if ((vStyle > 5.5 && vStyle < 6.5) || (vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} && vStyle < ${(BLOCK_STYLE.buzzy + 0.5).toFixed(1)})) {
-          // Crawly and Buzzy (Buzzy = the pearlescent variant): with Rendering: Smooth, rounded
-          // shading like a Squirmy (the normal points out from the block centre, no dark corners)
-          isPearl = vStyle > ${(BLOCK_STYLE.buzzy - 0.5).toFixed(1)} ? 1.0 : 0.0;
+        } else if (abs(vStyle - ${BLOCK_STYLE.buzzy.toFixed(1)}) < 0.5) {
+          // Buzzy: fuzzy, its dark green banded with wide yellow stripes that ring its body
+          // (across its facing: the tint flag's FACING_CODE; none known: across its height).
+          // The bands' edges are soft and broken up by the fur, so the yellow blends into the
+          // green. Fur: dense fine fibres as noise, felt as a matte, bumpy nap with a soft
+          // lighter fringe toward the body's silhouette
+          cloudNormal = BODY_DIR;
+          noOutline = ROUND_LOOK;
+          int fc = FACING_CODE;
+          vec3 fwd = fc >= 0 ? facingDir(fc) : vec3(0.0, 1.0, 0.0);
+          vec3 p = vNoisePos;
+          float fibre = FINE(perlin3(p * 34.0) * 0.55 + perlin3(p * 71.0 + 3.1) * 0.45); // the nap
+          float tuft = perlin3(p * 16.0 + 2.3);                                           // little tufts…
+          float clump = perlin3(p * 7.0 + 7.7);                                           // …in bigger clumps
+          // along the body (cm from the block's centre), wobbled by the fur, in bands ~0.8 cm apart
+          float along = dot(vLocalPos, fwd) + 0.16 * clump + 0.08 * tuft + 0.05 * fibre;
+          float band = 0.5 + 0.5 * cos(along * 6.2831853 / 0.8 + vSeed * 3.0);
+          float yellowAmt = smoothstep(0.22, 0.98, band);                                 // soft stripes, blending into the green (about as much green as yellow)
+          vec3 green = diffuseColor.rgb;
+          vec3 yellow = vec3(0.95, 0.76, 0.16);
+          vec3 col = mix(green, yellow, yellowAmt);
+          col = mix(col, mix(green, yellow, 0.5) * 0.95, 0.25 * (1.0 - abs(yellowAmt * 2.0 - 1.0))); // (a greenish-gold where they meet)
+          col *= 0.68 + 0.42 * (0.5 + 0.5 * fibre) + 0.14 * tuft + 0.08 * clump;        // the fur's light and shade
+          float fringe = pow(1.0 - abs(dot(normalize(vLocalNormal), BODY_DIR)), 2.0);
+          col += 0.12 * fringe * mix(green, yellow, yellowAmt);                          // soft, lighter edge
+          diffuseColor.rgb = col;
+          bumpH = fibre * 0.6 + tuft * 0.35 + clump * 0.2;
+          bumpStrength = 0.14;
+          surfaceRough = 1.0;
+          specDim = 0.25; // fur: hardly any sheen
+        } else if ((vStyle > 5.5 && vStyle < 6.5) || abs(vStyle - ${BLOCK_STYLE.glowy.toFixed(1)}) < 0.5) {
+          // Crawly and Glowy (Glowy = the pearlescent variant): with Rendering: Smooth, rounded
+          // shading like a Squirmy (the normal points out from the block centre, no dark
+          // corners). A Glowy also glows: its own light green, breathing slowly (the turn's
+          // pulse of light is a sprite: engine.js, painPulses.js)
+          isPearl = vStyle > 6.5 ? 1.0 : 0.0;
+          if (abs(vStyle - ${BLOCK_STYLE.glowy.toFixed(1)}) < 0.5) crystalGlow = diffuseColor.rgb * (0.32 + 0.12 * sin(uTime * 2.2 + vSeed * 6.0));
           cloudNormal = BODY_DIR;
           noOutline = ROUND_LOOK;
           // 2D beetle shell in each face's plane: a smooth, glossy sheen whose colour drifts
@@ -970,7 +1077,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           float blot = perlin3(p * 1.5 + vSeed) * 0.75 + perlin3(p * 3.4 + vSeed * 1.7) * 0.25; // (broad: a few big spots to each face)
           float spot = smoothstep(0.1, 0.17, blot);
           float freckle = FINE(smoothstep(0.55, 0.68, perlin3(p * 9.0 + 2.3)));
-          int si = int(vTint + 0.5);
+          int si = TINT_FLAG;
           vec3 spotCol = si > 0 && si <= ${EGG_SPOT_TYPES.length} ? EGG_SPOTS[si - 1] : vec3(0.42, 0.32, 0.22);
           vec3 shellCol = diffuseColor.rgb * (0.94 + 0.06 * perlin3(p * 2.7 + 5.1));
           diffuseColor.rgb = mix(shellCol, spotCol, max(spot, freckle * 0.55));
@@ -981,6 +1088,81 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           specDim = 0.6;
           cloudNormal = BODY_DIR; // rounded, like a creature
           noOutline = ROUND_LOOK;
+        } else if (abs(vStyle - ${BLOCK_STYLE.leaves.toFixed(1)}) < 0.5) {
+          // Leaves: a mass of overlapping leaves. Each warped Voronoi cell is a leaf, lighter
+          // toward its middle, its own shade of light green (some yellower), with fine veins
+          // running its own way, dark shadowed gaps between the leaves, and a waxy sheen
+          vec3 p = vNoisePos;
+          vec3 warp = vec3(perlin3(p * 2.5 + 3.1), perlin3(p * 2.5 + 8.7), perlin3(p * 2.5 + 15.2));
+          vec2 vor = voronoi3(p * 3.4 + warp * 0.35);
+          float leaf = smoothstep(0.0, 0.32, vor.x);                    // its middle raised
+          float gap = 1.0 - smoothstep(0.0, 0.06, vor.x);               // shadow between leaves
+          float ang = vor.y * 6.2831853;
+          vec3 dir = normalize(vec3(cos(ang), sin(ang * 1.7) * 0.6, sin(ang)));
+          float vein = FINE(1.0 - smoothstep(0.0, 0.18, abs(sin(dot(p, dir) * 38.0))));
+          float speck = FINE(perlin3(p * 40.0 + 5.3));
+          vec3 base = diffuseColor.rgb;
+          vec3 col = base * (0.62 + 0.5 * leaf) * mix(vec3(1.0), vec3(1.15, 1.12, 0.7), vor.y * 0.7);
+          col *= 1.0 + 0.08 * speck;
+          col = mix(col, col * vec3(1.18, 1.15, 0.85), 0.5 * vein * leaf);   // paler veins
+          col = mix(col, vec3(0.03, 0.08, 0.02), 0.85 * gap);
+          diffuseColor.rgb = max(col, 0.0);
+          bumpH = leaf * 0.7 + vein * 0.12 + speck * 0.08;
+          bumpStrength = 0.07;
+          surfaceRough = 0.62;
+          specDim = 0.7; // waxy
+        } else if (abs(vStyle - ${BLOCK_STYLE.glop.toFixed(1)}) < 0.5 || abs(vStyle - ${BLOCK_STYLE.slop.toFixed(1)}) < 0.5 || abs(vStyle - ${BLOCK_STYLE.plop.toFixed(1)}) < 0.5) {
+          // Glop (fauna waste, carrion), Slop (flora waste, compost) and Plop (dung): wet and
+          // lumpy. Warped Voronoi lumps, domed and packed close, a dark wet film pooled in the
+          // creases and a glossy sheen on top. Glop is raw red, marbled with pink and studded
+          // with whitish chunks (fat, gristle); Plop runs from its brown into a dark, liverish
+          // brown; Slop is mottled compost, its olive green, brown and gray in patches, with pale
+          // fibres of half-rotted plant
+          vec3 p = vNoisePos;
+          float isSlop = abs(vStyle - ${BLOCK_STYLE.slop.toFixed(1)}) < 0.5 ? 1.0 : 0.0;
+          float isGlop = abs(vStyle - ${BLOCK_STYLE.glop.toFixed(1)}) < 0.5 ? 1.0 : 0.0;
+          float chunk = 0.0; // Glop's whitish chunks, raised a little
+          vec3 warp = vec3(perlin3(p * 2.1 + 3.3), perlin3(p * 2.1 + 8.6), perlin3(p * 2.1 + 14.2));
+          vec2 vor = voronoi3(p * 2.3 + warp * 0.55);
+          float lump = smoothstep(0.0, 0.42, vor.x);          // domed lumps, low in the creases
+          vec2 vor2 = voronoi3(p * 5.2 + warp * 0.8 + 4.1);
+          float lump2 = FINE(smoothstep(0.0, 0.3, vor2.x));   // smaller lumps on the big ones
+          float crease = 1.0 - smoothstep(0.0, 0.12, vor.x);  // the wet creases between lumps
+          float mottle = perlinFbm(p * 1.8);
+          float grain = FINE(perlin3(p * 40.0 + 2.7) * 0.6 + perlin3(p * 85.0 + 6.1) * 0.4);
+          vec3 base = diffuseColor.rgb;
+          vec3 col;
+          if (isSlop > 0.5) {
+            vec3 brown = vec3(0.30, 0.20, 0.11);
+            vec3 gray = vec3(0.36, 0.36, 0.33);
+            float tb = smoothstep(-0.25, 0.25, mottle + 0.3 * (vor.y - 0.5));
+            float tg = smoothstep(0.15, 0.55, perlinFbm(p * 2.6 + 9.4));
+            col = mix(mix(brown, base, tb), gray, tg * 0.7);
+            float fibre = FINE(smoothstep(0.82, 0.95, abs(perlin3(p * vec3(9.0, 2.2, 9.0) + 1.7)) * 1.9));
+            col = mix(col, vec3(0.62, 0.58, 0.42), fibre * 0.5);
+          } else if (isGlop > 0.5) {
+            vec3 deep = base * vec3(0.42, 0.2, 0.22);           // dark, clotted red
+            col = mix(deep, base * 1.15, smoothstep(-0.3, 0.35, mottle + 0.4 * (vor.y - 0.5)));
+            // pink marbling: thin, wandering veins where a warped noise crosses zero
+            float vein = 1.0 - smoothstep(0.0, 0.09, abs(perlin3(p * 2.6 + warp * 1.4 + 6.2)));
+            col = mix(col, vec3(0.93, 0.52, 0.6), vein * 0.75);
+            col = mix(col, vec3(0.9, 0.45, 0.52), smoothstep(0.7, 1.0, lump) * 0.3); // pinker on the lump tops
+            // whitish chunks: some of the small lumps, picked by their cell value, pale and creamy
+            chunk = smoothstep(0.8, 0.86, vor2.y) * smoothstep(0.02, 0.12, vor2.x);
+            col = mix(col, vec3(0.9, 0.85, 0.78) * (0.85 + 0.25 * vor2.x), chunk);
+          } else {
+            vec3 liver = base * vec3(0.42, 0.3, 0.24);          // Plop: dark brown in the hollows
+            col = mix(liver, base * 1.12, smoothstep(-0.3, 0.35, mottle + 0.4 * (vor.y - 0.5)));
+            col = mix(col, base * vec3(1.12, 0.98, 0.78), smoothstep(0.75, 1.0, lump) * 0.2); // warmer tops
+          }
+          col *= 0.62 + 0.38 * lump + 0.1 * lump2;           // shadowed creases
+          col *= 1.0 + 0.1 * grain;
+          col = mix(col, col * 0.55, crease * 0.6 * (1.0 - chunk)); // dark wet film in the creases
+          diffuseColor.rgb = max(col, 0.0);
+          bumpH = lump * 0.6 + lump2 * 0.2 + chunk * 0.25;                   // (no fine grain in the relief: on a glossy surface it glitters)
+          bumpStrength = 0.05;
+          surfaceRough = mix(0.42, 0.3, crease) + 0.15 * (1.0 - isGlop - isSlop); // wet: a soft gloss, wettest in the creases (Plop: drier)
+          specDim = 0.75;
         }
         #endif
         if (vSmooth > 0.5) noOutline = 1.0; // smooth-shaded blocks: a rounded look, no dark corners
@@ -1040,7 +1222,7 @@ function patchBlockShader(mat, uniforms, options, translucentPass, mergedBody = 
           // a buff with a colour (Rockbiter gold, Fertile pink) on any creature: its shell stays
           // as it is, under a layer of glowing ripples in that colour, bands that travel up over
           // the body, warped by noise, sharpened into thin crests, the whole glow pulsing
-          int ti = int(vTint + 0.5);
+          int ti = TINT_FLAG;
           bool creatureStyle = ${BLOCK_TYPES.filter((t) => t.creature).map((t) => `abs(vStyle - ${t.style.toFixed(1)}) < 0.5`).join(' || ')};
           if (creatureStyle && ti > 0 && ti <= ${TINT_BUFFS.length}) {
             // (in the build's own space, not each block's: one pattern runs on across the body's blocks)

@@ -58,10 +58,11 @@ export function drawCrawlyIcon(ctx, cx, cy, size) {
 }
 
 /** Buzzy icon: dark green with a pale pearly sheen on the faces toward the light, and eyes. */
-export function drawBuzzyIcon(ctx, cx, cy, size) {
+export function drawBuzzyIcon(ctx, cx, cy, size, hue = 0.4) {
   const pearl = (n) => {
     const t = 0.5 + 0.5 * n.y; // paler toward the top
-    return new THREE.Color().setHSL(0.4 - 0.12 * t, 0.45, 0.2 + 0.3 * t);
+    return hue === 0.4 ? new THREE.Color().setHSL(0.4 - 0.12 * t, 0.45, 0.2 + 0.3 * t)
+      : new THREE.Color().setHSL(hue, 0.6, 0.45 + 0.25 * t); // (Glowy: a light, glowing green)
   };
   drawBlockIcon(ctx, cx, cy, size, '#ffffff', { faceColor: pearl });
   drawIconEyes(ctx, cx, cy, size);
@@ -247,6 +248,7 @@ export function drawToolIcon(ctx, tool, cx, cy, size, style = {}) {
   }
   if (tool.block === BLOCK.CRAWLY) drawCrawlyIcon(ctx, cx, cy, size);
   else if (tool.block === BLOCK.BUZZY) drawBuzzyIcon(ctx, cx, cy, size);
+  else if (tool.block === BLOCK.GLOWY) drawBuzzyIcon(ctx, cx, cy, size, 0.27);
   else if (tool.block === BLOCK.SQUIRMY || tool.block === BLOCK.SLITHER) drawSquirmyIcon(ctx, cx, cy, size, tool.block);
   else if (tool.block === BLOCK.VOID) drawVoidIcon(ctx, cx, cy, size);
   else if (tool.block) drawBlockIcon(ctx, cx, cy, size, BLOCK_COLORS[tool.block]);

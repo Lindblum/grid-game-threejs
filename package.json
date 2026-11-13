@@ -8,6 +8,7 @@
     "dev:xr": "vite --mode xr",
     "build": "vite build",
     "preview": "vite preview",
+    "docs:ecology": "node scripts/ecology.mjs",
     "preview:xr": "vite preview --mode xr"
   },
   "dependencies": {

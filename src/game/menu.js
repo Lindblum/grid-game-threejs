@@ -195,7 +195,7 @@ function background(state) {
 const BACK = { id: 'back', label: 'Back', icon: 'back' };
 
 const GRID_LABELS = Object.fromEntries(GRID_IDS.map((id) => [id, GRIDS[id].name]));
-const GRID_ICONS = { to: 'gridTo', rd: 'gridRd', cube: 'gridCube' };
+const GRID_ICONS = { to: 'gridTo', rd: 'gridRd', cube: 'gridCube', hex: 'gridHex' };
 
 /** Options → File → New: a dropdown of the grid modes (grids.js); picking one starts a new world in it. */
 function newItem(state) {
@@ -249,6 +249,7 @@ function displayItems(state) {
     { id: 'ao', label: `Ambient Occlusion: ${state.ambientOcclusion ? 'On' : 'Off'}`, icon: state.ambientOcclusion ? 'aoOn' : 'aoOff', toggle: true },
     { id: 'refraction', label: `Refraction: ${state.refraction ? 'On' : 'Off'}`, icon: state.refraction ? 'refractionOn' : 'refractionOff', toggle: true },
     { id: 'fog', label: `Fog: ${state.fog ? 'On' : 'Off'}`, icon: state.fog ? 'fogOn' : 'fogOff', toggle: true },
+    { id: 'showHealth', label: `Show Health: ${state.showHealth ? 'On' : 'Off'}`, icon: state.showHealth ? 'healthOn' : 'healthOff', toggle: true },
     {
       id: 'antialias',
       label: `Anti-aliasing: ${state.antialias ? 'On' : 'Off'}`,

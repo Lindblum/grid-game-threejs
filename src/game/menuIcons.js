@@ -152,13 +152,19 @@ function orbitArrow(ctx, P, dir) {
 
 /** Grid mode `id`'s cell as a line drawing: the outlines of its front faces, seen from above right. */
 function cellGlyph(ctx, P, id) {
-  const { faces, vertices } = GRIDS[id];
+  const { cmFaces: faces, cmVertices: vertices, iconUp, iconTwist = 0 } = GRIDS[id]; // (the shape as drawn: cm)
   const r = Math.max(...vertices.map((v) => v.length()));
+  // a grid whose cells have an axis (iconUp: the hexagonal prisms' columns) is drawn with it
+  // upright, turned iconTwist (radians) about it
+  const view = iconUp
+    ? SHAPE_VIEW.clone().multiply(new THREE.Matrix4().makeRotationY(iconTwist)).multiply(new THREE.Matrix4().makeRotationFromQuaternion(
+      new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(...iconUp).normalize(), new THREE.Vector3(0, 1, 0))))
+    : SHAPE_VIEW;
   ctx.lineWidth *= 0.6; // many small faces: finer lines than the other glyphs
   for (const f of faces) {
-    if (f.normal.clone().applyMatrix4(SHAPE_VIEW).z <= 1e-4) continue; // back face
+    if (f.normal.clone().transformDirection(view).z <= 1e-4) continue; // back face
     poly(ctx, P, f.verts.map((v) => {
-      const q = v.clone().applyMatrix4(SHAPE_VIEW);
+      const q = v.clone().applyMatrix4(view);
       return [0.5 + (q.x / r) * 0.4, 0.5 - (q.y / r) * 0.4];
     }));
   }
@@ -181,6 +187,9 @@ const DRAW = {
   },
   gridCube(ctx, P) {
     cellGlyph(ctx, P, 'cube');
+  },
+  gridHex(ctx, P) {
+    cellGlyph(ctx, P, 'hex');
   },
   load(ctx, P) {
     // open folder
@@ -470,6 +479,19 @@ const DRAW = {
   aaOff(ctx, P) {
     // the same edge, jagged: stair steps
     line(ctx, P, [[0.16, 0.84], [0.16, 0.67], [0.33, 0.67], [0.33, 0.5], [0.5, 0.5], [0.5, 0.33], [0.67, 0.33], [0.67, 0.16], [0.84, 0.16]]);
+  },
+  healthOn(ctx, P) {
+    // Show Health: three bars, stacked, filled to different lengths
+    for (const [v, f] of [[0.3, 0.84], [0.5, 0.6], [0.7, 0.72]]) {
+      line(ctx, P, [[0.16, v], [0.84, v]]);
+      ctx.lineWidth *= 2.2;
+      line(ctx, P, [[0.16, v], [f, v]]);
+      ctx.lineWidth /= 2.2;
+    }
+  },
+  healthOff(ctx, P, s) {
+    DRAW.healthOn(ctx, P, s);
+    line(ctx, P, [[0.2, 0.84], [0.8, 0.16]]); // struck through
   },
   fogOff(ctx, P, s) {
     DRAW.fogOn(ctx, P, s);

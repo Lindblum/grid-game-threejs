@@ -3,12 +3,12 @@
 // stepping legs. Each creature type's own rules (moving, eating, …) live in sim.js, and a
 // Squirmy's chain bundling in world.js.
 import * as THREE from 'three';
-import { NEIGHBOR_DIRS, cellKey } from './lattice.js';
+import { GRID, NEIGHBOR_DIRS, cellExtent, cellKey } from './lattice.js';
 import { BLOCK, blockProps } from './blocks.js';
 // Behaviors, sight radius and eye size are per creature type: see BLOCK_TYPES in blocks.js.
 
 /** Block types a creature can use as its floor (sets which way is "up" for its eyes). */
-export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.PLOP, BLOCK.MOSS, BLOCK.CRYSTAL, BLOCK.WOOD, BLOCK.BERRY]);
+export const FLOOR_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.PLOP, BLOCK.GLOP, BLOCK.SLOP, BLOCK.MOSS, BLOCK.CRYSTAL, BLOCK.WOOD, BLOCK.BERRY]);
 /**
  * Eye centres in the creature's own frame, cm: x = right, y = up (away from the floor),
  * z = front. The frame turns; the eyes themselves never rotate.
@@ -92,11 +92,26 @@ const _basis = new THREE.Matrix4();
 const _m = new THREE.Matrix4();
 const _noRot = new THREE.Quaternion();
 
+const _axis = new THREE.Vector3();
+const _fit = new THREE.Vector3();
+
+/**
+ * Eyes, fangs, wings and legs are placed for a cell 1 cm from its centre to its faces (its
+ * inradius). A squashed cell (Hexagonal Prism: its caps are 0.58 cm from the centre) brings
+ * them in along each axis of the creature's frame (`q`) to where its surface is: the scale per
+ * axis (at most 1), into `out`. (1, 1, 1) in every other grid mode.
+ */
+function frameFit(q, out) {
+  if (GRID.uniform) return out.set(1, 1, 1);
+  for (let i = 0; i < 3; i++) out.setComponent(i, Math.min(1, cellExtent(_axis.set(+(i === 0), +(i === 1), +(i === 2)).applyQuaternion(q))));
+  return out;
+}
+
 const dot = (a, b) => (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / Math.hypot(...a) / Math.hypot(...b);
 const same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 
 /**
- * A diagonal step (Cube mode's edge steps) as a front: the neighbour direction most along it
+ * A diagonal step (Cube and Hexagonal Prism edge steps) as a front: the neighbour direction most along it
  * that lies flat along the new floor (up a step: the way it went on; round a corner: down the
  * new side). Ties go to the first.
  */
@@ -133,6 +148,8 @@ export function orientCreature(world, creature, moveDir = null) {
     const cands = NEIGHBOR_DIRS.filter((d) => Math.abs(dot(d, down)) - minDot < 1e-6);
     creature.front = cands[Math.floor(Math.random() * cands.length)];
   }
+  world._writeFacing?.(creature); // (its facing, as the shader sees it: World._writeFacing)
+  for (const s of creature.segments ?? []) world._writeFacing?.(s);
 }
 
 /**
@@ -300,15 +317,16 @@ export class CreatureEyes {
       // eyes, wings and legs scale with it, toward its centre
       const size = Math.max(sizeOf ? sizeOf(c) : 1, 1e-4);
       scale.setScalar((blockProps(c.type).eyeScale ?? 0.25) * size);
+      frameFit(s.q, _fit);
       if (!c.segmentOf) { // body segments (a long Buzzy) have wings and legs, but only the head has eyes
         for (const off of EYE_OFFSETS) {
-          p.copy(off).multiplyScalar(size).applyQuaternion(s.q).add(pos); // revolve the offset, not the eye
+          p.copy(off).multiply(_fit).multiplyScalar(size).applyQuaternion(s.q).add(pos); // revolve the offset, not the eye
           this.mesh.setMatrixAt(i++, _m.compose(p, _noRot, scale));
         }
       }
       if (blockProps(c.type).fangs && !c.segmentOf) {
         for (const root of FANG_ROOTS) {
-          p.copy(root).multiplyScalar(size).applyQuaternion(s.q).add(pos);
+          p.copy(root).multiply(_fit).multiplyScalar(size).applyQuaternion(s.q).add(pos);
           this.fangMesh.setMatrixAt(f++, _m.compose(p, s.q, _sized.setScalar(size)));
         }
       }
@@ -318,7 +336,7 @@ export class CreatureEyes {
         const t = Math.min(1, Math.max(0, (now - this._flapT0 - lag) / (flapSeconds * 1000)));
         const lift = WING_REST + WING_FLAP * Math.abs(Math.sin(Math.PI * t * WING_BEATS)); // (WING_BEATS up-and-downs, ending at rest)
         WING_HINGES.forEach((hinge, k) => {
-          p.copy(hinge).multiplyScalar(size).applyQuaternion(s.q).add(pos);
+          p.copy(hinge).multiply(_fit).multiplyScalar(size).applyQuaternion(s.q).add(pos);
           // turn with the body, then swing up about the front-back axis (mirrored for the left)
           _flap.setFromAxisAngle(_zAxis, k === 0 ? lift : -lift);
           _wq.copy(s.q).multiply(_flap);
@@ -327,13 +345,13 @@ export class CreatureEyes {
       }
       if (blockProps(c.type).legs) {
         for (const leg of LEGS) {
-          p.copy(leg.hip).multiplyScalar(size).applyQuaternion(s.q).add(pos);
+          p.copy(leg.hip).multiply(_fit).multiplyScalar(size).applyQuaternion(s.q).add(pos);
           _foot.copy(leg.foot);
           if (leg.tripod === stepping) {
             _foot.y += LEG_LIFT * lift; // lifted off the floor…
             _foot.z += LEG_LIFT * 0.5 * lift; // …and reaching forward
           }
-          _foot.multiplyScalar(size).applyQuaternion(s.q).add(pos);
+          _foot.multiply(_fit).multiplyScalar(size).applyQuaternion(s.q).add(pos);
           _legDir.subVectors(_foot, p);
           const len = _legDir.length();
           _wq.setFromUnitVectors(_legDown, _legDir.divideScalar(len));

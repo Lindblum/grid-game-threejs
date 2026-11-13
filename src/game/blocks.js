@@ -22,9 +22,13 @@
 //   creature        true
 //   body            'single' (one block: Crawly, Buzzy) or 'chain' (segments: Squirmy, Slither)
 //   fly             true: it flies (like the Flight buff): any empty cell is a floor, never falls
+//   flightTurns     a flyer's endurance: it can stay in the air this many turns in a row, then
+//                   it can't fly and falls; touching ground again recovers it (sim.js stepFlight;
+//                   left out: no limit)
 //   selfAvoidance   chain creatures: true = its head never steps next to its own body (Slither);
 //                   false / left out = it may curl up alongside itself (Squirmy)
 //   wings           true: two translucent wings on its sides that flap every turn
+//   growsOnBerry    true: eating a Berry grows it a body segment (Glowy; a Buzzy doesn't)
 //   legs            true: six black legs on its floor side that step every turn
 //   fangs           true: two ivory fangs, downward cones under the front of its head
 //   diet            keys of the block types it can consume (World.consume); CREATURE_DIET and
@@ -39,7 +43,11 @@
 //   defaultBehavior the behavior it starts with
 //   eyeScale        eye size relative to a block
 //   excretes        { foodKey: blockKey }: that food comes out as that block when it excretes it
-//                   (World.excrete; otherwise eaten creatures and Berries come out as Plop, the rest as eaten)
+//                   (World.excrete; otherwise eaten creatures come out as Glop, eaten Wood, Berries
+//                   and Moss as Slop, Crystal as Stone, the rest as eaten: world.js excretedType)
+//   needs           its HP, bite and appetite (needs.js): `hp` per block, `bite` (HP its bite
+//                   takes from prey), `hunger` / `thirst`: { every: [min, max] turns between
+//                   pangs, loss: Sate / Quench each pang takes from every block }
 //   eatBuffs        { foodKey: { buff, turns, charges } }: eating that food gives it that buff
 //                   (BUFF_TYPES), lasting `turns` turns (null: no time limit) and/or `charges`
 //                   uses (see below; null or left out: no limit)
@@ -66,11 +74,20 @@ export const GESTATION_TURNS = 5;
 export const BLOCK_TYPES = [
   { key: 'STONE', id: 'gray', name: 'Stone', color: '#9aa0a6', style: 2, opacity: 1, sinkable: true },
   { key: 'DIRT', id: 'brown', name: 'Dirt', color: '#8b5a2b', style: 1, opacity: 1, sinkable: true },
-  // what creatures excrete when they've eaten a creature or a Berry (World.excrete): dark Dirt;
-  // it soaks up settled Water like Dirt, and becomes Wood (sim.js stepDirt)
-  { key: 'PLOP', id: 'plop', name: 'Plop', color: '#4a3020', style: 15, opacity: 1, sinkable: true },
+  // what a Crawly passes when it has eaten Glop or Slop (World.excrete): dung; it soaks up settled
+  // Water like Dirt, and becomes Wood (sim.js stepDirt); a Squirmy eats it and passes Dirt
+  { key: 'PLOP', id: 'plop', name: 'Plop', color: '#6a4630', style: 15, opacity: 1, sinkable: true }, // brown, wet and lumpy (drawn like Glop)
+  // detritus (World.excrete, excretedType): Glop is fauna waste — eaten creatures, and a dead
+  // creature's body (World.die) — wet and lumpy; Crawlies eat it and pass it as Plop
+  { key: 'GLOP', id: 'glop', name: 'Glop', color: '#9c2a30', style: 17, opacity: 1, sinkable: true }, // raw red, pink veins, whitish chunks
+  // …and Slop is flora waste: eaten Wood, Berries and Moss come out as it — wet, lumpy compost,
+  // green, brown and gray; Crawlies eat it too and pass it as Plop
+  { key: 'SLOP', id: 'slop', name: 'Slop', color: '#5e6438', style: 18, opacity: 1, sinkable: true },
   { key: 'BERRY', id: 'red', name: 'Berry', color: '#e53935', style: 5, opacity: 1, sinkable: true },
   { key: 'WOOD', id: 'orange', name: 'Wood', color: '#b8804a', style: 7, opacity: 1 }, // warm tan
+  // a tree's foliage: grows (sim.js stepWood) in empty cells next to its Wood; withers to Slop
+  // when the tree is out of Quench
+  { key: 'LEAVES', id: 'leaves', name: 'Leaves', color: '#9ccc65', style: 20, opacity: 1 }, // light green
   { key: 'CRYSTAL', id: 'yellow', name: 'Crystal', color: '#e03cd2', style: 8, opacity: 0.9, shadeFlat: true }, // magenta gem
   { key: 'MOSS', id: 'green', name: 'Moss', color: '#43a047', style: 4, opacity: 1 },
   { key: 'WATER', id: 'blue', name: 'Water', color: '#1e88e5', style: 3, opacity: 0.55 },
@@ -80,14 +97,15 @@ export const BLOCK_TYPES = [
     sinkable: true,
     body: 'single',
     legs: true,
-    diet: ['BERRY', 'WOOD', 'PLOP'],
-    priorityDiet: ['BERRY', 'PLOP'],
-    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
+    diet: ['BERRY', 'WOOD', 'LEAVES', 'GLOP', 'SLOP', 'WATER'],
+    priorityDiet: ['BERRY', 'GLOP', 'SLOP'],
+    needs: { hp: 10, bite: 2, hunger: { every: [10, 16], loss: 8 }, thirst: { every: [14, 22], loss: 6 } }, // a steady scavenger
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'GLOP', 'SLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'LEAVES', 'BERRY', 'CRAWLY', 'BUZZY', 'GLOWY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 2,
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.MATE],
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
-    excretes: { WOOD: 'DIRT' },
+    excretes: { GLOP: 'PLOP', SLOP: 'PLOP' }, // (a scavenger: carrion and compost come out as Plop)
   },
   {
     // like a Crawly, but it flies (as if it always had the Flight buff)
@@ -97,13 +115,38 @@ export const BLOCK_TYPES = [
     fly: true,
     wings: true,
     legs: true,
-    diet: ['BERRY'],
-    priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'],
+    flightTurns: 20,
+    diet: ['BERRY', 'SLOP', 'WATER'],
+    priorityDiet: ['BERRY', 'SLOP'],
+    excretes: { SLOP: 'PLOP' },
+    needs: { hp: 8, bite: 1, hunger: { every: [8, 12], loss: 10 }, thirst: { every: [10, 16], loss: 8 } }, // flying burns it up fast
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'GLOP', 'SLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'LEAVES', 'BERRY', 'CRAWLY', 'BUZZY', 'GLOWY', 'SQUIRMY', 'SLITHER'],
     sightRadius: 3,
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.MATE],
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
+  },
+  {
+    // like a Buzzy, but it glows, softly pulsing light green every turn, and tires: 5 turns in
+    // the air, then it falls, and rests where it lands until it can fly again
+    key: 'GLOWY', id: 'glowy', name: 'Glowy', color: '#9be86a', style: 19, opacity: 1, // light green, pearlescent, glowing
+    creature: true,
+    body: 'single',
+    fly: true,
+    flightTurns: 5,
+    glow: true,
+    growsOnBerry: true, // eating a Berry grows it a body segment (World.growSegment)
+    wings: true,
+    legs: true,
+    diet: ['BERRY', 'GLOP', 'SLOP', 'WATER'],
+    priorityDiet: ['GLOP', 'SLOP'],
+    excretes: { GLOP: 'PLOP', SLOP: 'PLOP' },
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'GLOP', 'SLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'LEAVES', 'BERRY', 'CRAWLY', 'BUZZY', 'GLOWY', 'SQUIRMY', 'SLITHER'],
+    sightRadius: 3,
+    behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.MATE],
+    defaultBehavior: BEHAVIOR.WANDER,
+    eyeScale: 0.25,
+    needs: { hp: 6, bite: 1, hunger: { every: [9, 14], loss: 9 }, thirst: { every: [12, 18], loss: 7 } },
   },
   {
     key: 'SQUIRMY', id: 'squirmy', name: 'Squirmy', color: '#f07898', style: 11, opacity: 1, // pink
@@ -113,11 +156,13 @@ export const BLOCK_TYPES = [
     selfAvoidance: false, // may curl up alongside itself
     diet: ['BERRY', 'DIRT', 'PLOP', 'WATER'],
     priorityDiet: ['BERRY'],
-    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
+    needs: { hp: 6, bite: 1, hunger: { every: [14, 22], loss: 6 }, thirst: { every: [8, 14], loss: 10 } }, // eats slowly, dries out fast
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'GLOP', 'SLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'LEAVES', 'BERRY', 'CRAWLY', 'BUZZY', 'GLOWY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 1, // around its head
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.BURROW, BEHAVIOR.MATE], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
     eyeScale: 0.25,
+    excretes: { PLOP: 'DIRT' }, // (it turns Plop back into soil)
   },
   {
     // a copy of the Squirmy (a chain of segments), green and scaly
@@ -129,7 +174,8 @@ export const BLOCK_TYPES = [
     fangs: true,
     diet: ['BERRY', 'WATER', 'CRAWLY', 'SQUIRMY', 'BUZZY'],
     priorityDiet: ['CRAWLY', 'SQUIRMY'],
-    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'BERRY', 'CRAWLY', 'BUZZY', 'SQUIRMY', 'SLITHER'], // the solid ones
+    needs: { hp: 12, bite: 4, hunger: { every: [20, 30], loss: 12 }, thirst: { every: [16, 24], loss: 6 } }, // big meals, far apart
+    walkableBlocks: ['STONE', 'DIRT', 'PLOP', 'GLOP', 'SLOP', 'MOSS', 'CRYSTAL', 'WOOD', 'LEAVES', 'BERRY', 'CRAWLY', 'BUZZY', 'GLOWY', 'SQUIRMY', 'SLITHER'], // the solid ones
     sightRadius: 2, // around its head
     behaviorList: [BEHAVIOR.WANDER, BEHAVIOR.WAIT, BEHAVIOR.WALK, BEHAVIOR.TRAPPED, BEHAVIOR.MATE], // the head's behavior drives the chain
     defaultBehavior: BEHAVIOR.WANDER,
@@ -141,7 +187,7 @@ export const BLOCK_TYPES = [
   // inside (its spots are that creature's colour), which hatches out after GESTATION_TURNS
   { key: 'EGG', id: 'egg', name: 'Egg', color: '#f4efe4', style: 16, opacity: 1, sinkable: true }, // white, spotted
   // world-creation helper: a placeholder that takes up cells while the NEW_SCENE_TEMPLATE runs
-  // (e.g. to leave a cave or gap), then every Void is deleted (World.generateNew). Never drawn.
+  // (e.g. a geode's hollow, or a cave), then every Void is deleted (World.generateNew). Never drawn.
   { key: 'VOID', id: 'void', name: 'Void', color: '#ffffff', style: 13, opacity: 1, hidden: true },
 ];
 
@@ -239,7 +285,12 @@ export const isSingleCreature = (type) => BLOCK_PROPS[type]?.body === 'single';
 /** Whether `type` is a creature made of a chain of segments (Squirmy, Slither): the head leads, the rest follow. */
 export const isChainCreature = (type) => BLOCK_PROPS[type]?.body === 'chain';
 /** Whether `block` flies: its type does (Buzzy), or it has a buff that does (Flight). */
-export const canFly = (block) => !!block && (!!BLOCK_PROPS[block.type]?.fly || hasBuffFlag(block, 'fly'));
+export const canFly = (block) => !!block && ((!!BLOCK_PROPS[block.type]?.fly && flightLeft(block) > 0) || hasBuffFlag(block, 'fly'));
+/** How many more turns flyer `block` can stay in the air (its head's count: sim.js stepFlight); Infinity without a limit. */
+export const flightLeft = (block) => {
+  const head = block.segmentOf ?? block;
+  return head.flight ?? BLOCK_PROPS[head.type]?.flightTurns ?? Infinity;
+};
 /** A buff's name and what's left of it, e.g. "Rockbiter (permanent, 3 charges)". */
 export const describeBuff = (x) => {
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;

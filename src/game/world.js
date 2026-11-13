@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { RANDOM_BLOCKS } from './tools.js';
 import { BLOCK, BLOCK_COLORS, BLOCK_TYPES, blockProps, canBehave, isCreature, isTranslucent, BUFF_TYPES, isSingleCreature, isChainCreature, TINT_BUFFS, EGG_SPOT_TYPES, CREATURE_TYPES } from './blocks.js';
-import { EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, gridMode, isValidCell, onGridChange, randomCellOnSphere, setGridMode } from './lattice.js';
+import { EDGE_SIDES, EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, cmDist2, edgeStepKey, fromCm, gridMode, isValidCell, onGridChange, randomCellOnSphere, setGridMode, toCm } from './lattice.js';
 import { GRIDS, DEFAULT_GRID, dirName } from './grids.js';
-import { FACE_DIRS, createBlockGeometry, createBlockMaterials } from './geometry.js';
+import { FACE_DIRS, createBlockGeometry, createBlockMaterials, FACING_STEP, facingCode } from './geometry.js';
 import { ClusterBodies, addSmoothShape } from './clusterBody.js';
 import { BlockBatch } from './blockBatch.js';
 import { SOLID_TYPES, stepFog, stepGroups, stepSink, stepWater } from './sim.js';
+import { STAGES, STAGE_KEYS, STAGE_TYPE_KEYS, mulberry32, newGenContext } from './worldgen.js';
 import { CreatureEyes, orientCreature } from './creature.js';
 
 /**
@@ -15,18 +16,24 @@ import { CreatureEyes, orientCreature } from './creature.js';
  */
 export const STEP_FRACTION = 1;
 
+/** Plant matter: eaten, it comes out as Slop (excretedType). */
+const PLANT_TYPES = new Set([BLOCK.WOOD, BLOCK.LEAVES, BLOCK.BERRY, BLOCK.MOSS]);
+
 /**
  * What an item of `type` in a block of `holder`'s type comes out as when excreted (World.excrete):
- * digested, as the holder's type says (blocks.js excretes: a Crawly's Wood comes out as Dirt),
- * else eaten creatures and Berries as Plop, and Crystal as Stone. A non-creature (Wood: Water) gives back what it holds.
+ * digested, as the holder's type says (blocks.js excretes: a Crawly's Glop comes out as Plop, a
+ * Squirmy's Plop as Dirt), else eaten creatures as Glop, plant matter (PLANT_TYPES) as Slop, and
+ * Crystal as Stone. A non-creature (Wood: Water) gives back what it holds.
  */
 export function excretedType(holder, type) {
   if (!isCreature(holder)) return type;
-  return blockProps(holder).excretes?.[type] ?? (isCreature(type) || type === BLOCK.BERRY ? BLOCK.PLOP : type === BLOCK.CRYSTAL ? BLOCK.STONE : type);
+  return blockProps(holder).excretes?.[type] ?? (isCreature(type) ? BLOCK.GLOP : PLANT_TYPES.has(type) ? BLOCK.SLOP : type === BLOCK.CRYSTAL ? BLOCK.STONE : type);
 }
 
 /**
- * Steps of the "New" scene, in order (after the Stone at the origin). Each step adds
+ * Template lines. A line with a `stage` runs that generation stage (worldgen.js STAGES: shape,
+ * spokes, bodies, fill, lakes, cover, trees, pools, fauna, shell). Any other line is an accretion step (after a Stone
+ * at the origin, when no line is a stage), in order. Each step adds
  * `count` blocks of `type`, seeded as `clusters` clusters (null = count: every block a seed,
  * straight onto the world, layer by layer) that grow by `sizeDistribution` and `growth`. With `count: null` and
  * `shells: n`, the count is taken from the world's empty shell (its cell count), and the step
@@ -48,7 +55,8 @@ export const SKY_RADIUS_CM = 50;
 /** "sky" seeding gives up on a seed after this many tries landing on taken cells. */
 const SKY_TRIES = 50;
 
-export const NEW_SCENE_TEMPLATE = [
+/** The "New" scene before the staged generator (worldgen.js): every line an accretion step. Kept as an example of the format. */
+export const CLASSIC_SCENE_TEMPLATE = [
   //Geode
   { type: BLOCK.VOID, clusters: null, count: 20, shells: null, sizeDistribution: 'uniform', growth: "worm", addTo: "world" },
   { type: BLOCK.VOID, clusters: null, count: null, shells: 2, sizeDistribution: 'uniform', growth: "uniform", addTo: "world" },
@@ -65,20 +73,56 @@ export const NEW_SCENE_TEMPLATE = [
   { type: BLOCK.CRYSTAL, count: 20, clusters: 5, shells: null, sizeDistribution: 'random', growth: "uniform", addTo: "world" },
   { type: BLOCK.STONE, count: 10, clusters: 30, shells: null, sizeDistribution: 'uniform', growth: "uniform", addTo: "world" },
   //Soil
-  { type: BLOCK.DIRT, count: 10, clusters: 20, shells: null, sizeDistribution: 'random', growth: "random", addTo: "world" },
-  { type: BLOCK.STONE, count: 10, clusters: 20, shells: null, sizeDistribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.DIRT, count: 30, clusters: 20, shells: null, sizeDistribution: 'random', growth: "random", addTo: "world" },
+  { type: BLOCK.STONE, count: 20, clusters: 20, shells: null, sizeDistribution: 'uniform', growth: "uniform", addTo: "world" },
   { type: BLOCK.WOOD, count: 30, clusters: 6, shells: null, sizeDistribution: 'random', growth: "tree", addTo: "world" },
   { type: BLOCK.DIRT, count: 10, clusters: 30, shells: null, sizeDistribution: 'uniform', growth: "uniform", addTo: "world" },
   { type: BLOCK.MOSS, count: 500, clusters: 80, shells: null, sizeDistribution: 'random', growth: "uniform", addTo: "world" },
   //Water and creatures
   { type: BLOCK.WATER, count: 100, clusters: 5, shells: null, sizeDistribution: 'random', growth: "random", addTo: "world" },
-  { type: BLOCK.CRAWLY, count: 10, clusters: 5, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world", addTo: "world" },
+  { type: BLOCK.CRAWLY, count: 10, clusters: 5, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world" },
   { type: BLOCK.BUZZY, count: 5, clusters: 5, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world" },
   { type: BLOCK.SQUIRMY, count: 10, clusters: 3, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world" },
   { type: BLOCK.SLITHER, count: 3, clusters: 1, shells: null, sizeDistribution: 'random', growth: "worm", addTo: "world" },
   { type: BLOCK.VOID, deleteAll: true },
   //Fog and clouds
   { type: BLOCK.FOG, clusters: null, count: null, shells: 2, sizeDistribution: 'uniform', growth: "uniform", addTo: "world" },
+  { type: BLOCK.NIMBUS, clusters: 4, count: 100, shells: null, sizeDistribution: 'uniform', growth: "uniform", addTo: "sky" },
+];
+
+/**
+ * The "New" scene: a staged world (worldgen.js): a big ball, with a thin ring around it held
+ * on by spokes. Geodes (a Void hollow lined with Crystal, in a Stone shell) and boulders are buried in Dirt,
+ * Moss covers part of the surface, trees grow on it, Water lies in its hollows, and creatures
+ * roam it; then a layer of Fog, and clouds (an accretion step). Sizes are in cm; the `shape`
+ * sets the world's size.
+ */
+export const NEW_SCENE_TEMPLATE = [
+  // a big round world, and a thin ring around it
+  { stage: 'shape', form: 'ball', radius: 23, relief: 3, reliefSize: 9 },
+  { stage: 'shape', form: 'torus', radius: 38, tube: 5, relief: 1.5, reliefSize: 7 },
+  // Geodes: Void, lined with Crystal, in Stone
+  { stage: 'bodies', count: 3, lumpiness: 0.25, cover: 2, layers: [{ type: BLOCK.VOID, size: [2.5, 4] }, { type: BLOCK.CRYSTAL, size: 2 }, { type: BLOCK.STONE, size: 2 }] },
+  // Boulders
+  { stage: 'bodies', count: 12, lumpiness: 0.35, cover: 2, layers: [{ type: BLOCK.STONE, size: [1.5, 4] }] },
+  // …all buried in Dirt
+  { stage: 'fill', type: BLOCK.DIRT },
+  // the ring held on by Stone spokes
+  { stage: 'spokes', type: BLOCK.STONE, count: 4, width: 4 },
+  // lakes on the inner world (before Moss and trees: they keep to dry land)
+  { stage: 'lakes', type: BLOCK.WATER, part: 0, count: 4, radius: [5, 9], depth: [1.5, 3], spacing: 16 },
+  // Surface: Moss in patches, then trees and pools
+  { stage: 'cover', type: BLOCK.MOSS, on: [BLOCK.DIRT], fraction: 0.5, patchSize: 5 },
+  { stage: 'trees', type: BLOCK.WOOD, count: 12, height: [3, 6], branches: [4, 10], spacing: 6 },
+  { stage: 'pools', type: BLOCK.WATER, count: 5, size: [15, 35], spacing: 10 },
+  // Fauna
+  { stage: 'fauna', type: BLOCK.CRAWLY, count: 16 },
+  { stage: 'fauna', type: BLOCK.BUZZY, count: 8 },
+  { stage: 'fauna', type: BLOCK.GLOWY, count: 5 },
+  { stage: 'fauna', type: BLOCK.SQUIRMY, count: 5, length: [3, 5] },
+  { stage: 'fauna', type: BLOCK.SLITHER, count: 2, length: [3, 5] },
+  // Fog (the geodes' Void still fills their hollows, so none goes in; it's cleared at the end) and clouds
+  { stage: 'shell', type: BLOCK.FOG, thickness: 3 },
   { type: BLOCK.NIMBUS, clusters: 4, count: 100, shells: null, sizeDistribution: 'uniform', growth: "uniform", addTo: "sky" },
 ];
 
@@ -102,18 +146,40 @@ function templateType(name) {
 /**
  * Reads a world template from parsed JSON: an array of lines like NEW_SCENE_TEMPLATE, or an
  * object holding one as `template` (or `lines`). Block types may be written as ids, keys or
- * names (see templateType). Returns { template, grid } (lines ready for generateNew, and the
- * object's `grid` mode if it names one), or { error } when it doesn't look like a template or
+ * names (see templateType). Returns { template, grid, seed } (lines ready for generateNew, and
+ * the object's `grid` mode and `seed` if it gives them), or { error } when it doesn't look like a template or
  * names an unknown block type or grid mode.
  */
 export function parseTemplate(data) {
   const lines = Array.isArray(data) ? data : Array.isArray(data?.template) ? data.template : Array.isArray(data?.lines) ? data.lines : null;
   if (!lines?.length) return { error: 'not a template (no list of lines)' };
-  if (!lines.every((l) => l && typeof l === 'object' && !Array.isArray(l) && 'type' in l && !('x' in l && 'y' in l && 'z' in l))) {
-    return { error: 'not a template (every line needs a "type", and no x / y / z)' };
+  if (!lines.every((l) => l && typeof l === 'object' && !Array.isArray(l) && ('type' in l || 'stage' in l) && !('x' in l && 'y' in l && 'z' in l))) {
+    return { error: 'not a template (every line needs a "type" or a "stage", and no x / y / z)' };
   }
   const template = [];
   for (const [i, l] of lines.entries()) {
+    if ('stage' in l) {
+      // a generation stage (worldgen.js): its own properties, block types given by name
+      if (!STAGE_KEYS[l.stage]) return { error: `line ${i + 1}: unknown stage "${l.stage}" (${Object.keys(STAGE_KEYS).join(', ')})` };
+      const line = { stage: l.stage };
+      const one = (t) => {
+        const id = templateType(t);
+        if (!id || id === 'random') throw new Error(`line ${i + 1}: unknown block type "${t}"`);
+        return id;
+      };
+      try {
+        for (const k of STAGE_KEYS[l.stage]) {
+          if (!(k in l)) continue;
+          let v = l[k];
+          if (STAGE_TYPE_KEYS.includes(k)) v = k === 'type' ? one(v) : k === 'on' ? [].concat(v).map(one) : [].concat(v).map((layer) => ({ ...layer, type: one(layer.type) }));
+          line[k] = v;
+        }
+      } catch (e) {
+        return { error: e.message };
+      }
+      template.push(line);
+      continue;
+    }
     const type = templateType(l.type);
     if (!type) return { error: `line ${i + 1}: unknown block type "${l.type}"` };
     const line = { type };
@@ -125,7 +191,9 @@ export function parseTemplate(data) {
   // an object template may name its grid mode (grids.js), e.g. { "grid": "rd", "template": [ … ] }
   const grid = Array.isArray(data) ? undefined : data.grid;
   if (grid !== undefined && !GRIDS[grid]) return { error: `unknown grid mode "${grid}"` };
-  return { template, grid };
+  // …and its seed (World.generateNew: the same world every time)
+  const seed = Array.isArray(data) || !Number.isInteger(data.seed) ? undefined : data.seed;
+  return { template, grid, seed };
 }
 
 /** Whether parsed JSON looks like a save file (World.toJSON): the save format, or a list of blocks with x, y, z and type. */
@@ -149,20 +217,25 @@ function savedDir(front) {
 const _m = new THREE.Matrix4();
 const EMPTY_SET = new Set();
 const _c = new THREE.Color();
+const _t = new THREE.Vector3();
+/** Hexagonal Prism: how thick (cm) each layer of a New world is (World._worldShell). */
+const WORLD_LAYER_CM = 1.75; // (a world about the size of the other modes')
 
 /**
- * The point `f` (0..1) of the way along an edge step's arc (Cube mode: World.edgeVia) from
- * `from` to `to` round their edge, into `out` (lattice units): the half circle centred on the
- * edge's midpoint through the open cell `via` beside it, so the mover keeps its distance from
- * the edge all the way instead of cutting through it.
+ * The point `f` (0..1) of the way along an edge step's arc (Cube, Hexagonal Prism: World.edgeVia) from
+ * `from` to `to` round their edge, into `out` (lattice units): a quarter oval centred on the
+ * block it goes round (the cell across the edge from the open cell `via`), so it sets off
+ * straight out from the floor it leaves and arrives straight along the one it reaches. Its two
+ * radii are the cell spacings the step combines: equal for a cube (a quarter circle), √2 and √3
+ * for a hexagonal prism (round its side and up its cap).
  */
 export function arcPoint(from, to, via, f, out) {
-  const ex = (from.x + to.x) / 2, ey = (from.y + to.y) / 2, ez = (from.z + to.z) / 2;
-  const c = Math.cos(Math.PI * f), s = Math.sin(Math.PI * f);
+  const bx = from.x + to.x - via.x, by = from.y + to.y - via.y, bz = from.z + to.z - via.z; // (the block)
+  const c = Math.cos((Math.PI / 2) * f), s = Math.sin((Math.PI / 2) * f);
   return out.set(
-    ex + c * (from.x - ex) + s * (via.x - ex),
-    ey + c * (from.y - ey) + s * (via.y - ey),
-    ez + c * (from.z - ez) + s * (via.z - ez),
+    bx + c * (from.x - bx) + s * (to.x - bx),
+    by + c * (from.y - by) + s * (to.y - by),
+    bz + c * (from.z - bz) + s * (to.z - bz),
   );
 }
 
@@ -170,8 +243,8 @@ export function arcPoint(from, to, via, f, out) {
  * Stores the blocks and renders them with one InstancedMesh (used for raycasting), plus
  * a translucent mesh that shares its instance buffers and draws only the see-through
  * blocks (Water, Crystal).
- * Coordinates are integer lattice units on the active grid (lattice.js GRID; cm times
- * GRID.scale); blocks are drawn in cm, and the parent group scales cm -> m.
+ * Coordinates are integer lattice units on the active grid (lattice.js GRID; in cm through
+ * GRID.toCm: lattice.js toCm); blocks are drawn in cm, and the parent group scales cm -> m.
  */
 export class World {
   constructor(parent) {
@@ -204,6 +277,7 @@ export class World {
     // run on it, and it only moves while the game runs (advanceTime), so pausing freezes them
     this.time = 0;
     this.revision = 0; // bumped whenever blocks are added, removed, moved, retyped or recoloured (see _changed)
+    this._facings = new Map(); // creature head -> its facing sweeping round (_writeFacing, _updateFacings)
     this.stepSeconds = STEP_FRACTION; // length of per-turn animations (s); the engine sets it from the turn length
     this.turn = 0; // current game turn, set by the engine; stamped on blocks as movedTurn
     this.listeners = new Map(); // event name -> Set of handlers (see on / emit)
@@ -262,8 +336,9 @@ export class World {
 
   /** Block `block`'s instance matrix (where and how big it's drawn): `m` places it in lattice units, drawn in cm. */
   _setMatrix(block, m) {
-    const s = GRID.scale, e = m.elements;
-    if (s !== 1) e[12] *= s, e[13] *= s, e[14] *= s;
+    const e = m.elements;
+    toCm(e[12], e[13], e[14], _t);
+    e[12] = _t.x, e[13] = _t.y, e[14] = _t.z;
     block.batch.mesh.setMatrixAt(block.index, m);
   }
 
@@ -310,7 +385,7 @@ export class World {
    *   'creatureTrapped' (creature)  — a creature got walled in (Trapped behavior)
    *   'creatureBlocked' (creature)  — a controlled creature was steered where it can't go (sim.js steeredCell)
    *   'creatureFreed' (creature)    — a Trapped creature found a gap (back to Wander)
-   *   'creatureDied' ({ creature, x, y, z }) — a creature died (its block is already removed)
+   *   'creatureDied' ({ creature, x, y, z }) — a creature died (its body is already Glop: die)
    *   'blockConsumed' ({ by, block, sound, slot }) — `by` consumed `block` (see consume)
    *   'blockExcreted' ({ by, block, sound }) — a cluster's tail `by` excreted `block` (see excrete)
    *   'blockBlown' ({ by, block, sound }) — `block` was blown away from `by` (see blow)
@@ -337,7 +412,7 @@ export class World {
     // a Buzzy turning where it is buzzes ('creatureTurned'; the engine plays it); one that
     // moved has buzzed already ('creatureMoved')
     const turned = front && creature.front && creature.front.some((v, i) => v !== front[i]);
-    if (turned && !moveDir && creature.type === BLOCK.BUZZY) this.emit('creatureTurned', creature);
+    if (turned && !moveDir && blockProps(creature.type).wings) this.emit('creatureTurned', creature);
   }
 
   /** Re-derives the floor of every creature next to cell (x, y, z). */
@@ -352,7 +427,7 @@ export class World {
   /**
    * Re-groups chain creature blocks (Squirmy, Slither) into chains. Each block carries the id
    * of the chain it belongs to (`block.chain`, see _chainFor), so two chains that touch stay
-   * two creatures. A chain's blocks must also touch each other, through a face or (Cube mode,
+   * two creatures. A chain's blocks must also touch each other, through a face or (Cube and Hexagonal Prism,
    * where a head may step round an edge: sim.js stepOffsets) an edge: one split apart (a block
    * taken out of its middle) becomes two chains, the part with the older head keeping the id. Each
    * chain is ordered by `born` (placement order): the first placed is the head, the last the
@@ -687,6 +762,72 @@ export class World {
   }
 
   /**
+   * Writes block `b`'s tint flag (blockStyle.z: `b.tinted`, a buff's colour or an Egg's spots)
+   * with a creature's facing packed above it (geometry.js FACING_STEP, facingCode), so the
+   * shader can draw it facing that way (a Buzzy's stripes). A body segment faces as its head.
+   * When the facing changes it doesn't jump: it sweeps round from the old one over a turn
+   * (_updateFacings), as the eyes do.
+   */
+  _writeFacing(b) {
+    if (isTranslucent(b.type) || this.blocks.get(cellKey(b.x, b.y, b.z)) !== b) return;
+    const head = b.segmentOf ?? b;
+    const front = isCreature(b.type) ? head.front : null;
+    if (!front) return this._writeFacingDir(b, null);
+    const to = toCm(front[0], front[1], front[2], new THREE.Vector3()).normalize();
+    const turn = this._facings.get(head);
+    const shown = turn ? turn.now : head.facingShown;
+    if (!shown || shown.distanceToSquared(to) < 1e-9) {
+      if (!turn) {
+        head.facingShown = to;
+        this._writeFacingDir(b, to);
+      }
+      return;
+    }
+    if (turn && turn.to.distanceToSquared(to) < 1e-9) return; // (already turning that way)
+    this._facings.set(head, { from: shown.clone(), to, now: shown.clone(), t0: this.time, dur: this.stepSeconds * 1000 });
+  }
+
+  /** Writes direction `dir` (cm, unit; null: none) as block `b`'s facing, with its tint (_writeFacing). */
+  _writeFacingDir(b, dir) {
+    if (this.blocks.get(cellKey(b.x, b.y, b.z)) !== b) return;
+    const z = (b.tinted ?? 0) + (dir ? FACING_STEP * (facingCode(dir) + 1) : 0);
+    const style = this._style(b);
+    if (style.getZ(b.index) === z) return;
+    style.setZ(b.index, z);
+    style.needsUpdate = true;
+    this._changed(); // (Smooth rendering: creature bodies copy their looks again)
+  }
+
+  /** Creatures turning: each facing sweeps from the old direction to the new (slerp, eased) and is written to its blocks. */
+  _updateFacings(now) {
+    for (const [head, f] of this._facings) {
+      if (this.blocks.get(cellKey(head.x, head.y, head.z)) !== head) {
+        this._facings.delete(head);
+        continue;
+      }
+      const t = Math.min(1, Math.max(0, (now - f.t0) / f.dur));
+      const e = t * t * (3 - 2 * t);
+      const angle = f.from.angleTo(f.to);
+      if (angle < 1e-6 || t >= 1) f.now.copy(f.to);
+      else if (angle > Math.PI - 1e-3) {
+        // (turning right round: go by way of a side, not straight through)
+        const side = new THREE.Vector3(0, 1, 0).cross(f.from);
+        if (side.lengthSq() < 1e-6) side.set(1, 0, 0);
+        side.normalize();
+        f.now.copy(e < 0.5 ? f.from.clone().lerp(side, e * 2) : side.clone().lerp(f.to, e * 2 - 1)).normalize();
+      } else {
+        const q = new THREE.Quaternion().setFromUnitVectors(f.from, f.to);
+        f.now.copy(f.from).applyQuaternion(new THREE.Quaternion().slerp(q, e));
+      }
+      for (const b of [head, ...(head.segments ?? [])]) this._writeFacingDir(b, f.now);
+      if (t >= 1) {
+        head.facingShown = f.to.clone();
+        this._facings.delete(head);
+      }
+    }
+  }
+
+  /**
    * A block's look with its buffs: it keeps its type's colour; while it has a buff with a
    * colour (e.g. Rockbiter's gold), the shader's tint flag (blockStyle.z, unused by opaque
    * blocks otherwise) adds pulsing glowing ripples in that colour over a creature's shell.
@@ -701,8 +842,8 @@ export class World {
     block.spotsOf = block.inventory; // (an Egg: the creature its spots were drawn for)
     for (const b of body) {
       b.batch.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[b.type]));
-      if (!isTranslucent(b.type)) this._style(b).setZ(b.index, tint);
       b.tinted = tint;
+      if (!isTranslucent(b.type)) this._writeFacing(b);
       this._logChange(b.x, b.y, b.z); // (Smooth rendering: its body's colours)
     }
     this._dirty();
@@ -711,7 +852,8 @@ export class World {
 
   /** Where `block` is drawn right now (mid-slide while it is moving), in cm. */
   renderedPosition(block, now, out) {
-    return this._slidePosition(block, now, out).multiplyScalar(GRID.scale);
+    this._slidePosition(block, now, out);
+    return toCm(out.x, out.y, out.z, out);
   }
 
   /**
@@ -729,18 +871,17 @@ export class World {
   }
 
   /**
-   * Cube mode's edge steps (lattice.js EDGE_STEPS): for a step from cell `from` to cell `to`
+   * Cube and Hexagonal Prism edge steps (lattice.js EDGE_STEPS): for a step from cell `from` to cell `to`
    * across an edge with a block on one side of it (a block other than `self`, the mover), the
    * open cell on the other side: the step goes round the edge through it (arcPoint). Null for
    * any other step, and for one with both sides open (nothing to go round: it goes straight).
    */
   edgeVia(from, to, self = null) {
     if (!EDGE_STEPS.length) return null;
-    const d = [to.x - from.x, to.y - from.y, to.z - from.z];
-    if (d.filter((v) => v).length !== 2) return null; // (a step across a face)
-    const sides = [0, 1, 2].filter((i) => d[i]).map((i) => {
-      const v = [from.x, from.y, from.z];
-      v[i] += d[i];
+    const pair = EDGE_SIDES.get(edgeStepKey(to.x - from.x, to.y - from.y, to.z - from.z));
+    if (!pair) return null; // (a step across a face)
+    const sides = pair.map(([dx, dy, dz]) => {
+      const v = [from.x + dx, from.y + dy, from.z + dz];
       const b = this.blocks.get(cellKey(v[0], v[1], v[2]));
       return { x: v[0], y: v[1], z: v[2], open: !b || b === self };
     });
@@ -860,7 +1001,7 @@ export class World {
     this._setMatrix(b, _m.makeTranslation(x, y, z));
     b.batch.mesh.setColorAt(b.index, _c.set(BLOCK_COLORS[type]));
     this._style(b).setXYZW(b.index, blockProps(type).style, Math.random() * 40, 0, 0);
-    b.texOrigin = [x * GRID.scale, y * GRID.scale, z * GRID.scale]; // (its patterns' origin: blockTexOrigin, kept as it moves)
+    b.texOrigin = toCm(x, y, z, _t).toArray(); // (its patterns' origin: blockTexOrigin, kept as it moves)
     this._writeTexOrigin(b);
     b.batch.attr('blockMerged').setX(b.index, 0);
     this._writeSmooth(b);
@@ -941,6 +1082,7 @@ export class World {
       behavior: b.behavior,
       walkTarget: b.walkTarget ? { ...b.walkTarget } : null,
       trappedTurns: b.trappedTurns,
+      needs: this._saveNeeds(b),
       assigned: !!b.isAssignedBehavior,
       inventory: b.inventory,
       smooth: !!b.shadeSmooth,
@@ -979,6 +1121,7 @@ export class World {
       if (canBehave(b.type, r.behavior)) b.behavior = r.behavior;
       if (r.walkTarget) b.walkTarget = r.walkTarget;
       if (r.trappedTurns) b.trappedTurns = r.trappedTurns;
+      this._loadNeeds(b, r.needs);
       if (r.assigned) b.isAssignedBehavior = true;
       if (r.inventory) b.inventory = r.inventory;
       if (r.smooth) this.setSmooth(b, true);
@@ -1262,13 +1405,13 @@ export class World {
    * turned shift a little).
    */
   _alignChainTextures() {
-    const s = GRID.scale;
     for (const sq of this.squirmies) {
       const head = sq.segments[0];
       if (!head?.texOrigin) continue;
       for (const b of sq.segments) {
         if (b === head || !b.batch) continue;
-        const o = [head.texOrigin[0] + (b.x - head.x) * s, head.texOrigin[1] + (b.y - head.y) * s, head.texOrigin[2] + (b.z - head.z) * s];
+        const d = toCm(b.x - head.x, b.y - head.y, b.z - head.z, _t);
+        const o = [head.texOrigin[0] + d.x, head.texOrigin[1] + d.y, head.texOrigin[2] + d.z];
         if (b.texOrigin && o.every((v, i) => Math.abs(v - b.texOrigin[i]) < 1e-6)) continue;
         b.texOrigin = o;
         this._writeTexOrigin(b);
@@ -1305,6 +1448,7 @@ export class World {
     const p = new THREE.Vector3();
     this._alignChainTextures(); // (before the bodies are rebuilt: they copy it)
     this.eyes.update(now, (creature, out) => this.renderedPosition(creature, now, out), { turn: this.turn, flapSeconds: this.stepSeconds * 0.5, stepSeconds: this.stepSeconds, sizeOf: (creature) => this.drawnScale(creature, now) });
+    this._updateFacings(now); // (creatures turning: their facing sweeps round, for the shader)
     this.clusterBodies.update(this, now);
     if (!this.anims.size && !this.vanishing.size && !this.appearing.size) return;
     for (const [k, a] of this.anims) {
@@ -1334,14 +1478,51 @@ export class World {
     block.vanishing = true;
     this.setSmooth(block, true); // (shrinking away as a lone block: rounded like its body with Rendering: Smooth, flat with Blocky)
     this._logChange(block.x, block.y, block.z);
-    const dir = new THREE.Vector3(block.x - other.x, block.y - other.y, block.z - other.z);
+    const dir = toCm(block.x - other.x, block.y - other.y, block.z - other.z, new THREE.Vector3()); // (cm)
     if (dir.lengthSq() < 1e-9) dir.set(0, 1, 0);
     dir.normalize().multiplyScalar(toward ? -distanceCm : distanceCm);
+    fromCm(dir.x, dir.y, dir.z, dir).multiplyScalar(GRID.scale); // (it moves in lattice units: as far as it always has, distanceCm × GRID.scale cm)
     if (isTranslucent(block.type)) this._refreshTranslucentAround(block.x, block.y, block.z);
     this.anims.delete(cellKey(block.x, block.y, block.z)); // the vanish animation takes over its matrix
     this._changed(); // shrinks away on the instanced mesh, not in a cluster body
     this.vanishing.set(block, { from: new THREE.Vector3(block.x, block.y, block.z), dir, t0: this.time, dur: durationS * 1000 });
     return true;
+  }
+
+  /**
+   * Creature `creature` dies: every block of its body (clusterOf) becomes Glop where it is
+   * (carrion), growing in as the body goes. What it was carrying is lost with it. Returns the
+   * Glop blocks.
+   */
+  die(creature) {
+    const body = this.clusterOf(creature).filter((b) => this.blocks.get(cellKey(b.x, b.y, b.z)) === b);
+    const cells = body.map((b) => ({ x: b.x, y: b.y, z: b.z }));
+    for (const b of [...body].reverse()) this.remove(b.x, b.y, b.z); // (tail first: no segments break off as creatures)
+    const glop = [];
+    for (const c of cells) {
+      if (!this.add(c.x, c.y, c.z, BLOCK.GLOP)) continue;
+      const g = this.get(c.x, c.y, c.z);
+      this.setSmooth(g, true); // (a soft heap, like an excreted block)
+      this.appear(g, c);
+      glop.push(g);
+    }
+    return glop;
+  }
+
+  /**
+   * One block of a creature dies (0 HP, needs.js): it becomes Glop where it is, growing in as
+   * it goes. A chain's other blocks split round it into chains of their own; a one-block
+   * creature's body segments behind it break off. Returns the Glop block, or null.
+   */
+  dieBlock(block) {
+    if (this.blocks.get(cellKey(block.x, block.y, block.z)) !== block) return null;
+    const { x, y, z } = block;
+    this.remove(x, y, z);
+    if (!this.add(x, y, z, BLOCK.GLOP)) return null;
+    const g = this.get(x, y, z);
+    this.setSmooth(g, true);
+    this.appear(g, { x, y, z });
+    return g;
   }
 
   /**
@@ -1434,9 +1615,9 @@ export class World {
    * the body come down to it a block a turn: digest), and the new
    * block grows in from the tail to its cell (appear) while the sound `sound` plays
    * ('blockExcreted' event; the engine plays it). `cell` ({ x, y, z }, optional) picks the cell
-   * instead (a Nimbus raining straight down). A creature's eaten creatures and Berries come out
-   * as Plop, unless its type says otherwise (blocks.js excretes: a Crawly's Wood comes out as
-   * Dirt). Returns the new block, or null if the tail's slot
+   * instead (a Nimbus raining straight down). What it ate comes out digested (excretedType):
+   * creatures as Glop, Wood, Berries and Moss as Slop, unless its type says otherwise (blocks.js
+   * excretes: a Crawly's Glop comes out as Plop). Returns the new block, or null if the tail's slot
    * is empty or it has no empty neighbouring cell (or `cell` is taken).
    */
   excrete(cluster, sound, { cell: into = null } = {}) {
@@ -1527,6 +1708,7 @@ export class World {
   }
 
   clear() {
+    this._facings.clear();
     this.buffed.clear();
     this.soloCreatures.clear();
     this.squirmyBlocks.clear();
@@ -1622,15 +1804,15 @@ export class World {
   _upCell(members) {
     for (let k = members.length - 1; k >= 0; k--) {
       const b = members[k];
-      const len = Math.hypot(b.x, b.y, b.z);
-      const [ux, uy, uz] = len > 0 ? [b.x / len, b.y / len, b.z / len] : [0, 1, 0];
-      const step = 2 / GRID.scale; // centre to centre across a face, lattice units
-      const tx = b.x + step * ux, ty = b.y + step * uy, tz = b.z + step * uz; // the cell straight up
+      // (in cm: the cell 2 cm straight up, away from the origin)
+      const c = toCm(b.x, b.y, b.z, new THREE.Vector3()), len = c.length();
+      const up = len > 0 ? c.clone().divideScalar(len) : new THREE.Vector3(0, 1, 0);
+      const t = c.addScaledVector(up, 2); // centre to centre across a face, cm: the cell straight up
       let best = [], bestD = Infinity;
       for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
         const x = b.x + dx, y = b.y + dy, z = b.z + dz;
         if (this.has(x, y, z) || !isValidCell(x, y, z)) continue;
-        const d = (x - tx) ** 2 + (y - ty) ** 2 + (z - tz) ** 2;
+        const p = toCm(x, y, z, _t), d = (p.x - t.x) ** 2 + (p.y - t.y) ** 2 + (p.z - t.z) ** 2;
         if (d < bestD - 1e-9) {
           bestD = d;
           best = [[x, y, z]];
@@ -1639,6 +1821,39 @@ export class World {
       if (best.length) return best[Math.floor(Math.random() * best.length)];
     }
     return null;
+  }
+
+  /**
+   * The world's next layer: its empty shell (_shellOf), shuffled. Hexagonal Prism: its
+   * neighbours are all 2 cm away, but its shells of neighbours still aren't round (a hexagonal
+   * prism of cells, not a ball), so they would grow a squared-off world. Its layer is instead every empty cell
+   * within WORLD_LAYER_CM of the shell's nearest to the origin that joins the world through
+   * such cells: as many steps out as fit, so the layer is as thick all round and the world
+   * stays round.
+   */
+  _worldShell() {
+    const shell = this._shellOf();
+    if (GRID.uniform || !shell.length) return shell;
+    const dist = ([x, y, z]) => Math.sqrt(cmDist2(x, y, z));
+    const limit = shell.reduce((m, c) => Math.min(m, dist(c)), Infinity) + WORLD_LAYER_CM;
+    const layer = new Map();
+    const queue = shell.filter((c) => dist(c) <= limit);
+    for (const c of queue) layer.set(cellKey(...c), c);
+    for (let i = 0; i < queue.length; i++) {
+      const [x, y, z] = queue[i];
+      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+        const n = [x + dx, y + dy, z + dz], k = cellKey(...n);
+        if (layer.has(k) || this.blocks.has(k) || !isValidCell(...n) || dist(n) > limit) continue;
+        layer.set(k, n);
+        queue.push(n);
+      }
+    }
+    const cells = [...layer.values()];
+    for (let i = cells.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [cells[i], cells[j]] = [cells[j], cells[i]];
+    }
+    return cells;
   }
 
   /** Takes the next still-empty cell from a shuffled shell (cells filled meanwhile are skipped). */
@@ -1684,14 +1899,31 @@ export class World {
    *                other or the ground
    *    A group with no empty cells around it stops growing; the others carry on.
    */
-  generateNew(template = NEW_SCENE_TEMPLATE) {
+  generateNew(template = NEW_SCENE_TEMPLATE, { seed = null } = {}) {
+    // everything random in it goes through Math.random: seeded for the length of the generation,
+    // so a seed (World.seed, logged) gives the same world again
+    this.seed = Number.isInteger(seed) ? seed : Math.floor(Math.random() * 2 ** 31);
+    const random = Math.random;
+    Math.random = mulberry32(this.seed);
+    try {
+      this._generate(template);
+    } finally {
+      Math.random = random;
+    }
+    console.log(`World seed ${this.seed}`);
+  }
+
+  _generate(template) {
     this.clear();
-    this.add(0, 0, 0, BLOCK.STONE);
+    this.turn = 0; // a new world starts at turn 0 (Water settling reads it: not the last world's turn)
+    const gen = newGenContext(); // (the stages' shared state: noise, the ground's shape, …)
+    // accretion lines grow from a Stone at the origin; a world built by stages doesn't need it
+    if (!template.some((step) => step.stage)) this.add(0, 0, 0, BLOCK.STONE);
     let worldShell = [];
     const fromWorldShell = () => {
       let c = this._takeFrom(worldShell);
       if (!c) {
-        worldShell = this._shellOf(); // layer used up: the next layer out
+        worldShell = this._worldShell(); // layer used up: the next layer out
         c = this._takeFrom(worldShell);
       }
       return c;
@@ -1798,6 +2030,13 @@ export class World {
       prevMade = madeNow;
       madeNow = [];
       prevShell = null;
+      if (step.stage) {
+        const before = this.blocks.size, t0 = performance.now();
+        if (STAGES[step.stage]) madeNow = STAGES[step.stage](this, step, gen);
+        else console.warn(`Template line ${line + 1}: unknown stage "${step.stage}"`);
+        console.log(`Template ${line + 1}/${template.length}: ${step.stage}${step.type ? ` ${blockProps(step.type).name}` : ''} +${this.blocks.size - before} → ${this.blocks.size} blocks (${Math.round(performance.now() - t0)} ms)`);
+        return;
+      }
       if (step.deleteAll) {
         // clear every block of its type off the board (e.g. scaffolding laid by earlier lines)
         const gone = [...this.ofType(step.type)];
@@ -1813,7 +2052,7 @@ export class World {
         // next (its cells picked at random)
         const whole = Math.floor(step.shells), part = step.shells - whole;
         for (let s = 0; s < Math.ceil(step.shells); s++) {
-          worldShell = this._shellOf(); // poll the empty shell now
+          worldShell = this._worldShell(); // poll the empty shell now
           if (!worldShell.length) break;
           runStep(step, Math.round(worldShell.length * (s < whole ? 1 : part)));
         }
@@ -1886,8 +2125,28 @@ export class World {
           ...(block.shadeSmooth && { smooth: true }),
           ...(block.segments?.length && { segments: block.segments.map((s) => [s.x, s.y, s.z]) }),
           ...(block.buffs?.length && { buffs: block.buffs.map(({ type, turns, charges }) => ({ type, turns, charges })) }),
+          ...this._saveNeeds(block),
         })),
     };
+  }
+
+  /** A creature block's needs (needs.js), as saved: HP, Sate, Quench, and its pang countdowns. */
+  _saveNeeds(block) {
+    if (block.type === BLOCK.WOOD) return block.quench != null ? { quench: block.quench } : {}; // (a tree's Quench: sim.js stepWood)
+    if (!isCreature(block.type) || block.hp == null) return {};
+    return {
+      hp: block.hp, sate: block.sate, quench: block.quench,
+      ...(block.hungerIn != null && { hungerIn: block.hungerIn }),
+      ...(block.thirstIn != null && { thirstIn: block.thirstIn }),
+      ...(block.flight != null && { flight: block.flight }),
+    };
+  }
+
+  /** Gives creature block `b` the needs in `r` (a save's or a grab's record: _saveNeeds), the ones it has. */
+  _loadNeeds(b, r) {
+    if (b.type === BLOCK.WOOD && Number.isFinite(Number(r?.quench)) && r.quench !== null) b.quench = Number(r.quench);
+    if (!isCreature(b.type)) return;
+    for (const k of ['hp', 'sate', 'quench', 'hungerIn', 'thirstIn', 'flight']) if (Number.isFinite(Number(r?.[k])) && r[k] !== null) b[k] = Number(r[k]);
   }
 
   /** One block's saved fields (creatures also save facing, behavior, and so on). */
@@ -1946,6 +2205,7 @@ export class World {
           if (BUFF_TYPES[bf?.type]) this.addBuff(this.get(x, y, z), bf.type, limit(bf.turns), limit(bf.charges));
         }
         if (b.assigned === true && isCreature(type)) this.get(x, y, z).isAssignedBehavior = true;
+        this._loadNeeds(this.get(x, y, z), b);
         if (isChainCreature(type)) {
           // keep the saved order (head .. tail), behavior and facing
           const s = this.get(x, y, z);

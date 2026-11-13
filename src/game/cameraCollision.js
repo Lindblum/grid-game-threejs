@@ -11,7 +11,7 @@
 // camera (placed, falling, sliding) eases it out over EASE_OUT_S; only a camera caught inside
 // a block snaps out. Water doesn't count (PASSABLE): the camera moves through it as through air.
 import * as THREE from 'three';
-import { GRID, cellKey, isValidCell } from './lattice.js';
+import { GRID, cellKey, isValidCell, latticeBox } from './lattice.js';
 import { BLOCK } from './blocks.js';
 
 /** Blocks the camera passes through as if they were empty: it can move in Water as in air. */
@@ -38,7 +38,7 @@ function planes() {
   let p = planesByGrid.get(GRID.id);
   if (!p) {
     // every face plane is halfway to the neighbour across it
-    p = GRID.faces.map(({ normal: n, offset: o }) => [n.x, n.y, n.z, (Math.hypot(...o) / 2) * GRID.scale]);
+    p = GRID.cmFaces.map(({ normal: n, distance }) => [n.x, n.y, n.z, distance]);
     planesByGrid.set(GRID.id, p);
   }
   return p;
@@ -71,12 +71,11 @@ export class CameraCollider {
   _gather(a, b, now, skip) {
     this.centres.length = 0;
     // the box around the segment, in lattice units
-    const s = GRID.scale;
-    const lo = a.clone().min(b).subScalar(REACH_CM).divideScalar(s), hi = a.clone().max(b).addScalar(REACH_CM).divideScalar(s);
+    const { lo, hi } = latticeBox(a.clone().min(b).subScalar(REACH_CM), a.clone().max(b).addScalar(REACH_CM));
     const blocks = this.world.blocks;
-    for (let x = Math.ceil(lo.x); x <= hi.x; x++) {
-      for (let y = Math.ceil(lo.y); y <= hi.y; y++) {
-        for (let z = Math.ceil(lo.z); z <= hi.z; z++) {
+    for (let x = lo[0]; x <= hi[0]; x++) {
+      for (let y = lo[1]; y <= hi[1]; y++) {
+        for (let z = lo[2]; z <= hi[2]; z++) {
           if (!isValidCell(x, y, z)) continue;
           const blk = blocks.get(cellKey(x, y, z));
           if (!blk || blk.vanishing || PASSABLE.has(blk.type) || skip?.has(blk)) continue;
@@ -94,11 +93,12 @@ export class CameraCollider {
    * that its near plane cuts into them.
    */
   blocksNear(p, now, reach) {
-    const s = GRID.scale, r = reach + 1.5 * s; // (a block's corners stick out ~1 cell from its centre)
+    const r = reach + 1.5 * GRID.scale; // (a block's corners stick out ~1 cell from its centre)
+    const { lo, hi } = latticeBox(p.clone().subScalar(r), p.clone().addScalar(r));
     const found = [];
-    for (let x = Math.ceil((p.x - r) / s); x <= (p.x + r) / s; x++) {
-      for (let y = Math.ceil((p.y - r) / s); y <= (p.y + r) / s; y++) {
-        for (let z = Math.ceil((p.z - r) / s); z <= (p.z + r) / s; z++) {
+    for (let x = lo[0]; x <= hi[0]; x++) {
+      for (let y = lo[1]; y <= hi[1]; y++) {
+        for (let z = lo[2]; z <= hi[2]; z++) {
           if (!isValidCell(x, y, z)) continue;
           const blk = this.world.blocks.get(cellKey(x, y, z));
           if (!blk || blk.vanishing) continue;

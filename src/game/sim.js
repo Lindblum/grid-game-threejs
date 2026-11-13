@@ -5,12 +5,16 @@
 // only take Water that has been still for 2 turns), 6) every 10th turn, a raindrop (Water) appears 1 m
 // from the origin, 7) every 3rd turn, each Nimbus may rain a Water block below it, 8) non-creature
 // blocks are bucketed into same-type groups.
-import { EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, isValidCell, randomCellOnSphere } from './lattice.js';
-import { BEHAVIOR, BLOCK, BLOCK_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly, MATE_TURNS, GESTATION_TURNS } from './blocks.js';
+import * as THREE from 'three';
+import { EDGE_SIDES, EDGE_STEPS, GRID, NEIGHBOR_DIRS, cellKey, cmDist2, edgeStepKey, fromCm, isValidCell, latticeBox, randomCellOnSphere, toCm } from './lattice.js';
+import { BEHAVIOR, BLOCK, BLOCK_TYPES, BUFF_TYPES, blockProps, isCreature, canWalkOn, canEat, priorityDietOf, isSingleCreature, isChainCreature, canFly, MATE_TURNS, GESTATION_TURNS } from './blocks.js';
+import { bite, feed, isHungry, isThirsty, MAX_QUENCH } from './needs.js';
 
 
 /** Chance per turn that a creature carrying something in its inventory excretes it (see maybeExcrete). */
 export const EXCRETE_CHANCE = 0.05;
+/** …the chance when it's hungry or thirsty (needs.js) and its stomach is full: it makes room for more. */
+export const HUNGRY_EXCRETE_CHANCE = 0.25;
 /** Chance that a wandering creature decides to move on a given turn (when it has somewhere to go). */
 export const WANDER_MOVE_CHANCE = 0.5;
 
@@ -30,26 +34,35 @@ function shuffle(a) {
  * `starts` (default: every block) is where groups can begin: pass World.ofType(type) when
  * only one type can be included, so the whole world isn't scanned.
  */
-export function connectedGroups(world, include = () => true, linked = () => true, starts = world.blocks.values()) {
-  const seen = new Set();
+export function connectedGroups(world, include = () => true, linked = null, starts = world.blocks.values()) {
+  // (it runs over the whole world every turn, so it's kept lean: a block is marked seen with
+  // this call's stamp instead of going into a Set, the neighbour offsets are flattened, and
+  // chain segments are only looked up for chain creatures)
+  const stamp = ++groupStamp;
+  const blocks = world.blocks, dirs = NEIGHBOR_DIRS, nd = dirs.length;
+  const dx = new Int32Array(nd), dy = new Int32Array(nd), dz = new Int32Array(nd);
+  for (let k = 0; k < nd; k++) [dx[k], dy[k], dz[k]] = dirs[k];
   const groups = [];
   for (const start of starts) {
-    if (seen.has(start) || !include(start)) continue;
-    seen.add(start);
+    if (start._seen === stamp || !include(start)) continue;
+    start._seen = stamp;
     const group = [start];
     for (let i = 0; i < group.length; i++) {
       const b = group[i];
-      for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
-        const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
-        if (n && !seen.has(n) && include(n) && linked(b, n)) {
-          seen.add(n);
+      const x = b.x, y = b.y, z = b.z;
+      for (let k = 0; k < nd; k++) {
+        const n = blocks.get(cellKey(x + dx[k], y + dy[k], z + dz[k]));
+        if (n !== undefined && n._seen !== stamp && include(n) && (linked === null || linked(b, n))) {
+          n._seen = stamp;
           group.push(n);
         }
       }
-      for (const n of world.squirmyOf?.get(b)?.segments ?? []) {
-        if (!seen.has(n) && include(n) && linked(b, n)) {
-          seen.add(n);
-          group.push(n);
+      if (b.chain != null) {
+        for (const n of world.squirmyOf?.get(b)?.segments ?? NO_SEGMENTS) {
+          if (n._seen !== stamp && include(n) && (linked === null || linked(b, n))) {
+            n._seen = stamp;
+            group.push(n);
+          }
         }
       }
     }
@@ -57,6 +70,9 @@ export function connectedGroups(world, include = () => true, linked = () => true
   }
   return groups;
 }
+/** connectedGroups' seen-mark: each call stamps the blocks it reaches with a new number. */
+let groupStamp = 0;
+const NO_SEGMENTS = [];
 
 /**
  * Buckets every non-creature block into clusters, groups of connected blocks of the same
@@ -78,12 +94,21 @@ export function updateClusters(world) {
   return clusters;
 }
 
-/** The lattice direction (one of NEIGHBOR_DIRS) pointing most nearly along (x, y, z); ties at random. */
+/** NEIGHBOR_DIRS as unit vectors in cm (lattice.js toCm), per grid: what "most nearly along" compares. */
+const cmDirs = new Map();
+const _d = new THREE.Vector3();
+function neighbourDirsCm() {
+  let dirs = cmDirs.get(GRID.id);
+  if (!dirs) cmDirs.set(GRID.id, (dirs = NEIGHBOR_DIRS.map((d) => toCm(...d, new THREE.Vector3()).normalize())));
+  return dirs;
+}
+
+/** The lattice direction (one of NEIGHBOR_DIRS) pointing most nearly along lattice vector (x, y, z), as drawn (cm); ties at random. */
 function closestDir(x, y, z) {
-  const len = Math.hypot(x, y, z);
+  const v = toCm(x, y, z, new THREE.Vector3()).normalize(), cm = neighbourDirsCm();
   let best = [], bestCos = -Infinity;
-  for (const d of NEIGHBOR_DIRS) {
-    const cos = (d[0] * x + d[1] * y + d[2] * z) / (Math.hypot(...d) * len);
+  for (const [i, d] of NEIGHBOR_DIRS.entries()) {
+    const cos = cm[i].dot(v);
     if (cos > bestCos + 1e-9) {
       bestCos = cos;
       best = [d];
@@ -106,16 +131,142 @@ function closestDir(x, y, z) {
 /** Clouds: falling treats them as empty space (they don't fall, don't join groups, get blown aside). */
 export const CLOUD_TYPES = new Set([BLOCK.FOG, BLOCK.NIMBUS]);
 
+/**
+ * A connected piece bigger than this (blocks) counts as held up: falling (stepGroups) and Fog
+ * settling (stepFog) only look at the cells that changed since last turn, and searching out
+ * from one stops here. So a piece that big never falls, even cut loose (the world, a Fog
+ * blanket); smaller ones do. Worlds (or Fog) of up to LOCAL_SEARCH_FROM blocks are searched
+ * whole every turn, exactly, as before.
+ */
+export const ANCHOR_CAP = 1000;
+export const LOCAL_SEARCH_FROM = 4 * ANCHOR_CAP;
+
+/**
+ * The connected group (blocks passing `include`, through faces, and a chain's segments) holding
+ * `start`, or null once it passes ANCHOR_CAP blocks or reaches a block of `big` (found in an
+ * earlier search this turn that passed it): held up. A group found is added to `seen`.
+ */
+function groupUpTo(world, start, include, seen, big) {
+  const group = [start];
+  const local = new Set(group);
+  const held = () => {
+    for (const g of group) big.add(g);
+    return null;
+  };
+  for (let i = 0; i < group.length; i++) {
+    const b = group[i];
+    const next = [];
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) next.push(world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz)));
+    if (b.chain != null) next.push(...(world.squirmyOf?.get(b)?.segments ?? []));
+    for (const n of next) {
+      if (!n || local.has(n) || !include(n)) continue;
+      if (big.has(n)) return held();
+      local.add(n);
+      group.push(n);
+      if (group.length > ANCHOR_CAP) return held();
+    }
+  }
+  for (const g of group) seen.add(g);
+  return group;
+}
+
+let _stepCm = null, _stepGrid = null;
+/** The longest step between neighbouring cells (cm), for the active grid mode. */
+function stepCm() {
+  if (_stepGrid !== GRID) {
+    _stepGrid = GRID;
+    _stepCm = Math.sqrt(Math.max(...NEIGHBOR_DIRS.map(([x, y, z]) => cmDist2(x, y, z))));
+  }
+  return _stepCm;
+}
+
+/**
+ * Whether the blocks `around` (the neighbours of cell (x, y, z), passing `include`) still join up
+ * close by without that cell: through blocks passing `include` within two steps of it. True
+ * almost always (a block taken out of solid ground); false means it may have cut something loose.
+ */
+function stillJoined(world, x, y, z, around, include) {
+  if (around.length < 2) return true;
+  const r = 2 * stepCm() + 1e-6, r2 = r * r;
+  const c = toCm(x, y, z, new THREE.Vector3()), p = new THREE.Vector3();
+  const reached = new Set([around[0]]);
+  const queue = [around[0]];
+  for (let i = 0; i < queue.length; i++) {
+    const b = queue[i];
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const n = world.blocks.get(cellKey(b.x + dx, b.y + dy, b.z + dz));
+      if (!n || reached.has(n) || !include(n)) continue;
+      if (toCm(n.x, n.y, n.z, p).distanceToSquared(c) > r2) continue;
+      reached.add(n);
+      queue.push(n);
+    }
+  }
+  return around.every((n) => reached.has(n));
+}
+
+/**
+ * The blocks to search out from this turn (stepGroups, stepFog), from the cells changed since
+ * World.idleMarks[`rule`] (the change log): a block now in a changed cell that touches nothing
+ * held (`resting(n)`: a neighbour passing `include` that isn't loose) may be loose; the
+ * neighbours of a cell emptied (or holding a block that doesn't pass `include`) may have been
+ * cut apart, unless they still join up close by (stillJoined). `everyNear`: Fog: every
+ * included block at or next to a changed cell (what blocks it may have changed too).
+ */
+function changedSeeds(world, rule, include, resting, everyNear = false) {
+  const seeds = new Set();
+  const log = world.changeLog;
+  for (let i = world.idleMarks[rule] ?? 0; i < log.length; i += 3) {
+    const x = log[i], y = log[i + 1], z = log[i + 2];
+    const here = world.blocks.get(cellKey(x, y, z));
+    const around = [];
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const n = world.blocks.get(cellKey(x + dx, y + dy, z + dz));
+      if (n && include(n)) around.push(n);
+    }
+    if (everyNear) {
+      if (here && include(here)) seeds.add(here);
+      for (const n of around) seeds.add(n);
+    } else if (here && include(here)) {
+      if (!around.some(resting)) seeds.add(here); // touching nothing held: maybe loose
+    } else if (!stillJoined(world, x, y, z, around, include)) {
+      for (const n of around) seeds.add(n); // maybe cut apart: each side gets searched
+    }
+  }
+  return seeds;
+}
+
 export function stepGroups(world) {
   const moved = new Set();
-  const groups = connectedGroups(world, (block) => !CLOUD_TYPES.has(block.type) && !canFly(block)); // clouds and flyers don't fall
-  let anchor = null;
-  for (const g of groups) {
-    const better = !anchor || g.length > anchor.length ||
-      (g.length === anchor.length && world.anchorBlock && g.includes(world.anchorBlock));
-    if (better) anchor = g;
+  const include = (block) => !CLOUD_TYPES.has(block.type) && !canFly(block); // clouds and flyers don't fall
+  const solid = world.blocks.size - world.ofType(BLOCK.FOG).size - world.ofType(BLOCK.NIMBUS).size;
+  const end = world.changeLog.length;
+  let groups, anchor = null;
+  if (world.idleMarks.groups == null || solid <= LOCAL_SEARCH_FROM) {
+    // the whole world, searched exactly: the largest group stays put
+    groups = connectedGroups(world, include);
+    for (const g of groups) {
+      const better = !anchor || g.length > anchor.length ||
+        (g.length === anchor.length && world.anchorBlock && g.includes(world.anchorBlock));
+      if (better) anchor = g;
+    }
+    if (anchor && !anchor.includes(world.anchorBlock)) world.anchorBlock = anchor[0]; // remember it for ties
+  } else {
+    // only around what changed (ANCHOR_CAP): pieces under the cap fall, bigger ones are held up
+    const loose = world._looseBlocks ?? new Set();
+    const resting = (n) => !loose.has(n);
+    const seeds = changedSeeds(world, 'groups', include, resting);
+    for (const b of loose) seeds.add(b); // (last turn's falling pieces: still falling?)
+    for (const c of world.soloCreatures) if (blockProps(c.type).fly && !canFly(c)) seeds.add(c); // (worn-out flyers)
+    const seen = new Set(), big = new Set();
+    groups = [];
+    for (const s of seeds) {
+      if (seen.has(s) || big.has(s) || world.blocks.get(cellKey(s.x, s.y, s.z)) !== s || !include(s)) continue;
+      const g = groupUpTo(world, s, include, seen, big);
+      if (g) groups.push(g);
+    }
   }
-  if (anchor && !anchor.includes(world.anchorBlock)) world.anchorBlock = anchor[0]; // remember it for ties
+  world.idleMarks.groups = end; // (this turn's falls are read next turn: still falling?)
+  world._looseBlocks = new Set(groups.filter((g) => g !== anchor).flat());
   for (const group of shuffle(groups)) {
     if (group === anchor) continue; // the largest group stays put
     let cx = 0, cy = 0, cz = 0;
@@ -197,7 +348,7 @@ function isSettledWater(block, turn) {
 
 /** The block closest to the origin among `blocks` (ties at random). */
 function closestToOrigin(blocks) {
-  const d2 = (block) => block.x * block.x + block.y * block.y + block.z * block.z;
+  const d2 = (block) => cmDist2(block.x, block.y, block.z);
   const minD = Math.min(...blocks.map(d2));
   const nearest = blocks.filter((block) => d2(block) === minD);
   return nearest[Math.floor(Math.random() * nearest.length)];
@@ -457,11 +608,13 @@ function hasEmptyNeighbor(world, block) {
 
 /**
  * Now and then (EXCRETE_CHANCE a turn) a creature carrying something excretes it, out behind
- * its tail (World.excrete: eaten creatures and Berries come out as Plop). Not one the player
+ * its tail (World.excrete: eaten creatures come out as Glop, plants as Slop). Not one the player
  * controls: it excretes only when told to (B).
  */
 function maybeExcrete(world, creature) {
-  if (creature.isControlled || Math.random() >= EXCRETE_CHANCE) return;
+  // (hungry or thirsty with a full stomach: it makes room sooner)
+  const chance = (isHungry(creature) || isThirsty(creature)) && !world.freeSlotFor(creature) ? HUNGRY_EXCRETE_CHANCE : EXCRETE_CHANCE;
+  if (creature.isControlled || Math.random() >= chance) return;
   world.excrete(world.clusterOf(creature), 'excrete'); // (only when there's an item in its tail)
 }
 
@@ -490,9 +643,11 @@ function moveChain(world, segments, to) {
 
 /**
  * Foraging, for a creature left to itself (`creature.isAssignedBehavior` false: the player hasn't
- * given it something to do) with its head's inventory slot free. Its priority foods are
- * its priorityDiet (its type's, plus its buffs', e.g. Rockbiter's Crystal: blocks.js), counting
- * only those it can eat right now (and no Berries while it's Fertile already: only when told to):
+ * given it something to do) with its head's inventory slot free. It goes for its priorityDiet
+ * (its type's, plus its buffs', e.g. Rockbiter's Crystal: blocks.js), counting only those it can
+ * eat right now (and no Berries while it's Fertile already: only when told to); hungry (needs.js:
+ * Sate below 75 %), for anything in its diet but Water, and thirsty, for Water too. Another
+ * creature it goes for, it bites (creatureEat):
  *  - a priority food right next to it: it eats it (creatureEat)
  *  - else one it can see (within its sightRadius): it takes one step along the shortest path
  *    to a cell next to the nearest one it can reach. `stepToward(goal)` finds that step for
@@ -503,15 +658,19 @@ function forage(world, creature, stepToward, moveTo) {
   if (creature.isAssignedBehavior || !world.freeSlotFor(creature)) return false;
   const wanted = new Set(priorityDietOf(creature).filter((type) => canEat(creature, type)));
   if (creature.buffs?.some((x) => x.type === 'fertile')) wanted.delete(BLOCK.BERRY); // (Fertile already: Berries only when told to)
+  const diet = [...(blockProps(creature.type).diet ?? []), ...(creature.buffs ?? []).flatMap((x) => BUFF_TYPES[x.type]?.diet ?? [])];
+  if (isHungry(creature)) for (const type of diet) if (type !== BLOCK.WATER && type !== creature.type) wanted.add(type); // anything edible
+  if (isThirsty(creature) && canEat(creature, BLOCK.WATER)) wanted.add(BLOCK.WATER);
+  const own = new Set(world.clusterOf(creature)); // (never its own body)
   if (!wanted.size) return false;
   for (const [dx, dy, dz] of shuffle([...NEIGHBOR_DIRS])) {
     const n = world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz));
-    if (n && wanted.has(n.type) && !n.vanishing && creatureEat(world, creature, n)) return 'ate';
+    if (n && wanted.has(n.type) && !n.vanishing && !own.has(n) && creatureEat(world, creature, n)) return 'ate';
   }
   const d2 = (block) => (block.x - creature.x) ** 2 + (block.y - creature.y) ** 2 + (block.z - creature.z) ** 2;
   const foods = offsetsWithin(creature.sightRadius ?? blockProps(creature.type).sightRadius ?? 0)
     .map(([dx, dy, dz]) => world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz)))
-    .filter((block) => block && wanted.has(block.type) && !block.vanishing)
+    .filter((block) => block && wanted.has(block.type) && !block.vanishing && !own.has(block))
     .sort((a, b) => d2(a) - d2(b));
   for (const food of foods) {
     // the cells next to it this creature could stand in, nearest first
@@ -586,10 +745,14 @@ const eatSound = (food) => (food.type === BLOCK.WATER ? 'sip' : 'eat');
 export function creatureEat(world, creature, food) {
   if (!food || !canEat(creature, food.type)) return false; // its diet, or a buff's (e.g. Rockbiter: Stone)
   if (isBehind(creature, food)) return false; // it can't reach round to the block right behind it
+  if (food.vanishing || !world.freeSlotFor(creature)) return false; // (nowhere to put it)
+  // a living creature's block is bitten first (needs.js): only the bite that takes it to 0 HP eats it
+  if (isCreature(food.type) && !bite(world, creature, food)) return true;
   const foodType = food.type;
   const wasBerry = foodType === BLOCK.BERRY;
   const slot = world.consume(creature, food, eatSound(food));
   if (!slot) return false;
+  feed(world.clusterOf(creature), foodType); // Sate back (Water: Quench)
   // some foods give a buff (blocks.js eatBuffs, e.g. a Crawly eating a Berry: Rockbiter); the
   // food is used up into the buff, so it leaves the inventory slot it went into
   world.useBuffCharges(creature, foodType); // a buff's priority food uses up one of its charges
@@ -603,7 +766,7 @@ export function creatureEat(world, creature, food) {
     world.addBuff(creature, 'fertile', null);
     world.emit('creatureFertile', creature);
   }
-  if (creature.type === BLOCK.BUZZY && wasBerry) world.growSegment(creature); // a Buzzy grows a body segment (wings and legs too)
+  if (blockProps(creature.type).growsOnBerry && wasBerry) world.growSegment(creature); // a Glowy grows a body segment (wings and legs too); a Buzzy doesn't
   if (isChainCreature(creature.type) && wasBerry) {
     const body = world.clusterOf(creature);
     const cell = world._wormCell(body);
@@ -656,15 +819,16 @@ export function blockInFront(world, creature) {
 /**
  * Offsets to the active grid's cells within `radius` blocks (sphere of radius * 2 cm), cached
  * per grid and radius. Each grid's cells are closed under subtraction, so an offset is a cell
- * offset exactly when it is itself a cell (GRID.isValid); lattice units are GRID.scale cm.
+ * offset exactly when it is itself a cell (GRID.isValid); measured in cm (lattice.js cmDist2).
  */
 const sightOffsets = new Map();
 function offsetsWithin(radius) {
   const key = `${GRID.id}:${radius}`;
   if (!sightOffsets.has(key)) {
-    const r = (radius * 2) / GRID.scale, r2 = r * r, n = Math.floor(r + 1e-9), list = [];
-    for (let x = -n; x <= n; x++) for (let y = -n; y <= n; y++) for (let z = -n; z <= n; z++) {
-      if ((x || y || z) && GRID.isValid(x, y, z) && x * x + y * y + z * z <= r2 + 1e-9) list.push([x, y, z]);
+    const r = radius * 2, r2 = r * r + 1e-9, list = [];
+    const { lo, hi } = latticeBox(new THREE.Vector3(-r, -r, -r).subScalar(1e-9), new THREE.Vector3(r, r, r).addScalar(1e-9));
+    for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
+      if ((x || y || z) && GRID.isValid(x, y, z) && cmDist2(x, y, z) <= r2) list.push([x, y, z]);
     }
     sightOffsets.set(key, list);
   }
@@ -708,14 +872,18 @@ export function stepNimbusDrift(world, skip = new Set()) {
       waited = true;
       continue;
     }
-    let cx = 0, cz = 0;
+    let cx = 0, cy = 0, cz = 0;
     for (const b of cluster) {
       cx += b.x;
+      cy += b.y;
       cz += b.z;
     }
     if (!cx && !cz) continue; // on the vertical axis: no west
-    // west = up × (toward the origin) = (0, 1, 0) × (-cx, -cy, -cz) = (-cz, 0, cx)
-    const [dx, dy, dz] = closestDir(-cz, 0, cx);
+    // west = up × (toward the origin) = (0, 1, 0) × (-cx, -cy, -cz) = (-cz, 0, cx), in cm (and back to lattice units)
+    const c = toCm(cx, cy, cz, new THREE.Vector3());
+    if (Math.abs(c.x) < 1e-9 && Math.abs(c.z) < 1e-9) continue;
+    const w = fromCm(-c.z, 0, c.x, c);
+    const [dx, dy, dz] = closestDir(w.x, w.y, w.z);
     const members = new Set(cluster);
     const blocked = cluster.some((block) => {
       const n = world.blocks.get(cellKey(block.x + dx, block.y + dy, block.z + dz));
@@ -759,7 +927,7 @@ export function stepNimbus(world, turn) {
 }
 
 /** Solid block types (Stone, Dirt, Moss, Wood, Berry): Wood only grows into cells away from these. */
-export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.PLOP, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY, BLOCK.CRYSTAL]);
+export const SOLID_TYPES = new Set([BLOCK.STONE, BLOCK.DIRT, BLOCK.PLOP, BLOCK.GLOP, BLOCK.SLOP, BLOCK.MOSS, BLOCK.WOOD, BLOCK.BERRY, BLOCK.CRYSTAL]);
 /** A tree (connected Wood group) needs at least this many Wood blocks to grow Berries. */
 export const BERRY_MIN_TREE_SIZE = 5;
 /** Chance that a big-enough tree with no Berries yet grows a Berry instead of Wood when watered. */
@@ -789,8 +957,52 @@ export function berryChance(world, tree) {
   return BERRY_CHANCE * Math.max(0, room);
 }
 
+/** Chance that a watered tree (of at least LEAF_MIN_TREE_SIZE Wood) grows Leaves, when it doesn't grow a Berry. */
+export const LEAF_CHANCE = 0.4;
+export const LEAF_MIN_TREE_SIZE = 2;
+/**
+ * A tree's thirst: every Wood block has its own Quench (0–MAX_QUENCH, full to start); the tree
+ * has a thirst pang now and then (THIRST_PANG_CHANCE a turn: about every 12 turns), and each
+ * of its Wood blocks loses TREE_THIRST_LOSS Quench. Drinking Water gives each TREE_DRINK_QUENCH.
+ * A pang when the tree is out of Quench (all its Wood at 0) withers one of its Leaves or
+ * Berries (at random): it turns to Slop.
+ */
+export const THIRST_PANG_CHANCE = 1 / 12;
+export const TREE_THIRST_LOSS = 5; // (half what it was: a full tree runs dry in about 240 turns)
+export const TREE_DRINK_QUENCH = 35;
+/** A tree's (its Wood blocks') Quench, averaged. */
+export const treeQuench = (tree) => tree.reduce((n, w) => n + (w.quench ?? MAX_QUENCH), 0) / Math.max(1, tree.length);
+/** A tree's Leaves and Berries: those touching its Wood. */
+function foliageOf(world, tree) {
+  const out = new Set();
+  for (const w of tree) {
+    for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
+      const n = world.blocks.get(cellKey(w.x + dx, w.y + dy, w.z + dz));
+      if (n && !n.vanishing && (n.type === BLOCK.LEAVES || n.type === BLOCK.BERRY)) out.add(n);
+    }
+  }
+  return [...out];
+}
+
+/** A tree's thirst pang (see THIRST_PANG_CHANCE): its Wood loses Quench, or, out of it, a Leaves or Berry block withers to Slop. */
+function treePang(world, tree) {
+  const at = tree[Math.floor(Math.random() * tree.length)];
+  world.emit('treePang', { block: at });
+  if (tree.every((w) => (w.quench ?? MAX_QUENCH) <= 0)) {
+    const foliage = foliageOf(world, tree);
+    if (!foliage.length) return;
+    const f = foliage[Math.floor(Math.random() * foliage.length)];
+    const { x, y, z, type } = f;
+    world.remove(x, y, z);
+    if (world.add(x, y, z, BLOCK.SLOP)) world.emit('treeWither', { block: world.get(x, y, z), was: type });
+    return;
+  }
+  for (const w of tree) w.quench = Math.max(0, (w.quench ?? MAX_QUENCH) - TREE_THIRST_LOSS);
+}
+
 /**
  * Tree growth, every turn. Wood blocks are bucketed into connected Wood groups (trees).
+ * Each may first have a thirst pang (treePang). Then
  * Each tree (in random order, seeing earlier trees' growth) that touches settled Water
  * (still for WATER_SETTLE_TURNS turns) drinks one such Water block — the one closest to the
  * origin, ties at random — and grows one block into
@@ -803,6 +1015,7 @@ export function berryChance(world, tree) {
 export function stepWood(world, turn) {
   let grown = 0;
   for (const tree of shuffle(connectedGroups(world, (block) => block.type === BLOCK.WOOD, undefined, world.ofType(BLOCK.WOOD)))) {
+    if (Math.random() < THIRST_PANG_CHANCE) treePang(world, tree);
     // settled Water touching the group; drink the one closest to the origin
     const waters = new Set();
     for (const w of tree) {
@@ -816,8 +1029,8 @@ export function stepWood(world, turn) {
     const drinkKey = cellKey(drink.x, drink.y, drink.z);
 
     // growth cells: free (empty, or the Water about to be drunk), next to the group,
-    // touching exactly one Solid block, which is Wood
-    const cells = new Map();
+    // touching exactly one Solid block, which is Wood (Leaves: any free cell next to its Wood)
+    const cells = new Map(), leafCells = new Map();
     for (const w of tree) {
       for (const [dx, dy, dz] of NEIGHBOR_DIRS) {
         const x = w.x + dx, y = w.y + dy, z = w.z + dz;
@@ -832,22 +1045,35 @@ export function stepWood(world, turn) {
           }
         }
         if (solids === 1 && woods === 1) cells.set(k, { x, y, z });
+        else if (!leafCells.has(k)) leafCells.set(k, { x, y, z });
       }
     }
-    if (!cells.size) continue;
-    const c = [...cells.values()][Math.floor(Math.random() * cells.size)];
-    // Berry or Wood: less likely the more Berries the tree already carries for its size
-    const fruit = Math.random() < berryChance(world, tree);
+    for (const [k, c] of cells) leafCells.set(k, c);
+    const thirsty = treeQuench(tree) < MAX_QUENCH * 0.75;
+    // what grows: a Berry (less likely the more Berries the tree already carries for its
+    // size), else Leaves (LEAF_CHANCE: in any free cell next to its Wood), else Wood (or
+    // Leaves if there's no room for Wood); with nowhere to grow, a thirsty tree still drinks
+    const leafy = leafCells.size && tree.length >= LEAF_MIN_TREE_SIZE;
+    const kind = cells.size && Math.random() < berryChance(world, tree) ? BLOCK.BERRY
+      : leafy && Math.random() < LEAF_CHANCE ? BLOCK.LEAVES
+        : cells.size ? BLOCK.WOOD : leafy ? BLOCK.LEAVES : null;
+    if (!kind && !thirsty) continue;
+    const pool = kind === BLOCK.LEAVES ? leafCells : cells;
+    const c = kind ? [...pool.values()][Math.floor(Math.random() * pool.size)] : null;
+    const fruit = kind === BLOCK.BERRY;
     // the Water shrinks into the Wood block drinking it and goes into the tree's inventory
     // (growing right where the Water was: it is taken at once, so the cell is free)
     const feeder = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === drink.x && w.y + dy === drink.y && w.z + dz === drink.z));
-    const instant = cellKey(c.x, c.y, c.z) === drinkKey;
+    const instant = !!c && cellKey(c.x, c.y, c.z) === drinkKey;
     if (!world.consume(feeder ?? tree[0], drink, 'waterSip', { instant })) continue; // tree's inventory is full
+    for (const w of tree) w.quench = Math.min(MAX_QUENCH, (w.quench ?? MAX_QUENCH) + TREE_DRINK_QUENCH); // (it drank)
+    if (!c) continue;
     // the new block is excreted by the Wood it grows from, so it grows in out of the branch
     const parent = tree.find((w) => NEIGHBOR_DIRS.some(([dx, dy, dz]) => w.x + dx === c.x && w.y + dy === c.y && w.z + dz === c.z));
-    const made = growFrom(world, parent ?? tree[0], c, fruit ? BLOCK.BERRY : BLOCK.WOOD);
+    const made = growFrom(world, parent ?? tree[0], c, kind);
     if (made) {
       grown++;
+      if (kind === BLOCK.WOOD) made.quench = treeQuench(tree); // (new Wood: as thirsty as its tree)
       if (fruit) world.emit('berryGrow', made);
     }
   }
@@ -982,11 +1208,32 @@ function markIdle(world, rule, stuck) {
  */
 export function stepFog(world, skip = new Set()) {
   const moved = new Set();
-  if (stillIdle(world, 'fog', BLOCK.FOG)) return moved; // stuck, and nothing near any Fog changed
+  const include = (block) => block.type === BLOCK.FOG && !block.vanishing;
+  const end = world.changeLog.length;
+  let clusters;
+  if (world.idleMarks.fogLocal == null || world.ofType(BLOCK.FOG).size <= LOCAL_SEARCH_FROM) {
+    if (stillIdle(world, 'fog', BLOCK.FOG)) clusters = []; // stuck, and nothing near any Fog changed
+    else clusters = connectedGroups(world, include, undefined, world.ofType(BLOCK.FOG));
+  } else {
+    // only the Fog around what changed (and what waited last turn); a blanket of more than
+    // ANCHOR_CAP blocks is held up where it is
+    const seeds = changedSeeds(world, 'fogLocal', include, null, true);
+    for (const b of world._fogWaiting ?? []) seeds.add(b);
+    const seen = new Set(), big = new Set();
+    clusters = [];
+    for (const s of seeds) {
+      if (seen.has(s) || big.has(s) || world.blocks.get(cellKey(s.x, s.y, s.z)) !== s || !include(s)) continue;
+      const c = groupUpTo(world, s, include, seen, big);
+      if (c) clusters.push(c);
+    }
+  }
+  world.idleMarks.fogLocal = end;
+  world._fogWaiting = [];
   let waited = false;
-  for (const cluster of shuffle(connectedGroups(world, (block) => block.type === BLOCK.FOG && !block.vanishing, undefined, world.ofType(BLOCK.FOG)))) {
+  for (const cluster of shuffle(clusters)) {
     if (cluster.some((block) => skip.has(block))) {
       waited = true;
+      world._fogWaiting.push(cluster[0]); // (looked at again next turn)
       continue;
     }
     let cx = 0, cy = 0, cz = 0;
@@ -1022,7 +1269,7 @@ export function stepFog(world, skip = new Set()) {
  * (vanishing) sit still. Returns the set of blocks that moved.
  */
 function stepFlow(world, type, skip) {
-  const dist2 = (p) => p.x * p.x + p.y * p.y + p.z * p.z;
+  const dist2 = (p) => cmDist2(p.x, p.y, p.z);
   const waters = shuffle([...world.ofType(type)].filter((block) => !skip.has(block) && !block.vanishing));
   waters.sort((a, b) => dist2(a) - dist2(b)); // stable, so equal distances keep the shuffled order
   const moved = new Set();
@@ -1059,14 +1306,30 @@ export function isWalkable(world, x, y, z, self = null) {
 }
 
 /**
- * A Buzzy in mid-air: nothing next to it but empty cells and clouds (Fog, Nimbus). Its body
- * segments don't count (they're part of it).
+ * A flying creature (Buzzy, Glowy) in mid-air: nothing next to it but empty cells and clouds
+ * (Fog, Nimbus). Its body segments don't count (they're part of it).
  */
 function isAirborneBuzzy(world, creature) {
-  if (creature.type !== BLOCK.BUZZY) return false;
+  if (!blockProps(creature.type).fly) return false;
+  return isAirborne(world, creature);
+}
+
+/**
+ * Nothing next to creature `creature` that holds it up: only empty cells, clouds, its own body
+ * (segments: it can't stand on itself) and flyers that are up in the air themselves (two
+ * flyers touching in mid-air don't land on each other). Landing (stepFlight) rests a flyer.
+ */
+function isAirborne(world, creature, depth = 0) {
+  const head = creature.segmentOf ?? creature;
   return NEIGHBOR_DIRS.every(([dx, dy, dz]) => {
     const n = world.blocks.get(cellKey(creature.x + dx, creature.y + dy, creature.z + dz));
-    return !n || CLOUD_TYPES.has(n.type) || n.segmentOf === creature;
+    if (!n || CLOUD_TYPES.has(n.type)) return true;
+    const nHead = n.segmentOf ?? n;
+    if (nHead === head) return true; // (its own body)
+    // another flyer: holds it up only if some block of its body rests on real ground (looked at
+    // one flyer deep; a flyer seen from there holds nothing up, so two can't prop each other)
+    if (blockProps(nHead.type).fly) return depth > 0 || ![nHead, ...(nHead.segments ?? [])].some((b) => !isAirborne(world, b, depth + 1));
+    return false;
   });
 }
 
@@ -1089,7 +1352,7 @@ function wander(world, creature) {
 
 /**
  * The offsets a creature (`self`: one-block, or a chain's head) at (x, y, z) may step along: its neighbours, plus
- * (Cube mode) the EDGE_STEPS across one of its cube's edges where at least one of the two cells
+ * (Cube, Hexagonal Prism) the EDGE_STEPS across one of its cell's edges where at least one of the two cells
  * beside that edge is open, so it goes up a step or round a corner but never squeezes between
  * two blocks (round an edge it slides along an arc: World.edgeVia).
  */
@@ -1101,7 +1364,7 @@ function stepOffsets(world, x, y, z, self) {
   };
   return [
     ...NEIGHBOR_DIRS,
-    ...EDGE_STEPS.filter(([dx, dy, dz]) => (dx && open(x + dx, y, z)) || (dy && open(x, y + dy, z)) || (dz && open(x, y, z + dz))),
+    ...EDGE_STEPS.filter((d) => EDGE_SIDES.get(edgeStepKey(...d)).some(([dx, dy, dz]) => open(x + dx, y + dy, z + dz))),
   ];
 }
 
@@ -1143,7 +1406,7 @@ export const WALK_GIVE_UP_TURNS = 5;
  * First step of a shortest path (fewest steps) from creature `creature` to cell `t`, found by
  * breadth-first search; null if there is none. `ok(x, y, z, steps)` says whether a cell can
  * be stepped into `steps` moves from now (default: the creature's isWalkable). Creatures also
- * take Cube mode's edge steps (stepOffsets; a chain's body follows its head round the edge).
+ * take the edge steps (Cube, Hexagonal Prism) (stepOffsets; a chain's body follows its head round the edge).
  */
 function firstStepToward(world, creature, t, ok = (x, y, z) => isWalkable(world, x, y, z, creature)) {
   if (!ok(t.x, t.y, t.z, Infinity)) return null;
@@ -1410,7 +1673,7 @@ function endWalk(creature) {
 }
 
 /**
- * Creature controls (the player steering `creature`: `creature.steer`, a direction in lattice
+ * Creature controls (the player steering `creature`: `creature.steer`, a unit direction in the build's own (cm)
  * space set by the engine): of the neighbouring cells `ok(x, y, z)` allows, the one most nearly
  * in the steer direction (within about 70° of it; `anyWay`: whichever way it's steered); null
  * if none, or not steered. The steer is used up (unless `keep`: a preview, see
@@ -1423,7 +1686,8 @@ export function steeredCell(creature, ok, dirs = NEIGHBOR_DIRS, { keep = false, 
   if (!s) return null;
   let best = null, bestDot = anyWay ? -Infinity : 0.35; // anyWay: steered at all is enough
   for (const [dx, dy, dz] of dirs) {
-    const dot = (dx * s[0] + dy * s[1] + dz * s[2]) / Math.hypot(dx, dy, dz);
+    const d = toCm(dx, dy, dz, _d); // (`steer` is as drawn: cm)
+    const dot = (d.x * s[0] + d.y * s[1] + d.z * s[2]) / d.length();
     if (dot <= bestDot) continue;
     const x = creature.x + dx, y = creature.y + dy, z = creature.z + dz;
     if (!ok(x, y, z)) continue;
@@ -1436,7 +1700,7 @@ export function steeredCell(creature, ok, dirs = NEIGHBOR_DIRS, { keep = false, 
 /**
  * Where a controlled creature (one-block, or a chain's head) may step when steered:
  * { ok(x, y, z), dirs, anyWay } for steeredCell, the same rules its turn uses (a chain's head:
- * squirmyCellOk next step; a one-block creature: isWalkable; both with Cube mode's edge steps).
+ * squirmyCellOk next step; a one-block creature: isWalkable; both with the edge steps of Cube and Hexagonal Prism).
  * With nowhere to walk, it may drop into the empty cell straight below its head (dropCell),
  * whichever way it's steered (anyWay), and gravity takes it from there.
  */
@@ -1464,11 +1728,11 @@ function dropCell(world, creature) {
 /** The valid cells beside `creature` in the most downward direction (toward the origin; several when tied); none at the origin. */
 function downwardCells(creature) {
   const { x, y, z } = creature;
-  const len = Math.hypot(x, y, z);
-  if (!len) return [];
+  if (!x && !y && !z) return [];
+  const v = toCm(x, y, z, new THREE.Vector3()).normalize(), cm = neighbourDirsCm(); // (as drawn: cm)
   let bestCos = -Infinity, cells = [];
-  for (const d of NEIGHBOR_DIRS) {
-    const cos = -(d[0] * x + d[1] * y + d[2] * z) / (Math.hypot(...d) * len);
+  for (const [i, d] of NEIGHBOR_DIRS.entries()) {
+    const cos = -cm[i].dot(v);
     if (cos > bestCos + 1e-9) {
       bestCos = cos;
       cells = [];
@@ -1539,9 +1803,8 @@ function isWalledIn(world, creature) {
  * Trapped bookkeeping, at the start of a creature's turn. A creature walled in by non-creature, non-Fog
  * blocks switches to Trapped (dropping any walk target; event 'creatureTrapped'). A Trapped
  * creature that has an empty (or Fog) neighbouring cell goes back to Wander ('creatureFreed'); otherwise
- * it counts the turn, and on the TRAPPED_DEATH_TURNS-th trapped turn it dies: it shrinks
- * away to nothing (World.vanish) and is then removed ('creatureDied', with its position, as
- * it starts). Every trapped turn it lives
+ * it counts the turn, and on the TRAPPED_DEATH_TURNS-th trapped turn it dies: its body
+ * becomes Glop where it lies (World.die; 'creatureDied', with its position, as it starts). Every trapped turn it lives
  * through, it tries to eat its way out (trappedAct). Returns true when the creature is free to
  * act this turn.
  */
@@ -1556,9 +1819,9 @@ function checkTrapped(world, creature) {
     }
     creature.trappedTurns = (creature.trappedTurns || 0) + 1;
     if (creature.trappedTurns >= TRAPPED_DEATH_TURNS) {
-      // it dies: shrinks to nothing where it is, then is removed (World.vanish)
+      // it dies: its body becomes Glop where it lies (World.die)
       const at = { x: creature.x, y: creature.y, z: creature.z };
-      world.vanish(creature, creature, { distanceCm: 0 });
+      world.die(creature);
       world.emit('creatureDied', { creature, ...at });
       return false;
     }
@@ -1594,6 +1857,23 @@ function trappedAct(world, creature) {
  * creatures never end up in the same cell. Ones in `skip` (already moved this turn) don't move.
  * Returns the number of creatures that moved.
  */
+/**
+ * Flight endurance (blocks.js flightTurns): every flyer in mid-air (isAirborne) uses up a turn
+ * of flight; at 0 it can't fly (canFly) and falls with gravity like any other block. One
+ * touching anything (it has landed) gets all its turns back. Returns how many are worn out.
+ */
+export function stepFlight(world) {
+  let tired = 0;
+  for (const c of world.soloCreatures) {
+    const max = blockProps(c.type).flightTurns;
+    if (max == null || c.vanishing) continue;
+    if (!isAirborne(world, c)) c.flight = max; // landed: rested
+    else c.flight = Math.max(0, (c.flight ?? max) - 1);
+    if (c.flight <= 0) tired++;
+  }
+  return tired;
+}
+
 export function stepSoloCreatures(world, skip = new Set()) {
   const creatures = shuffle([...world.soloCreatures]); // every one-block creature (Crawly, Buzzy)
   let moved = 0;

@@ -18,7 +18,7 @@ const FOV = 30;
  * How far the drawn thing reaches from the block centre, cm: the block's farthest corner (the
  * grid mode's cell) with a little room, and creatures' legs and wings beyond it.
  */
-const blockRadius = () => 1.07 * GRID.scale * Math.max(...GRID.vertices.map((v) => v.length()));
+const blockRadius = () => 1.07 * Math.max(...GRID.cmVertices.map((v) => v.length()));
 const CREATURE_EXTRA = 0.55;
 /** A fixed moment for the shaders' animations (Water, clouds, wings), so icons don't vary. */
 const ICON_TIME_MS = 4200;
